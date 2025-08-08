@@ -26,7 +26,7 @@ This project provides a reverse proxy for GitHub Copilot, exposing OpenAI-compat
 
 ## Downloads
 
-Pre-built binaries are available for each release on the [Releases page](https://github.com/privapps/github-copilot-svcs/releases).
+Pre-built binaries are available for each release on the Releases page of this repository.
 
 Available platforms:
 - **Linux**: AMD64, ARM64
@@ -119,7 +119,7 @@ make run
 
 | Command | Description |
 |---------|-------------|
-| `run`    | Start the proxy server |
+| `run` / `start` | Start the proxy server |
 | `auth`   | Authenticate with GitHub Copilot using device flow |
 | `status` | Show detailed authentication and token status |
 | `config` | Display current configuration details |

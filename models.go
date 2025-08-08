@@ -58,7 +58,16 @@ func fetchModelsFromCopilotAPI(token string) (*ModelList, error) {
 
 // fetchModelsFromModelsDev fetches models from models.dev API as fallback
 func fetchModelsFromModelsDev() (*ModelList, error) {
-	resp, err := http.Get("https://models.dev/api.json")
+	// Use shared HTTP client if available for consistent timeouts
+	client := sharedHTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	req, err := http.NewRequest("GET", "https://models.dev/api.json", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -121,6 +130,26 @@ func containsAny(text string, substrings []string) bool {
 }
 
 // getDefaultModels provides a fallback list of models (defined in main.go)
+func getDefaultModels() []Model {
+	// Models based on actual models.dev GitHub Copilot, Claude, and Gemini entries (as of August 2025)
+	return []Model{
+		// GitHub Copilot (OpenAI-compatible)
+		{ID: "gpt-4o", Object: "model", Created: time.Now().Unix(), OwnedBy: "openai"},
+		{ID: "gpt-4.1", Object: "model", Created: time.Now().Unix(), OwnedBy: "openai"},
+		{ID: "o3", Object: "model", Created: time.Now().Unix(), OwnedBy: "openai"},
+		{ID: "o3-mini", Object: "model", Created: time.Now().Unix(), OwnedBy: "openai"},
+		{ID: "o4-mini", Object: "model", Created: time.Now().Unix(), OwnedBy: "openai"},
+		// Claude (Anthropic)
+		{ID: "claude-3.5-sonnet", Object: "model", Created: time.Now().Unix(), OwnedBy: "anthropic"},
+		{ID: "claude-3.7-sonnet", Object: "model", Created: time.Now().Unix(), OwnedBy: "anthropic"},
+		{ID: "claude-3.7-sonnet-thought", Object: "model", Created: time.Now().Unix(), OwnedBy: "anthropic"},
+		{ID: "claude-opus-4", Object: "model", Created: time.Now().Unix(), OwnedBy: "anthropic"},
+		{ID: "claude-sonnet-4", Object: "model", Created: time.Now().Unix(), OwnedBy: "anthropic"},
+		// Gemini (Google)
+		{ID: "gemini-2.5-pro", Object: "model", Created: time.Now().Unix(), OwnedBy: "google"},
+		{ID: "gemini-2.0-flash-001", Object: "model", Created: time.Now().Unix(), OwnedBy: "google"},
+	}
+}
 
 func modelsHandler(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

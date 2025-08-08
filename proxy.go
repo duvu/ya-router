@@ -124,7 +124,9 @@ func initializeTimeouts(cfg *Config) {
 // Buffer pool for request/response reuse
 var bufferPool = sync.Pool{
 	New: func() interface{} {
-		return new(bytes.Buffer)
+		// 32KB buffer for efficient copying
+		b := make([]byte, 32*1024)
+		return &b
 	},
 }
 
@@ -530,10 +532,10 @@ func processProxyRequest(cfg *Config, w http.ResponseWriter, r *http.Request, ct
 	} else {
 		log.Printf("Starting regular response copy")
 		// Use buffer pool for regular responses
-		buf := bufferPool.Get().(*bytes.Buffer)
-		buf.Reset()
-		defer bufferPool.Put(buf)
-		_, err = io.CopyBuffer(w, resp.Body, buf.Bytes()[:0])
+		bufPtr := bufferPool.Get().(*[]byte)
+		defer bufferPool.Put(bufPtr)
+		buf := *bufPtr
+		_, err = io.CopyBuffer(w, resp.Body, buf)
 	}
 
 	if err != nil {
