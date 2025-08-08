@@ -4,35 +4,20 @@ This project provides a reverse proxy for GitHub Copilot, exposing OpenAI-compat
 
 ## Features
 
-- **OAuth Device Flow Authentication**: Secure authentication with GitHub Copilot using the same flow as OpenCode
-- **Advanced Token Management**: 
   - Proactive token refresh (refreshes at 20% of token lifetime, minimum 5 minutes)
   - Exponential backoff retry logic for failed token refreshes
   - Automatic fallback to full re-authentication when needed
   - Detailed token status monitoring
-- **Robust Request Handling**:
   - Automatic retry with exponential backoff for chat completions (3 attempts)
   - Network error recovery and rate limiting handling
   - 30-second request timeout protection
-- **OpenAI-Compatible API**: Exposes `/v1/chat/completions` and `/v1/models` endpoints
-- **Request/Response Transformation**: Handles model name mapping and ensures OpenAI compatibility
-- **Configurable Port**: Default port 8081, configurable via CLI or config file
-- **Health Monitoring**: `/health` endpoint for service monitoring
-- **Graceful Shutdown**: Proper signal handling and graceful server shutdown
-- **Comprehensive Logging**: Request/response logging for debugging and monitoring
-- **Enhanced CLI Commands**: Status monitoring, manual token refresh, and detailed configuration display
-- **Production-Ready Performance**: HTTP connection pooling, circuit breaker, request coalescing, and memory optimization
-- **Monitoring & Profiling**: Built-in pprof endpoints for memory, CPU, and goroutine analysis
 
 ## Downloads
 
 Pre-built binaries are available for each release on the Releases page of this repository.
 
-Available platforms:
-- **Linux**: AMD64, ARM64
-- **macOS**: AMD64 (Intel), ARM64 (Apple Silicon) 
+- **macOS**: AMD64 (Intel), ARM64 (Apple Silicon)
 - **Windows**: AMD64, ARM64
-
 ### Automated Releases
 
 Releases are automatically created when code is merged to the `main` branch:
@@ -115,6 +100,37 @@ make run
 ./github-copilot-svcs run
 ```
 
+## Docker Usage
+
+Run with Docker to persist configuration across container restarts:
+
+```bash
+# Local development with docker-compose
+docker-compose up -d
+
+# Or manually with docker run
+docker run -d \
+  --name github-copilot-svcs \
+  -p 7071:7071 \
+  -v ./config:/home/appuser/.local/share/github-copilot-svcs \
+  docker.x51.vn/dev/github-copilot-svcs:latest
+```
+
+**Configuration persistence:**
+- Local development: `./config` directory is mounted to container config path
+- Production deployment: Host folder `./github-copilot-svcs` is mounted to persist authentication tokens
+
+**First-time authentication in container:**
+```bash
+# Authenticate inside the container (one-time setup)
+docker exec -it github-copilot-svcs /app/github-copilot-svcs auth
+```
+
+**Health check:**
+```bash
+curl http://localhost:7071/health
+```
+
 ## CLI Commands
 
 | Command | Description |
@@ -139,7 +155,7 @@ The `status` command now provides detailed token information:
 Example output:
 ```
 Configuration file: ~/.local/share/github-copilot-svcs/config.json
-Port: 8081
+Port: 7071
 Authentication: ✓ Authenticated
 Token expires: in 29m 53s (1793 seconds)
 Status: ✅ Token is healthy
@@ -158,7 +174,7 @@ Once running, the proxy exposes these OpenAI-compatible endpoints:
 
 ### Chat Completions
 ```bash
-POST http://localhost:8081/v1/chat/completions
+POST http://localhost:7071/v1/chat/completions
 Content-Type: application/json
 
 {
@@ -172,21 +188,21 @@ Content-Type: application/json
 
 ### Available Models
 ```bash
-GET http://localhost:8081/v1/models
+GET http://localhost:7071/v1/models
 ```
 
 ### Health Check
 ```bash
-GET http://localhost:8081/health
+GET http://localhost:7071/health
 ```
 
 ### Profiling Endpoints (Production Monitoring)
 ```bash
-GET http://localhost:8081/debug/pprof/          # Overview of available profiles
-GET http://localhost:8081/debug/pprof/heap      # Memory heap profile
-GET http://localhost:8081/debug/pprof/goroutine # Goroutine profile
-GET http://localhost:8081/debug/pprof/profile   # CPU profile (30s sampling)
-GET http://localhost:8081/debug/pprof/trace     # Execution trace
+GET http://localhost:7071/debug/pprof/          # Overview of available profiles
+GET http://localhost:7071/debug/pprof/heap      # Memory heap profile
+GET http://localhost:7071/debug/pprof/goroutine # Goroutine profile
+GET http://localhost:7071/debug/pprof/profile   # CPU profile (30s sampling)
+GET http://localhost:7071/debug/pprof/trace     # Execution trace
 ```
 
 ## Reliability & Error Handling
@@ -228,7 +244,7 @@ The configuration is stored in `~/.local/share/github-copilot-svcs/config.json`:
 
 ```json
 {
-  "port": 8081,
+  "port": 7071,
   "github_token": "gho_...",
   "copilot_token": "ghu_...",
   "expires_at": 1720000000,
@@ -250,7 +266,7 @@ The configuration is stored in `~/.local/share/github-copilot-svcs/config.json`:
 
 ### Configuration Fields
 
-- `port`: Server port (default: 8081)
+- `port`: Server port (default: 7071)
 - `github_token`: GitHub OAuth token for Copilot access
 - `copilot_token`: GitHub Copilot API token
 - `expires_at`: Unix timestamp when the Copilot token expires
@@ -330,7 +346,7 @@ The proxy automatically maps common model names to GitHub Copilot models:
 ### Connection Issues
 ```bash
 # Check if service is running
-curl http://localhost:8081/health
+curl http://localhost:7071/health
 
 # View logs (if running in foreground)
 ./github-copilot-svcs run
@@ -347,7 +363,7 @@ curl http://localhost:8081/health
 
 ### Using with curl
 ```bash
-curl -X POST http://localhost:8081/v1/chat/completions \
+curl -X POST http://localhost:7071/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-4",
@@ -362,7 +378,7 @@ import openai
 
 # Point OpenAI client to the proxy
 client = openai.OpenAI(
-    base_url="http://localhost:8081/v1",
+    base_url="http://localhost:7071/v1",
     api_key="dummy"  # Not used, but required by client
 )
 
@@ -378,7 +394,7 @@ print(response.choices[0].message.content)
 from langchain.llms import OpenAI
 
 llm = OpenAI(
-    openai_api_base="http://localhost:8081/v1",
+    openai_api_base="http://localhost:7071/v1",
     openai_api_key="dummy"  # Not used
 )
 response = llm("Write a hello world in Python")

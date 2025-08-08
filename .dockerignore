@@ -1,0 +1,30 @@
+# Binaries
+/github-copilot-svcs
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Build directories
+bin/
+build/
+
+# VCS
+.git
+.gitignore
+
+# Dependency caches
+vendor/
+
+# Editor/OS files
+.DS_Store
+.vscode/
+.idea/
+
+# Tests & artifacts
+coverage/
+*.out
+
+# Local configs
+**/config.json

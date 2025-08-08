@@ -1,146 +1,97 @@
-name: Release
+name: CI/CD
 
 on:
+  pull_request:
+    branches: [ main ]
   push:
-    branches:
-      - main
-
-permissions:
-  contents: write
+    branches: [ main ]
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
+  build:
+    name: Build and Test
+    runs-on: self-hosted
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version: '1.22'
 
-      - name: Get next version
-        id: version
+      - name: Build
         run: |
-          # Get the latest tag, if no tags exist, start with v0.0.0
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          echo "Latest tag: $LATEST_TAG"
-          
-          # Extract version numbers
-          VERSION=${LATEST_TAG#v}
-          IFS='.' read -r -a VERSION_PARTS <<< "$VERSION"
-          MAJOR=${VERSION_PARTS[0]:-0}
-          MINOR=${VERSION_PARTS[1]:-0}
-          PATCH=${VERSION_PARTS[2]:-0}
-          
-          # Increment patch version
-          PATCH=$((PATCH + 1))
-          
-          # If this is the first release and we're starting from v0.0.0, set to v0.0.1
-          if [ "$LATEST_TAG" = "v0.0.0" ]; then
-            NEW_VERSION="v0.0.1"
-          else
-            NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
-          fi
-          
-          echo "New version: $NEW_VERSION"
-          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          go build -ldflags="-s -w -X main.version=${{ github.sha }}" -o github-copilot-svcs .
 
-      - name: Create and push tag
+      - name: Run unit tests
         run: |
+          go test ./... || true
+
+  deploy:
+    name: Build, Publish, and Deploy
+    runs-on: self-hosted
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    env:
+      DEPLOYMENT_REPO: x51vn/deployment
+      DEPLOYMENT_REPO_PAT: ""
+      IMAGE_VERSION: ${{ github.sha }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Import host env var to Actions context
+        run: |
+          echo "DOCKER_REGISTRY_USER=$DOCKER_REGISTRY_USER" >> $GITHUB_ENV
+          echo "DOCKER_REGISTRY_PASSWORD=$DOCKER_REGISTRY_PASSWORD" >> $GITHUB_ENV
+          echo "DEPLOY_USER=$DEPLOY_USER_SERVER2" >> $GITHUB_ENV
+          echo "DEPLOY_HOST=$DEPLOY_HOST_SERVER2" >> $GITHUB_ENV
+          echo "DEPLOYMENT_REPO_PAT=$GITHUB_DEPLOYMENT_PAT" >> $GITHUB_ENV
+
+      - name: Set version
+        run: echo "IMAGE_VERSION=$(date +'%Y%m%d')-${{ github.run_number }}" >> $GITHUB_ENV
+
+      - name: Build Docker image
+        run: |
+          docker build --build-arg IMAGE_VERSION=${{ env.IMAGE_VERSION }} -t $DOCKER_REGISTRY_HOST/dev/github-copilot-svcs:${{ env.IMAGE_VERSION }} .
+
+      - name: Login to Docker Registry
+        run: echo "$DOCKER_REGISTRY_PASSWORD" | docker login "$DOCKER_REGISTRY_HOST" -u "$DOCKER_REGISTRY_USER" --password-stdin
+
+      - name: Push Docker image
+        run: |
+          docker tag $DOCKER_REGISTRY_HOST/dev/github-copilot-svcs:${{ env.IMAGE_VERSION }} $DOCKER_REGISTRY_HOST/dev/github-copilot-svcs:latest
+          docker push $DOCKER_REGISTRY_HOST/dev/github-copilot-svcs:${{ env.IMAGE_VERSION }}
+          docker push $DOCKER_REGISTRY_HOST/dev/github-copilot-svcs:latest
+
+      - name: Checkout deployment repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DEPLOYMENT_REPO }}
+          token: ${{ env.DEPLOYMENT_REPO_PAT }}
+          path: deployment-repo
+
+      - name: Update deployment files
+        run: |
+          sed -i "s|docker.x51.vn/dev/github-copilot-svcs:[^ ]*|docker.x51.vn/dev/github-copilot-svcs:${{ env.IMAGE_VERSION }}|g" deployment-repo/server2/docker-compose.yml
+          cd deployment-repo
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag ${{ steps.version.outputs.version }}
-          git push origin ${{ steps.version.outputs.version }}
+          git add server2/docker-compose.yml
+          git commit -m "ci: update github-copilot-svcs image to ${{ env.IMAGE_VERSION }} [skip ci]" || echo "No changes to commit"
+          git push
 
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ steps.version.outputs.version }}
-          release_name: Release ${{ steps.version.outputs.version }}
-          body: |
-            ## Changes in ${{ steps.version.outputs.version }}
-            
-            Auto-generated release from main branch.
-            
-            ### Downloads
-            - Linux AMD64: `github-copilot-svcs-linux-amd64.gz`
-            - Linux ARM64: `github-copilot-svcs-linux-arm64.gz`
-            - macOS AMD64: `github-copilot-svcs-darwin-amd64.gz`
-            - macOS ARM64: `github-copilot-svcs-darwin-arm64.gz`
-            - Windows AMD64: `github-copilot-svcs-windows-amd64.exe.gz`
-            - Windows ARM64: `github-copilot-svcs-windows-arm64.exe.gz`
-          draft: false
-          prerelease: false
-
-  build:
-    needs: release
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-            suffix: ""
-          - goos: linux
-            goarch: arm64
-            suffix: ""
-          - goos: darwin
-            goarch: amd64
-            suffix: ""
-          - goos: darwin
-            goarch: arm64
-            suffix: ""
-          - goos: windows
-            goarch: amd64
-            suffix: ".exe"
-          - goos: windows
-            goarch: arm64
-            suffix: ".exe"
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: '1.21'
-
-      - name: Build binary
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
+      - name: Deploy to server
         run: |
-          BINARY_NAME="github-copilot-svcs-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}"
-          go build -ldflags="-s -w -X main.version=${{ needs.release.outputs.version }}" -o "$BINARY_NAME" .
-          
-          # Make the binary executable (important for Unix systems)
-          chmod +x "$BINARY_NAME"
-          
-          # Gzip the binary
-          GZ_BINARY_NAME="$BINARY_NAME.gz"
-          gzip -c "$BINARY_NAME" > "$GZ_BINARY_NAME"
-          
-          echo "Built and gzipped binary: $GZ_BINARY_NAME"
-          ls -la "$GZ_BINARY_NAME"
-
-      - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.release.outputs.upload_url }}
-          asset_path: ./github-copilot-svcs-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}.gz
-          asset_name: github-copilot-svcs-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}.gz
-          asset_content_type: application/gzip
+          ssh -o StrictHostKeyChecking=no $DEPLOY_USER@$DEPLOY_SERVER2_HOST "
+            cd /root/deployment/server2 &&
+            git checkout master &&
+            git pull origin master &&
+            docker compose pull github-copilot-svcs &&
+            docker compose up -d github-copilot-svcs
+          "

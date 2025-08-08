@@ -1,0 +1,26 @@
+services:
+  github-copilot-svcs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: docker.x51.vn/dev/github-copilot-svcs:latest
+    container_name: github-copilot-svcs
+    restart: unless-stopped
+    ports:
+      - "7071:7071"
+    volumes:
+      - ./config:/home/appuser/.local/share/github-copilot-svcs
+    environment:
+      - PORT=7071
+    healthcheck:
+      test: ["CMD", "curl", "-fsSL", "http://localhost:7071/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - x51-network
+
+networks:
+  x51-network:
+    driver: bridge

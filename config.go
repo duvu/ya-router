@@ -57,7 +57,7 @@ func loadConfig() (*Config, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		// Return default config if file doesn't exist
-		cfg := &Config{Port: 8081}
+		cfg := &Config{Port: 7071}
 		setDefaultTimeouts(cfg)
 		return cfg, nil
 	}
@@ -70,7 +70,7 @@ func loadConfig() (*Config, error) {
 
 	// Set default port if not specified
 	if cfg.Port == 0 {
-		cfg.Port = 8081
+		cfg.Port = 7071
 	}
 
 	// Set default timeouts if not specified
