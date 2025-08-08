@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -47,6 +48,36 @@ type CircuitBreaker struct {
 var circuitBreaker = &CircuitBreaker{
 	state:   CircuitClosed,
 	timeout: 30 * time.Second, // Default, will be updated from config
+}
+
+// validateAndTransformRequestModel parses the request body, validates the model, and transforms it if needed
+func validateAndTransformRequestModel(body []byte, cfg *Config) ([]byte, error) {
+	var req ChatCompletionRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		// If we can't parse it, just pass it through
+		log.Printf("Could not parse request JSON (passing through): %v", err)
+		return body, nil
+	}
+
+	originalModel := req.Model
+	validatedModel := validateAndTransformModel(req.Model, cfg)
+
+	// If model was changed, log it and update the request
+	if originalModel != validatedModel {
+		log.Printf("Model transformed: %s -> %s", originalModel, validatedModel)
+		req.Model = validatedModel
+
+		// Re-marshal the request
+		newBody, err := json.Marshal(req)
+		if err != nil {
+			log.Printf("Error marshaling transformed request: %v", err)
+			return body, nil // Return original on error
+		}
+		return newBody, nil
+	}
+
+	// No change needed
+	return body, nil
 }
 
 var tokenMu sync.Mutex
@@ -438,9 +469,18 @@ func processProxyRequest(cfg *Config, w http.ResponseWriter, r *http.Request, ct
 	}
 	defer r.Body.Close()
 
+	// Transform and validate model if this is a chat completion request
+	if r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/chat/completions/" {
+		body, err = validateAndTransformRequestModel(body, cfg)
+		if err != nil {
+			log.Printf("Error validating request model: %v", err)
+			return fmt.Errorf("error processing request")
+		}
+	}
+
 	// Transform path
 	targetPath := "/chat/completions"
-	if r.URL.Path == "/v1/chat/completions" {
+	if r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/chat/completions/" {
 		targetPath = "/chat/completions"
 	}
 

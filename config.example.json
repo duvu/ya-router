@@ -1,5 +1,10 @@
 {
-  "port": 8081,
+  "port": 7071,
+  "allowed_models": [
+    "gpt-4",
+    "gpt-4.1"
+  ],
+  "default_model": "gpt-4.1",
   "timeouts": {
     "http_client": 300,
     "server_read": 30,

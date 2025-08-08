@@ -134,8 +134,11 @@ func handleRun() error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", modelsHandler(cfg))
+	mux.HandleFunc("/v1/models/", modelsHandler(cfg))
 	mux.HandleFunc("/v1/chat/completions", proxyHandler(cfg))
+	mux.HandleFunc("/v1/chat/completions/", proxyHandler(cfg))
 	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/health/", healthHandler)
 	// Add pprof endpoints for profiling
 	mux.HandleFunc("/debug/pprof/", http.DefaultServeMux.ServeHTTP)
 	mux.HandleFunc("/debug/pprof/cmdline", http.DefaultServeMux.ServeHTTP)

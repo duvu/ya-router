@@ -1,5 +1,42 @@
 package main
 
+import (
+	"strings"
+)
+
+// validateAndTransformModel checks if a model is allowed and transforms it if needed
+func validateAndTransformModel(requestedModel string, cfg *Config) string {
+	// If no allowed models configured, allow everything
+	if len(cfg.AllowedModels) == 0 {
+		return requestedModel
+	}
+
+	// Check if the requested model is in the allowed list
+	for _, allowedModel := range cfg.AllowedModels {
+		if strings.EqualFold(requestedModel, allowedModel) {
+			return requestedModel
+		}
+	}
+
+	// Model not allowed, return default model
+	return cfg.DefaultModel
+}
+
+// isModelAllowed checks if a model is in the allowed list
+func isModelAllowed(model string, cfg *Config) bool {
+	// If no allowed models configured, allow everything
+	if len(cfg.AllowedModels) == 0 {
+		return true
+	}
+
+	for _, allowedModel := range cfg.AllowedModels {
+		if strings.EqualFold(model, allowedModel) {
+			return true
+		}
+	}
+	return false
+}
+
 // OpenAI-compatible request/response structures
 type ChatCompletionRequest struct {
 	Model       string                  `json:"model"`

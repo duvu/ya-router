@@ -16,6 +16,10 @@ type Config struct {
 	ExpiresAt    int64  `json:"expires_at"`
 	RefreshIn    int64  `json:"refresh_in"`
 
+	// Model configuration
+	AllowedModels []string `json:"allowed_models"`
+	DefaultModel  string   `json:"default_model"`
+
 	// Timeout configurations (in seconds)
 	Timeouts struct {
 		HTTPClient      int `json:"http_client"`       // Default: 300s for streaming responses
@@ -58,6 +62,7 @@ func loadConfig() (*Config, error) {
 	if err != nil {
 		// Return default config if file doesn't exist
 		cfg := &Config{Port: 7071}
+		setDefaultModels(cfg)
 		setDefaultTimeouts(cfg)
 		return cfg, nil
 	}
@@ -73,10 +78,23 @@ func loadConfig() (*Config, error) {
 		cfg.Port = 7071
 	}
 
+	// Set default models if not specified
+	setDefaultModels(&cfg)
+
 	// Set default timeouts if not specified
 	setDefaultTimeouts(&cfg)
 
 	return &cfg, nil
+}
+
+// setDefaultModels sets default model configuration if not specified
+func setDefaultModels(cfg *Config) {
+	if len(cfg.AllowedModels) == 0 {
+		cfg.AllowedModels = []string{"gpt-4", "gpt-4.1"}
+	}
+	if cfg.DefaultModel == "" {
+		cfg.DefaultModel = "gpt-4.1"
+	}
 }
 
 // setDefaultTimeouts sets default timeout values if they are zero

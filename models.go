@@ -129,6 +129,38 @@ func containsAny(text string, substrings []string) bool {
 	return false
 }
 
+// filterAllowedModels filters the model list to only include allowed models
+func filterAllowedModels(modelList *ModelList, cfg *Config) *ModelList {
+	// If no allowed models configured, return all models
+	if len(cfg.AllowedModels) == 0 {
+		return modelList
+	}
+
+	var filteredModels []Model
+	for _, model := range modelList.Data {
+		if isModelAllowed(model.ID, cfg) {
+			filteredModels = append(filteredModels, model)
+		}
+	}
+
+	// If no models match the allowed list, add the default models
+	if len(filteredModels) == 0 {
+		for _, allowedModelID := range cfg.AllowedModels {
+			filteredModels = append(filteredModels, Model{
+				ID:      allowedModelID,
+				Object:  "model",
+				Created: time.Now().Unix(),
+				OwnedBy: "openai", // Default to openai for allowed models
+			})
+		}
+	}
+
+	return &ModelList{
+		Object: "list",
+		Data:   filteredModels,
+	}
+}
+
 // getDefaultModels provides a fallback list of models (defined in main.go)
 func getDefaultModels() []Model {
 	// Models based on actual models.dev GitHub Copilot, Claude, and Gemini entries (as of August 2025)
@@ -161,7 +193,7 @@ func modelsHandler(cfg *Config) http.HandlerFunc {
 			modelsMutex.RLock()
 			if modelsLoaded && cachedModels != nil {
 				modelsMutex.RUnlock()
-				return cachedModels
+				return filterAllowedModels(cachedModels, cfg)
 			}
 			modelsMutex.RUnlock()
 
@@ -171,7 +203,7 @@ func modelsHandler(cfg *Config) http.HandlerFunc {
 
 			// Double-check in case another goroutine loaded while we waited
 			if modelsLoaded && cachedModels != nil {
-				return cachedModels
+				return filterAllowedModels(cachedModels, cfg)
 			}
 
 			log.Printf("Loading models for the first time...")
@@ -193,7 +225,7 @@ func modelsHandler(cfg *Config) http.HandlerFunc {
 			modelsLoaded = true
 
 			log.Printf("Loaded and cached %d models", len(modelList.Data))
-			return modelList
+			return filterAllowedModels(modelList, cfg)
 		})
 
 		modelList := result.(*ModelList)
