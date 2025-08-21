@@ -1,4 +1,4 @@
-name: CI/CD
+name: GitHub Copilot Services CI/CD
 
 on:
   pull_request:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    name: Build and Test
+    name: GitHub Copilot Services - Build and Test
     runs-on: self-hosted
     steps:
       - name: Checkout code
@@ -28,7 +28,7 @@ jobs:
           go test ./... || true
 
   deploy:
-    name: Build, Publish, and Deploy
+    name: GitHub Copilot Services - Build, Publish, and Deploy
     runs-on: self-hosted
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -51,7 +51,7 @@ jobs:
           echo "DOCKER_REGISTRY_PASSWORD=$DOCKER_REGISTRY_PASSWORD" >> $GITHUB_ENV
           echo "DEPLOY_USER=$DEPLOY_SERVER2_USER" >> $GITHUB_ENV
           echo "DEPLOY_HOST=$DEPLOY_SERVER2_HOST" >> $GITHUB_ENV
-          echo "DEPLOYMENT_REPO_PAT=$GITHUB_DEPLOYMENT_PAT" >> $GITHUB_ENV
+          echo "DEPLOYMENT_REPO_PAT=$GITHUB_PAT" >> $GITHUB_ENV
 
       - name: Set version
         run: echo "IMAGE_VERSION=$(date +'%Y%m%d')-${{ github.run_number }}" >> $GITHUB_ENV
