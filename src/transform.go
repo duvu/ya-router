@@ -4,21 +4,11 @@ import (
 	"strings"
 )
 
-// validateAndTransformModel checks if a model is allowed and transforms it if needed
+// validateAndTransformModel enforces the configured default model for all requests
+// This ensures consistent model usage regardless of client-supplied model identifiers
 func validateAndTransformModel(requestedModel string, cfg *Config) string {
-	// If no allowed models configured, allow everything
-	if len(cfg.AllowedModels) == 0 {
-		return requestedModel
-	}
-
-	// Check if the requested model is in the allowed list
-	for _, allowedModel := range cfg.AllowedModels {
-		if strings.EqualFold(requestedModel, allowedModel) {
-			return requestedModel
-		}
-	}
-
-	// Model not allowed, return default model
+	// Always return the configured default model to enforce consistent behavior
+	// This prevents model selection bypass and ensures predictable billing/features
 	return cfg.DefaultModel
 }
 

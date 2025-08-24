@@ -275,6 +275,39 @@ The configuration is stored in `~/.local/share/github-copilot-svcs/config.json`:
 - `allowed_models`: Array of allowed model names (default: ["gpt-4", "gpt-4.1", "gpt-5-mini"])
 - `default_model`: Default model to use (default: "gpt-5-mini")
 
+### Default Model Enforcement
+
+**Important**: This service enforces the use of the configured `default_model` for all requests, regardless of the model specified by client applications. This ensures:
+
+- **Predictable Billing**: All usage is billed against the same model
+- **Consistent Feature Availability**: Features and capabilities remain consistent across all requests
+- **Policy Compliance**: Prevents clients from bypassing configured model restrictions
+
+**Behavior Examples**:
+```bash
+# Client requests gpt-4, but service uses gpt-5-mini (the configured default)
+curl -X POST http://localhost:7071/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}'
+# → Actual request sent to GitHub Copilot uses "gpt-5-mini"
+
+# Client requests claude-3.5-sonnet, but service still uses gpt-5-mini
+curl -X POST http://localhost:7071/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "claude-3.5-sonnet", "messages": [{"role": "user", "content": "Hello"}]}'
+# → Actual request sent to GitHub Copilot uses "gpt-5-mini"
+```
+
+**Configuration**: To change the model used for all requests, update the `default_model` field in your configuration:
+
+```json
+{
+  "default_model": "claude-3.5-sonnet"
+}
+```
+
+After changing the configuration, restart the service for the changes to take effect.
+
 ### Configuration Migration
 
 **Automatic Migration**: Starting from version 2.0, the server automatically runs configuration migration in `merge` mode at startup to ensure your configuration includes the latest settings while preserving authentication tokens.
