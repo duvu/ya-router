@@ -78,7 +78,7 @@ func TestValidateAndTransformModel(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := validateAndTransformModel(tt.requestedModel, tt.config)
-			
+
 			if result != tt.expectedModel {
 				t.Errorf("validateAndTransformModel() = %v, want %v. %s", result, tt.expectedModel, tt.description)
 			}
@@ -126,25 +126,25 @@ func TestDefaultModelEnforcementInRequestValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			originalBody := []byte(tc.requestBody)
 			transformedBody, err := validateAndTransformRequestModel(originalBody, tc.config)
-			
+
 			if err != nil {
 				t.Fatalf("validateAndTransformRequestModel() error = %v", err)
 			}
 
 			// Parse both bodies to check if model was enforced
 			var originalReq, transformedReq ChatCompletionRequest
-			
+
 			if err := json.Unmarshal(originalBody, &originalReq); err != nil {
 				t.Fatalf("Failed to parse original request: %v", err)
 			}
-			
+
 			if err := json.Unmarshal(transformedBody, &transformedReq); err != nil {
 				t.Fatalf("Failed to parse transformed request: %v", err)
 			}
 
 			// The transformed request should always use the default model
 			if transformedReq.Model != tc.config.DefaultModel {
-				t.Errorf("Transformed request model = %v, want %v (default model enforcement failed)", 
+				t.Errorf("Transformed request model = %v, want %v (default model enforcement failed)",
 					transformedReq.Model, tc.config.DefaultModel)
 			}
 
@@ -168,7 +168,7 @@ func TestDefaultModelEnforcementConsistency(t *testing.T) {
 	// Test multiple different requested models
 	requestedModels := []string{
 		"gpt-4",
-		"gpt-4.1", 
+		"gpt-4.1",
 		"claude-3.5-sonnet",
 		"o1-preview",
 		"gemini-pro",
@@ -178,9 +178,9 @@ func TestDefaultModelEnforcementConsistency(t *testing.T) {
 
 	for _, requestedModel := range requestedModels {
 		result := validateAndTransformModel(requestedModel, config)
-		
+
 		if result != config.DefaultModel {
-			t.Errorf("Inconsistent enforcement: requested=%q, got=%q, want=%q", 
+			t.Errorf("Inconsistent enforcement: requested=%q, got=%q, want=%q",
 				requestedModel, result, config.DefaultModel)
 		}
 	}

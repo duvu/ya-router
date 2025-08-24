@@ -57,10 +57,10 @@ func TestDefaultModelEnforcementIntegration(t *testing.T) {
 	defer mockServer.Close()
 
 	testCases := []struct {
-		name                string
-		clientRequestModel  string
-		expectedUsedModel   string
-		description         string
+		name               string
+		clientRequestModel string
+		expectedUsedModel  string
+		description        string
 	}{
 		{
 			name:               "client requests gpt-4",
@@ -132,7 +132,7 @@ func TestDefaultModelEnforcementIntegration(t *testing.T) {
 				t.Errorf("Message content was unexpectedly modified")
 			}
 
-			t.Logf("✅ %s: Client requested %q → Service uses %q (default: %q)", 
+			t.Logf("✅ %s: Client requested %q → Service uses %q (default: %q)",
 				tc.description, tc.clientRequestModel, transformedRequest.Model, cfg.DefaultModel)
 		})
 	}
@@ -172,7 +172,7 @@ func TestProxyHandlerDefaultModelEnforcement(t *testing.T) {
 
 			// Test requests with various models
 			testModels := []string{"gpt-4", "claude-3.5-sonnet", "gemini-2.5-pro", "unknown-model"}
-			
+
 			for _, requestedModel := range testModels {
 				clientRequest := ChatCompletionRequest{
 					Model: requestedModel,
@@ -247,7 +247,7 @@ func TestModelsEndpointConsistency(t *testing.T) {
 		for i, model := range modelList.Data {
 			modelIDs[i] = model.ID
 		}
-		t.Errorf("Default model %q not found in models list. Available models: %v", 
+		t.Errorf("Default model %q not found in models list. Available models: %v",
 			cfg.DefaultModel, modelIDs)
 	}
 
