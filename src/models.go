@@ -168,6 +168,7 @@ func getDefaultModels() []Model {
 		// GitHub Copilot (OpenAI-compatible)
 		{ID: "gpt-4o", Object: "model", Created: time.Now().Unix(), OwnedBy: "openai"},
 		{ID: "gpt-4.1", Object: "model", Created: time.Now().Unix(), OwnedBy: "openai"},
+		{ID: "gpt-5-mini", Object: "model", Created: time.Now().Unix(), OwnedBy: "openai"},
 		{ID: "o3", Object: "model", Created: time.Now().Unix(), OwnedBy: "openai"},
 		{ID: "o3-mini", Object: "model", Created: time.Now().Unix(), OwnedBy: "openai"},
 		{ID: "o4-mini", Object: "model", Created: time.Now().Unix(), OwnedBy: "openai"},

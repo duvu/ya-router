@@ -13,14 +13,22 @@ func printUsage() {
 	fmt.Printf("GitHub Copilot SVCS Proxy\n\n")
 	fmt.Printf("Usage: %s [command] [options]\n\n", os.Args[0])
 	fmt.Printf("Commands:\n")
-	fmt.Printf("  run|start  Start the proxy server\n")
-	fmt.Printf("  auth       Authenticate with GitHub Copilot\n")
-	fmt.Printf("  status     Show authentication status\n")
-	fmt.Printf("  config     Show current configuration\n")
-	fmt.Printf("  models     List available models\n")
-	fmt.Printf("  refresh    Force token refresh\n")
-	fmt.Printf("  version    Show version information\n")
-	fmt.Printf("  help       Show this help message\n\n")
+	fmt.Printf("  run|start           Start the proxy server\n")
+	fmt.Printf("    --config-migrate  Config migration mode: merge (default), none, override\n")
+	fmt.Printf("  auth                Authenticate with GitHub Copilot\n")
+	fmt.Printf("  status              Show authentication status\n")
+	fmt.Printf("  config              Show current configuration\n")
+	fmt.Printf("  models              List available models\n")
+	fmt.Printf("  migrate-config      Migrate configuration file\n")
+	fmt.Printf("    --mode            Migration mode: merge (default), override\n")
+	fmt.Printf("  refresh             Force token refresh\n")
+	fmt.Printf("  version             Show version information\n")
+	fmt.Printf("  help                Show this help message\n\n")
+	fmt.Printf("Config Migration:\n")
+	fmt.Printf("  merge     - Merge new defaults with existing config, preserve tokens (DEFAULT)\n")
+	fmt.Printf("  override  - Replace config with defaults (tokens will be lost)\n")
+	fmt.Printf("  none      - No migration\n\n")
+	fmt.Printf("Note: Server automatically runs migration in 'merge' mode at startup unless disabled.\n\n")
 	fmt.Printf("Options:\n")
 	flag.PrintDefaults()
 }
@@ -108,6 +116,8 @@ func handleConfig() error {
 	if cfg.ExpiresAt > 0 {
 		fmt.Printf("Token expires at: %d\n", cfg.ExpiresAt)
 	}
+	fmt.Printf("Default model: %s\n", cfg.DefaultModel)
+	fmt.Printf("Allowed models: %v\n", cfg.AllowedModels)
 
 	return nil
 }
@@ -116,7 +126,15 @@ func getCurrentTime() int64 {
 	return time.Now().Unix()
 }
 
-func handleRun() error {
+func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
+	// Perform config migration if requested
+	if migrationMode != ConfigMigrationNone {
+		fmt.Printf("Running config migration (mode: %s)...\n", migrationMode)
+		if err := migrateConfig(migrationMode); err != nil {
+			return fmt.Errorf("config migration failed: %v", err)
+		}
+	}
+	
 	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %v", err)

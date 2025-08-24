@@ -4,7 +4,7 @@ VERSION ?= dev
 all: build
 
 build:
-	go build -ldflags="-s -w -X main.version=$(VERSION)" -o $(BINARY) .
+	go build -ldflags="-s -w -X main.version=$(VERSION)" -o $(BINARY) ./src
 
 run: build
 	./$(BINARY) run
@@ -23,16 +23,16 @@ clean:
 
 .PHONY: fmt vet tidy test help
 fmt:
-	go fmt ./...
+	go fmt ./src/...
 
 vet:
-	go vet ./...
+	go vet ./src/...
 
 tidy:
 	go mod tidy
 
 test:
-	go test ./...
+	go test ./src/...
 
 help:
 	@echo "Targets: build run auth models config clean fmt vet tidy test"

@@ -9,10 +9,12 @@ COPY go.sum* ./
 RUN go mod download
 
 # Copy source
-COPY . .
+COPY src/ ./src/
+COPY go.mod ./
+COPY go.sum* ./
 
 # Build static binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -extldflags=-static -X main.version=${IMAGE_VERSION:-dev}" -o /out/github-copilot-svcs .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -extldflags=-static -X main.version=${IMAGE_VERSION:-dev}" -o /out/github-copilot-svcs ./src
 
 # Runtime stage
 FROM alpine:3.20 AS runtime

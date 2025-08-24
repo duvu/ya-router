@@ -76,7 +76,7 @@ make clean      # Remove the binary
 ```bash
 make build
 # or manually:
-go build -o github-copilot-svcs
+go build -o github-copilot-svcs ./src
 ```
 
 ### 2. Optional: Configure Timeouts
@@ -135,11 +135,12 @@ curl http://localhost:7071/health
 
 | Command | Description |
 |---------|-------------|
-| `run` / `start` | Start the proxy server |
+| `run` / `start` | Start the proxy server (use `--config-migrate` for migration) |
 | `auth`   | Authenticate with GitHub Copilot using device flow |
 | `status` | Show detailed authentication and token status |
 | `config` | Display current configuration details |
 | `models` | List all available AI models |
+| `migrate-config` | Migrate configuration file with new defaults |
 | `refresh`| Manually force token refresh |
 | `version`| Show version information |
 | `help`   | Show usage information |
@@ -271,6 +272,36 @@ The configuration is stored in `~/.local/share/github-copilot-svcs/config.json`:
 - `copilot_token`: GitHub Copilot API token
 - `expires_at`: Unix timestamp when the Copilot token expires
 - `refresh_in`: Seconds until token should be refreshed (typically 1500 = 25 minutes)
+- `allowed_models`: Array of allowed model names (default: ["gpt-4", "gpt-4.1", "gpt-5-mini"])
+- `default_model`: Default model to use (default: "gpt-5-mini")
+
+### Configuration Migration
+
+**Automatic Migration**: Starting from version 2.0, the server automatically runs configuration migration in `merge` mode at startup to ensure your configuration includes the latest settings while preserving authentication tokens.
+
+When upgrading to newer versions, you can control migration behavior:
+
+```bash
+# Default behavior - automatic merge at startup (recommended)
+./github-copilot-svcs run
+
+# Explicitly specify migration mode
+./github-copilot-svcs run --config-migrate merge
+
+# Disable migration at startup
+./github-copilot-svcs run --config-migrate none
+
+# Standalone migration command
+./github-copilot-svcs migrate-config --mode merge
+
+# Override mode - replaces entire config (you'll need to re-authenticate)
+./github-copilot-svcs migrate-config --mode override
+```
+
+**Migration Modes:**
+- `merge` (**default for `run` command**): Adds new configuration fields while preserving existing tokens and custom settings
+- `override`: Replaces the entire configuration with defaults (authentication tokens will be lost)
+- `none`: No migration
 
 ### Timeout Configuration
 
@@ -314,14 +345,14 @@ The proxy automatically maps common model names to GitHub Copilot models:
 
 | Input Model | GitHub Copilot Model | Provider |
 |-------------|---------------------|----------|
-| `gpt-4o`, `gpt-4.1` | As specified | OpenAI |
+| `gpt-4o`, `gpt-4.1`, `gpt-5-mini` | As specified | OpenAI |
 | `o3`, `o3-mini`, `o4-mini` | As specified | OpenAI |
 | `claude-3.5-sonnet`, `claude-3.7-sonnet`, `claude-3.7-sonnet-thought` | As specified | Anthropic |
 | `claude-opus-4`, `claude-sonnet-4` | As specified | Anthropic |
 | `gemini-2.5-pro`, `gemini-2.0-flash-001` | As specified | Google |
 
 **Supported Model Categories:**
-- **OpenAI GPT Models**: GPT-4o, GPT-4.1, O3/O4 reasoning models
+- **OpenAI GPT Models**: GPT-4o, GPT-4.1, GPT-5 Mini, O3/O4 reasoning models
 - **Anthropic Claude Models**: Claude 3.5/3.7 Sonnet variants, Claude Opus/Sonnet 4
 - **Google Gemini Models**: Gemini 2.0/2.5 Pro and Flash models
 
@@ -406,14 +437,21 @@ print(response)
 ### Project Structure
 ```
 github-copilot-svcs/
-├── main.go        # Main application and CLI
-├── auth.go        # GitHub Copilot authentication
-├── proxy.go       # Reverse proxy implementation
-├── server.go      # Server utilities and graceful shutdown
-├── transform.go   # Request/response transformation
-├── cli.go         # CLI command handling
-├── go.mod         # Go module definition
-└── README.md      # This documentation
+├── src/            # Go source code
+│   ├── main.go        # Main application and CLI
+│   ├── auth.go        # GitHub Copilot authentication
+│   ├── proxy.go       # Reverse proxy implementation
+│   ├── server.go      # Server utilities and graceful shutdown
+│   ├── transform.go   # Request/response transformation
+│   ├── cli.go         # CLI command handling
+│   ├── config.go      # Configuration and migration
+│   └── models.go      # Model handling and caching
+├── config.example.json  # Example configuration file
+├── go.mod              # Go module definition
+├── Makefile           # Build automation
+├── Dockerfile         # Container image build
+├── docker-compose.yml # Container orchestration
+└── README.md          # This documentation
 ```
 
 ### Building from Source
@@ -423,14 +461,14 @@ cd github-copilot-svcs
 make build
 # or manually:
 go mod tidy
-go build -o github-copilot-svcs
+go build -o github-copilot-svcs ./src
 ```
 
 ### Running Tests
 ```bash
 make test
 # or manually:
-go test ./...
+go test ./src/...
 ```
 
 ## License

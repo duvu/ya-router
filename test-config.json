@@ -1,8 +1,8 @@
 {
-  "port": 7071,
+  "port": 8010,
   "allowed_models": [
     "gpt-4",
-    "gpt-4.1",
+    "gpt-4.1", 
     "gpt-5-mini"
   ],
   "default_model": "gpt-5-mini",
