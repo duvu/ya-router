@@ -134,7 +134,7 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 			return fmt.Errorf("config migration failed: %v", err)
 		}
 	}
-	
+
 	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %v", err)

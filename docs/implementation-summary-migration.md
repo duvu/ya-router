@@ -14,7 +14,7 @@ This implementation fulfills the PRD requirements for automatic config migration
 
 ### 2. Enhanced Migration Implementation (✅ IMPLEMENTED)
 - **Safe token preservation**: Merge mode preserves `github_token`, `copilot_token`, `expires_at`, `refresh_in`
-- **Custom settings preserved**: Non-default ports and user customizations are maintained  
+- **Custom settings preserved**: Non-default ports and user customizations are maintained
 - **New defaults applied**: Latest model configurations and timeout settings are merged
 - **Atomic writes**: Uses existing `saveConfig()` for safe, atomic configuration updates
 - **Files**: [`src/config.go`](src/config.go), [`src/cli.go`](src/cli.go)
@@ -44,7 +44,7 @@ This implementation fulfills the PRD requirements for automatic config migration
 
 ### ✅ Acceptance Criteria Met:
 
-1. **AC-1 Startup Migration**: ✅ 
+1. **AC-1 Startup Migration**: ✅
    - `migrateConfig` called before services start
    - Visible in logs: "Running config migration (mode: merge)..."
 
@@ -111,14 +111,14 @@ docker-compose up github-copilot-svcs
 
 ### Core Implementation
 - [`src/main.go`](src/main.go) - Changed default migration mode
-- [`src/cli.go`](src/cli.go) - Enhanced logging and help text  
+- [`src/cli.go`](src/cli.go) - Enhanced logging and help text
 - [`src/config.go`](src/config.go) - Added test override mechanism
 
 ### Testing
 - [`src/config_test.go`](src/config_test.go) - Comprehensive test suite
 - [`test-docker-integration.sh`](test-docker-integration.sh) - Docker integration tests
 
-### Documentation  
+### Documentation
 - [`README.md`](README.md) - Updated migration documentation
 - [`docs/implementation-summary-migration.md`](docs/implementation-summary-migration.md) - This document
 
@@ -140,7 +140,7 @@ docker-compose up github-copilot-svcs
 
 All PRD requirements fulfilled:
 - ✅ Automatic migration at startup (default: merge)
-- ✅ Token and custom setting preservation  
+- ✅ Token and custom setting preservation
 - ✅ Comprehensive test coverage
 - ✅ Updated documentation
 - ✅ Docker integration support

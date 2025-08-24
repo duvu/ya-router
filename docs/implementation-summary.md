@@ -12,11 +12,11 @@
 - Updated `setDefaultModels()` function to include "gpt-5-mini" in default allowed models
 - Changed default model from "gpt-4.1" to "gpt-5-mini"
 
-**File: `models.go`** 
+**File: `models.go`**
 - Added "gpt-5-mini" to the `getDefaultModels()` fallback list
 
 **File: `README.md`**
-- Updated model mapping table to include "gpt-5-mini" 
+- Updated model mapping table to include "gpt-5-mini"
 - Updated supported model categories documentation
 
 **File: `cli.go`**
@@ -36,7 +36,7 @@
 2. Copy to production location: `cp config.example.json /path/to/production/config.json`
 
 ### For Existing Installations:
-1. **Backup current configuration**: 
+1. **Backup current configuration**:
    ```bash
    cp ~/.local/share/github-copilot-svcs/config.json ~/.local/share/github-copilot-svcs/config.json.backup
    ```
@@ -80,7 +80,7 @@ curl -X POST http://localhost:7071/v1/chat/completions \
 
 ## Files Modified:
 - `/home/beou/IdeaProjects/xProjects/github-copilot-svcs/config.example.json`
-- `/home/beou/IdeaProjects/xProjects/github-copilot-svcs/config.go` 
+- `/home/beou/IdeaProjects/xProjects/github-copilot-svcs/config.go`
 - `/home/beou/IdeaProjects/xProjects/github-copilot-svcs/models.go`
 - `/home/beou/IdeaProjects/xProjects/github-copilot-svcs/README.md`
 - `/home/beou/IdeaProjects/xProjects/github-copilot-svcs/cli.go`
@@ -89,7 +89,7 @@ curl -X POST http://localhost:7071/v1/chat/completions \
 
 All acceptance criteria from the PRD have been met:
 - ✅ AC-1: config.example.json updated with gpt-5-mini in allowed_models and as default_model
-- ✅ AC-2: README updated with model mapping for gpt-5-mini  
+- ✅ AC-2: README updated with model mapping for gpt-5-mini
 - ✅ AC-3: Models endpoint returns gpt-5-mini and service handles requests successfully
 - ✅ AC-4: Implementation documentation provided above
 

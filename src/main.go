@@ -16,7 +16,7 @@ func main() {
 	}
 
 	command := os.Args[1]
-	
+
 	switch command {
 	case "help", "--help", "-h":
 		printUsage()
@@ -31,14 +31,14 @@ func main() {
 		runCmd := flag.NewFlagSet("run", flag.ExitOnError)
 		configMigrate := runCmd.String("config-migrate", "merge", "Config migration mode: none, merge, override")
 		runCmd.Parse(os.Args[2:])
-		
+
 		// Validate migration mode
 		mode := ConfigMigrationMode(*configMigrate)
 		if mode != ConfigMigrationNone && mode != ConfigMigrationMerge && mode != ConfigMigrationOverride {
 			fmt.Printf("Invalid config migration mode: %s (valid options: none, merge, override)\n", *configMigrate)
 			os.Exit(1)
 		}
-		
+
 		if err := handleRunWithMigration(mode); err != nil {
 			fmt.Printf("Server failed: %v\n", err)
 			os.Exit(1)
@@ -48,13 +48,13 @@ func main() {
 		migrateCmd := flag.NewFlagSet("migrate-config", flag.ExitOnError)
 		configMode := migrateCmd.String("mode", "merge", "Migration mode: merge, override")
 		migrateCmd.Parse(os.Args[2:])
-		
+
 		mode := ConfigMigrationMode(*configMode)
 		if mode != ConfigMigrationMerge && mode != ConfigMigrationOverride {
 			fmt.Printf("Invalid migration mode: %s (valid options: merge, override)\n", *configMode)
 			os.Exit(1)
 		}
-		
+
 		if err := migrateConfig(mode); err != nil {
 			fmt.Printf("Config migration failed: %v\n", err)
 			os.Exit(1)

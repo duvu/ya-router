@@ -56,7 +56,7 @@ func getConfigPath() (string, error) {
 	if configPathOverride != "" {
 		return configPathOverride, nil
 	}
-	
+
 	usr, err := user.Current()
 	if err != nil {
 		return "", err
@@ -174,7 +174,7 @@ func saveConfig(cfg *Config) error {
 // loadDefaultConfigFromExample loads default configuration from config.example.json
 func loadDefaultConfigFromExample() (*Config, error) {
 	examplePath := "config.example.json"
-	
+
 	// Try to read from config.example.json if it exists
 	if _, err := os.Stat(examplePath); err == nil {
 		file, err := os.Open(examplePath)
@@ -194,10 +194,10 @@ func loadDefaultConfigFromExample() (*Config, error) {
 		if cfg.Port == 0 {
 			cfg.Port = 7071
 		}
-		
+
 		return &cfg, nil
 	}
-	
+
 	// Fallback to hardcoded defaults
 	cfg := &Config{Port: 7071}
 	setDefaultModels(cfg)
@@ -211,11 +211,11 @@ func mergeConfigs(existing *Config, defaults *Config, mode ConfigMigrationMode) 
 	case ConfigMigrationOverride:
 		// Complete override - use defaults but preserve nothing
 		return defaults
-		
+
 	case ConfigMigrationMerge:
 		// Merge mode - preserve sensitive fields, update others
 		merged := *defaults // Start with defaults
-		
+
 		// Preserve sensitive fields from existing config
 		if existing.GitHubToken != "" {
 			merged.GitHubToken = existing.GitHubToken
@@ -229,14 +229,14 @@ func mergeConfigs(existing *Config, defaults *Config, mode ConfigMigrationMode) 
 		if existing.RefreshIn > 0 {
 			merged.RefreshIn = existing.RefreshIn
 		}
-		
+
 		// Preserve port if it was customized (not default 7071)
 		if existing.Port != 0 && existing.Port != 7071 {
 			merged.Port = existing.Port
 		}
-		
+
 		return &merged
-		
+
 	case ConfigMigrationNone:
 		fallthrough
 	default:
@@ -250,38 +250,38 @@ func migrateConfig(mode ConfigMigrationMode) error {
 	if mode == ConfigMigrationNone {
 		return nil
 	}
-	
+
 	// Load existing configuration
 	existingConfig, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load existing config: %w", err)
 	}
-	
+
 	// Load default configuration from example
 	defaultConfig, err := loadDefaultConfigFromExample()
 	if err != nil {
 		return fmt.Errorf("failed to load default config: %w", err)
 	}
-	
+
 	// Check if migration is actually needed
 	path, err := getConfigPath()
 	if err != nil {
 		return err
 	}
-	
+
 	// If config file doesn't exist, no migration needed
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil
 	}
-	
+
 	// Perform migration
 	mergedConfig := mergeConfigs(existingConfig, defaultConfig, mode)
-	
+
 	// Save the merged configuration
 	if err := saveConfig(mergedConfig); err != nil {
 		return fmt.Errorf("failed to save migrated config: %w", err)
 	}
-	
+
 	fmt.Printf("Config migration completed (mode: %s)\n", mode)
 	return nil
 }

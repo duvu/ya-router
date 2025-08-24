@@ -11,18 +11,18 @@ import (
 func TestMergeConfigs(t *testing.T) {
 	// Test data setup
 	existingConfig := &Config{
-		Port:         8080,
-		GitHubToken:  "existing_github_token",
-		CopilotToken: "existing_copilot_token",
-		ExpiresAt:    1234567890,
-		RefreshIn:    1500,
+		Port:          8080,
+		GitHubToken:   "existing_github_token",
+		CopilotToken:  "existing_copilot_token",
+		ExpiresAt:     1234567890,
+		RefreshIn:     1500,
 		AllowedModels: []string{"gpt-4"},
 		DefaultModel:  "gpt-4",
 	}
 	existingConfig.Timeouts.HTTPClient = 200
 
 	defaultConfig := &Config{
-		Port:         7071,
+		Port:          7071,
 		AllowedModels: []string{"gpt-4", "gpt-4.1", "gpt-5-mini"},
 		DefaultModel:  "gpt-5-mini",
 	}
@@ -136,7 +136,7 @@ func TestLoadDefaultConfigFromExample(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Chdir(oldDir)
-	
+
 	if err := os.Chdir(tempDir); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestLoadDefaultConfigFromExample(t *testing.T) {
 func TestMigrateConfigIntegration(t *testing.T) {
 	// Create temporary directory for config
 	tempDir := t.TempDir()
-	
+
 	// Override config path for testing
 	testConfigPath := filepath.Join(tempDir, "config.json")
 	originalOverride := configPathOverride
@@ -189,11 +189,11 @@ func TestMigrateConfigIntegration(t *testing.T) {
 
 	// Create existing config with tokens
 	existingConfig := &Config{
-		Port:         8080,
-		GitHubToken:  "test_github_token",
-		CopilotToken: "test_copilot_token", 
-		ExpiresAt:    time.Now().Unix() + 3600,
-		RefreshIn:    1500,
+		Port:          8080,
+		GitHubToken:   "test_github_token",
+		CopilotToken:  "test_copilot_token",
+		ExpiresAt:     time.Now().Unix() + 3600,
+		RefreshIn:     1500,
 		AllowedModels: []string{"gpt-4"},
 		DefaultModel:  "gpt-4",
 	}
@@ -210,7 +210,7 @@ func TestMigrateConfigIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Chdir(oldDir)
-	
+
 	if err := os.Chdir(tempDir); err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestMigrateConfigIntegration(t *testing.T) {
 		t.Errorf("AllowedModels not updated: got %v", migratedConfig.AllowedModels)
 	}
 
-	// Verify custom port is preserved 
+	// Verify custom port is preserved
 	if migratedConfig.Port != 8080 {
 		t.Errorf("Custom port not preserved: got %d", migratedConfig.Port)
 	}
