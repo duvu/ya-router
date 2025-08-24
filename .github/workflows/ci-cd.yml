@@ -21,11 +21,11 @@ jobs:
 
       - name: Build
         run: |
-          go build -ldflags="-s -w -X main.version=${{ github.sha }}" -o github-copilot-svcs .
+          go build -ldflags="-s -w -X main.version=${{ github.sha }}" -o github-copilot-svcs ./src
 
       - name: Run unit tests
         run: |
-          go test ./... || true
+          go test ./src/... || true
 
   deploy:
     name: GitHub Copilot Services - Build, Publish, and Deploy
