@@ -145,6 +145,17 @@ curl http://localhost:7071/health
 | `version`| Show version information |
 | `help`   | Show usage information |
 
+### Listing models (including newly added free models)
+
+This proxy lists models directly from your GitHub Copilot account:
+
+- CLI: `./github-copilot-svcs models`
+- HTTP: `GET http://localhost:7071/v1/models`
+
+Upstream endpoint used: `GET https://api.githubcopilot.com/models` (requires IDE headers).
+
+To avoid querying the upstream API continuously, the server caches the upstream model list in-memory for **24 hours** (fallback results are cached briefly).
+
 ### Enhanced Status Monitoring
 
 The `status` command now provides detailed token information:
@@ -248,6 +259,15 @@ The configuration is stored in `~/.local/share/github-copilot-svcs/config.json`:
   "port": 7071,
   "github_token": "gho_...",
   "copilot_token": "ghu_...",
+
+  ### Model configuration behavior
+
+  - `default_model`: The proxy **enforces** this model for all chat requests (clients cannot override it).
+  - `allowed_models`: Controls what is returned by `GET /v1/models` and what appears in filtered model listings.
+    - If the field is **missing** in your config, safe defaults are applied.
+    - If you set it to an **explicit empty list** (`"allowed_models": []`), the proxy will treat it as **allow all discovered models**.
+
+  This makes it easy to pick up newly introduced models without needing to keep a hard-coded allowlist updated.
   "expires_at": 1720000000,
   "refresh_in": 1500,
   "timeouts": {

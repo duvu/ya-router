@@ -105,7 +105,10 @@ func loadConfig() (*Config, error) {
 
 // setDefaultModels sets default model configuration if not specified
 func setDefaultModels(cfg *Config) {
-	if len(cfg.AllowedModels) == 0 {
+	// IMPORTANT: distinguish between "not provided" (nil) and "provided empty" ([]).
+	// - nil  => apply safe defaults
+	// - []   => user explicitly wants to allow all discovered models
+	if cfg.AllowedModels == nil {
 		cfg.AllowedModels = []string{"gpt-4", "gpt-4.1", "gpt-5-mini"}
 	}
 	if cfg.DefaultModel == "" {

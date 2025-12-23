@@ -177,6 +177,25 @@ func TestLoadDefaultConfigFromExample(t *testing.T) {
 	}
 }
 
+func TestSetDefaultModels_DoesNotOverrideExplicitEmptyAllowedModels(t *testing.T) {
+	cfg := &Config{
+		AllowedModels: []string{},
+		DefaultModel:  "",
+	}
+
+	setDefaultModels(cfg)
+
+	if cfg.AllowedModels == nil {
+		t.Fatalf("Expected AllowedModels to remain an explicit empty slice, got nil")
+	}
+	if len(cfg.AllowedModels) != 0 {
+		t.Fatalf("Expected AllowedModels to remain empty, got %v", cfg.AllowedModels)
+	}
+	if cfg.DefaultModel != "gpt-5-mini" {
+		t.Fatalf("Expected DefaultModel to be defaulted to gpt-5-mini, got %s", cfg.DefaultModel)
+	}
+}
+
 func TestMigrateConfigIntegration(t *testing.T) {
 	// Create temporary directory for config
 	tempDir := t.TempDir()

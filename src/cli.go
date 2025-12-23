@@ -206,10 +206,9 @@ func handleModels() error {
 		return fmt.Errorf("authentication failed: %v", err)
 	}
 
-	// Fetch models
-	models, err := fetchModelsFromModelsDev()
+	models, err := fetchModelsFromCopilotAPI(cfg.CopilotToken)
 	if err != nil {
-		fmt.Printf("Failed to fetch models from models.dev: %v\n", err)
+		fmt.Printf("Failed to fetch models from GitHub Copilot API: %v\n", err)
 		fmt.Println("Using default models:")
 		defaultModels := getDefaultModels()
 		for _, model := range defaultModels {
@@ -218,8 +217,20 @@ func handleModels() error {
 		return nil
 	}
 
-	fmt.Printf("Available models (%d total):\n", len(models.Data))
-	for _, model := range models.Data {
+	filtered := filterAllowedModels(models, cfg)
+
+	fmt.Printf("Model list source: copilot\n")
+	fmt.Printf("Default model: %s\n", cfg.DefaultModel)
+	if cfg.AllowedModels == nil {
+		fmt.Printf("Allowed models: <not set> (defaults will apply)\n")
+	} else if len(cfg.AllowedModels) == 0 {
+		fmt.Printf("Allowed models: [] (allow all discovered models)\n")
+	} else {
+		fmt.Printf("Allowed models: %v\n", cfg.AllowedModels)
+	}
+
+	fmt.Printf("Available models (%d total, %d after allowed-model filter):\n", len(models.Data), len(filtered.Data))
+	for _, model := range filtered.Data {
 		fmt.Printf("  - %s (%s)\n", model.ID, model.OwnedBy)
 	}
 
