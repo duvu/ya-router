@@ -136,7 +136,7 @@ func modelsHandler(cfg *Config) http.HandlerFunc {
 		result := modelsCoalescingCache.CoalesceRequest(requestKey, func() interface{} {
 			now := time.Now()
 			if modelList, ok := getCachedModelsIfFresh(now); ok {
-				return filterAllowedModels(modelList, cfg)
+				return modelList
 			}
 
 			log.Printf("Refreshing models cache from GitHub Copilot API...")
@@ -146,7 +146,7 @@ func modelsHandler(cfg *Config) http.HandlerFunc {
 				fallback := &ModelList{Object: "list", Data: getDefaultModels()}
 				// Short cache for fallback to avoid sticking forever if token appears.
 				setModelsCache(fallback, 5*time.Minute)
-				return filterAllowedModels(fallback, cfg)
+				return fallback
 			}
 
 			modelList, err := fetchModelsFromCopilotAPI(cfg.CopilotToken)
@@ -154,12 +154,12 @@ func modelsHandler(cfg *Config) http.HandlerFunc {
 				log.Printf("Failed to fetch models from GitHub Copilot API: %v, using default models", err)
 				fallback := &ModelList{Object: "list", Data: getDefaultModels()}
 				setModelsCache(fallback, 5*time.Minute)
-				return filterAllowedModels(fallback, cfg)
+				return fallback
 			}
 
 			setModelsCache(modelList, 24*time.Hour)
 			log.Printf("Loaded and cached %d models (ttl=24h)", len(modelList.Data))
-			return filterAllowedModels(modelList, cfg)
+			return modelList
 		})
 
 		modelList := result.(*ModelList)

@@ -217,8 +217,6 @@ func handleModels() error {
 		return nil
 	}
 
-	filtered := filterAllowedModels(models, cfg)
-
 	fmt.Printf("Model list source: copilot\n")
 	fmt.Printf("Default model: %s\n", cfg.DefaultModel)
 	if cfg.AllowedModels == nil {
@@ -229,9 +227,9 @@ func handleModels() error {
 		fmt.Printf("Allowed models: %v\n", cfg.AllowedModels)
 	}
 
-	fmt.Printf("Available models (%d total, %d after allowed-model filter):\n", len(models.Data), len(filtered.Data))
-	for _, model := range filtered.Data {
-		fmt.Printf("  - %s (%s)\n", model.ID, model.OwnedBy)
+	fmt.Printf("Available models (%d total):\n", len(models.Data))
+	for _, model := range models.Data {
+		fmt.Printf("  - %s (%s) %s\n", model.ID, model.Vendor, model.Name)
 	}
 
 	return nil

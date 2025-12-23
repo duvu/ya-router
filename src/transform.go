@@ -72,4 +72,6 @@ type Model struct {
 	Object  string `json:"object"`
 	Created int64  `json:"created"`
 	OwnedBy string `json:"owned_by"`
+	Name    string `json:"name,omitempty"`
+	Vendor  string `json:"vendor,omitempty"`
 }
