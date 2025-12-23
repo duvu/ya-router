@@ -153,6 +153,8 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", modelsHandler(cfg))
 	mux.HandleFunc("/v1/models/", modelsHandler(cfg))
+	mux.HandleFunc("/v1/embeddings", proxyHandler(cfg))
+	mux.HandleFunc("/v1/embeddings/", proxyHandler(cfg))
 	mux.HandleFunc("/v1/chat/completions", proxyHandler(cfg))
 	mux.HandleFunc("/v1/chat/completions/", proxyHandler(cfg))
 	mux.HandleFunc("/health", healthHandler)
@@ -182,6 +184,7 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 	fmt.Printf("Starting GitHub Copilot proxy server on port %d...\n", port)
 	fmt.Printf("Endpoints:\n")
 	fmt.Printf("  - Models: http://localhost:%d/v1/models\n", port)
+	fmt.Printf("  - Embeddings: http://localhost:%d/v1/embeddings\n", port)
 	fmt.Printf("  - Chat: http://localhost:%d/v1/chat/completions\n", port)
 	fmt.Printf("  - Health: http://localhost:%d/health\n", port)
 

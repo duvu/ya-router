@@ -470,18 +470,29 @@ func processProxyRequest(cfg *Config, w http.ResponseWriter, r *http.Request, ct
 	defer r.Body.Close()
 
 	// Transform and validate model if this is a chat completion request
-	if r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/chat/completions/" {
+	isChatCompletions := r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/chat/completions/"
+	isEmbeddings := r.URL.Path == "/v1/embeddings" || r.URL.Path == "/v1/embeddings/"
+	embedModel := ""
+	if isChatCompletions {
 		body, err = validateAndTransformRequestModel(body, cfg)
 		if err != nil {
 			log.Printf("Error validating request model: %v", err)
 			return fmt.Errorf("error processing request")
 		}
 	}
+	if isEmbeddings {
+		body, embedModel = normalizeEmbeddingsRequestBody(body)
+	}
 
 	// Transform path
-	targetPath := "/chat/completions"
-	if r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/chat/completions/" {
+	var targetPath string
+	switch {
+	case isChatCompletions:
 		targetPath = "/chat/completions"
+	case isEmbeddings:
+		targetPath = "/embeddings"
+	default:
+		return fmt.Errorf("unsupported path: %s", r.URL.Path)
 	}
 
 	// Create new request to GitHub Copilot with context
@@ -503,7 +514,11 @@ func processProxyRequest(cfg *Config, w http.ResponseWriter, r *http.Request, ct
 	req.Header.Set("Editor-Version", "vscode/1.99.3")
 	req.Header.Set("Editor-Plugin-Version", "copilot-chat/0.26.7")
 	req.Header.Set("Copilot-Integration-Id", "vscode-chat")
-	req.Header.Set("Openai-Intent", "conversation-edits")
+	if isEmbeddings {
+		req.Header.Set("Openai-Intent", "embeddings")
+	} else {
+		req.Header.Set("Openai-Intent", "conversation-edits")
+	}
 	req.Header.Set("X-Initiator", "user")
 
 	// Make the request with retry logic using shared client
@@ -523,6 +538,44 @@ func processProxyRequest(cfg *Config, w http.ResponseWriter, r *http.Request, ct
 	}
 
 	log.Printf("Response: %d - Content-Type: %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+
+	// Embeddings responses are small; buffer and adjust to OpenAI-compatible shape.
+	if isEmbeddings && resp.Header.Get("Content-Type") != "text/event-stream" {
+		respBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			log.Printf("Error reading embeddings response: %v", readErr)
+			return readErr
+		}
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			respBody = ensureEmbeddingsResponseCompat(respBody, embedModel)
+		}
+
+		// Copy response headers, but drop Content-Length since body may have changed.
+		for key, values := range resp.Header {
+			if key == "Content-Length" {
+				continue
+			}
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+
+		// Add CORS headers
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
+
+		w.WriteHeader(resp.StatusCode)
+		_, writeErr := w.Write(respBody)
+		if writeErr != nil {
+			log.Printf("Error writing embeddings response: %v", writeErr)
+			return writeErr
+		}
+
+		log.Printf("processProxyRequest completed successfully")
+		return nil
+	}
 
 	// Copy response headers
 	for key, values := range resp.Header {
