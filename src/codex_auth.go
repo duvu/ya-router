@@ -78,8 +78,13 @@ func codexAuthenticate(auth *CodexAuthState, save func() error) error {
 	}
 
 	// Step 1: request device code via OpenAI's custom endpoint.
+	// The scope must include api.responses.write so the resulting bearer
+	// token is accepted by api.openai.com/v1/responses.
 	apiBase := codexAuthIssuer + "/api/accounts"
-	ucBody := map[string]string{"client_id": codexOAuthClientID}
+	ucBody := map[string]string{
+		"client_id": codexOAuthClientID,
+		"scope":     "openid offline_access model.request api.responses.write",
+	}
 	ucJSON, _ := json.Marshal(ucBody)
 
 	req, err := http.NewRequest("POST", apiBase+"/deviceauth/usercode",

@@ -241,7 +241,7 @@ func printCodexStatus(cfg *Config) {
 		fmt.Printf("  Auth: ✗ Not authenticated — run '%s auth codex'\n", os.Args[0])
 	}
 	fmt.Printf("  Mode: %s\n", auth.Mode)
-	fmt.Printf("  Backend: %s\n", defaultChatGPTBaseURL)
+	fmt.Printf("  Backend: %s\n", defaultPlatformBaseURL)
 	fmt.Println()
 }
 
