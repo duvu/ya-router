@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	defaultChatGPTBaseURL  = "https://chatgpt.com/backend-api/"
+	defaultChatGPTBaseURL  = "https://chatgpt.com/backend-api/codex/"
 	defaultPlatformBaseURL = "https://api.openai.com/v1"
 )
 
@@ -312,6 +312,7 @@ func (p *CodexProvider) ProxyRequest(
 	}
 
 	// Chat: convert to Responses API format.
+	streaming := isStreamingRequest(body)
 	responsesBody, err := chatToResponsesBody(body)
 	if err != nil {
 		log.Printf("[codex] chat→responses conversion failed: %v — falling back to classic", err)
@@ -321,10 +322,11 @@ func (p *CodexProvider) ProxyRequest(
 	var upstreamURL string
 	if chatgpt {
 		upstreamURL = defaultChatGPTBaseURL + "responses"
+		// chatgpt.com/backend-api/codex/responses requires stream=true and store=false.
+		responsesBody = patchBodyForChatGPT(responsesBody)
 	} else {
 		upstreamURL = defaultPlatformBaseURL + "/responses"
 	}
-	streaming := isStreamingRequest(body)
 	log.Printf("[codex] proxying chat → %s (body %d bytes, stream=%v, mode=%s)",
 		upstreamURL, len(responsesBody), streaming, map[bool]string{true: "chatgpt", false: "api_key"}[chatgpt])
 
@@ -357,7 +359,7 @@ func (p *CodexProvider) ProxyRequest(
 		p.cb.onFailure()
 	}
 
-	return handleResponsesAPIResponse(w, resp)
+	return handleResponsesAPIResponse(w, resp, streaming)
 }
 
 // proxyClassic sends a request to a classic OpenAI Platform endpoint

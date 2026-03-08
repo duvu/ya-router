@@ -25,25 +25,58 @@ import (
 //
 // Key mapping:
 //
-//	messages      → input
-//	max_tokens    → max_output_tokens
-//	n, stop       → dropped (unsupported in Responses API)
-//	stream        → preserved
-//	temperature   → preserved
-//	top_p         → preserved
-//	model         → preserved
+//	messages (system)    → instructions (joined string)
+//	messages (non-system)→ input (array)
+//	max_tokens           → max_output_tokens
+//	n, stop              → dropped (unsupported in Responses API)
+//	stream               → preserved
+//	temperature          → preserved
+//	top_p                → preserved
+//	model                → preserved
 func chatToResponsesBody(chatBody []byte) ([]byte, error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(chatBody, &raw); err != nil {
 		return nil, fmt.Errorf("unmarshal chat body: %w", err)
 	}
 
-	out := make(map[string]json.RawMessage, len(raw))
+	out := make(map[string]json.RawMessage, len(raw)+2)
 
 	for k, v := range raw {
 		switch k {
 		case "messages":
-			out["input"] = v
+			// Split system messages → instructions; the rest → input array.
+			var msgs []struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			}
+			if err := json.Unmarshal(v, &msgs); err != nil {
+				// Fallback: pass through as-is.
+				out["input"] = v
+				break
+			}
+			var instrParts []string
+			var inputMsgs []map[string]json.RawMessage
+			for _, m := range msgs {
+				if m.Role == "system" {
+					var text string
+					if json.Unmarshal(m.Content, &text) == nil {
+						instrParts = append(instrParts, text)
+					}
+				} else {
+					roleJSON, _ := json.Marshal(m.Role)
+					inputMsgs = append(inputMsgs, map[string]json.RawMessage{
+						"role":    roleJSON,
+						"content": m.Content,
+					})
+				}
+			}
+			instrJSON, _ := json.Marshal(strings.Join(instrParts, "\n"))
+			out["instructions"] = instrJSON
+			if inputMsgs == nil {
+				inputMsgs = []map[string]json.RawMessage{}
+			}
+			inputJSON, _ := json.Marshal(inputMsgs)
+			out["input"] = inputJSON
 		case "max_tokens", "max_completion_tokens":
 			out["max_output_tokens"] = v
 		case "n", "stop", "logprobs", "top_logprobs", "logit_bias",
@@ -54,6 +87,11 @@ func chatToResponsesBody(chatBody []byte) ([]byte, error) {
 		default:
 			out[k] = v
 		}
+	}
+
+	// Ensure instructions is always present (required by chatgpt.com endpoint).
+	if _, ok := out["instructions"]; !ok {
+		out["instructions"], _ = json.Marshal("")
 	}
 
 	return json.Marshal(out)
@@ -341,9 +379,69 @@ func isStreamingRequest(body []byte) bool {
 	}
 }
 
+// patchBodyForChatGPT adjusts a Responses API body for chatgpt.com/backend-api/codex/responses:
+//   - forces "stream": true  (endpoint requires it)
+//   - forces "store": false  (endpoint requires it)
+//   - removes "max_output_tokens" (unsupported by this endpoint)
+func patchBodyForChatGPT(body []byte) []byte {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	m["stream"], _ = json.Marshal(true)
+	m["store"], _ = json.Marshal(false)
+	delete(m, "max_output_tokens")
+	b, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return b
+}
+
+// aggregateSSEToCompletion reads a Responses API SSE stream and returns
+// the response JSON from the response.completed event, suitable for
+// passing to responsesToChatCompletion.
+func aggregateSSEToCompletion(r io.Reader) ([]byte, error) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 512*1024)
+
+	var eventType string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "event: ") {
+			eventType = strings.TrimPrefix(line, "event: ")
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+
+		switch eventType {
+		case "response.completed":
+			var ev struct {
+				Response json.RawMessage `json:"response"`
+			}
+			if err := json.Unmarshal([]byte(data), &ev); err != nil {
+				return nil, fmt.Errorf("parse response.completed: %w", err)
+			}
+			return ev.Response, nil
+		case "error":
+			return nil, fmt.Errorf("upstream SSE error: %s", data)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading responses SSE: %w", err)
+	}
+	return nil, fmt.Errorf("no response.completed event in SSE stream")
+}
+
 // handleResponsesAPIResponse processes a Responses API HTTP response and
 // writes the translated Chat Completions output to w.
-func handleResponsesAPIResponse(w http.ResponseWriter, resp *http.Response) error {
+// clientWantsStream indicates whether the original client request asked
+// for streaming; when forcing stream=true upstream (chatgpt.com mode) but
+// the client wants a blocking response, we aggregate the SSE here.
+func handleResponsesAPIResponse(w http.ResponseWriter, resp *http.Response, clientWantsStream bool) error {
 	ct := resp.Header.Get("Content-Type")
 	isSSE := strings.Contains(ct, "text/event-stream")
 
@@ -361,6 +459,26 @@ func handleResponsesAPIResponse(w http.ResponseWriter, resp *http.Response) erro
 	}
 
 	if isSSE {
+		if !clientWantsStream {
+			// Client requested a blocking response but upstream was forced to
+			// stream (chatgpt.com mode).  Aggregate the SSE into a single
+			// Chat Completions response object.
+			respJSON, err := aggregateSSEToCompletion(resp.Body)
+			if err != nil {
+				return fmt.Errorf("aggregate SSE: %w", err)
+			}
+			chatBody, err := responsesToChatCompletion(respJSON)
+			if err != nil {
+				log.Printf("[responses_adapter] SSE aggregate conversion failed: %v — forwarding raw", err)
+				chatBody = respJSON
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Headers", "*")
+			w.WriteHeader(http.StatusOK)
+			_, writeErr := io.Copy(w, bytes.NewReader(chatBody))
+			return writeErr
+		}
 		return streamResponsesAsChat(w, resp)
 	}
 
