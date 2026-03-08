@@ -78,12 +78,14 @@ func codexAuthenticate(auth *CodexAuthState, save func() error) error {
 	}
 
 	// Step 1: request device code via OpenAI's custom endpoint.
-	// The scope must include api.responses.write so the resulting bearer
-	// token is accepted by api.openai.com/v1/responses.
+	// The scope must include model.request for Codex access.
+	// api.responses.write is NOT requested here — it is only available on
+	// Platform API clients and causes no-op or errors with the ChatGPT
+	// device-code OAuth client (app_EMoamEEZ73f0CkXaXp7hrann).
 	apiBase := codexAuthIssuer + "/api/accounts"
 	ucBody := map[string]string{
 		"client_id": codexOAuthClientID,
-		"scope":     "openid offline_access model.request api.responses.write",
+		"scope":     "openid offline_access model.request",
 	}
 	ucJSON, _ := json.Marshal(ucBody)
 
@@ -163,6 +165,18 @@ func codexAuthenticate(auth *CodexAuthState, save func() error) error {
 
 	auth.AccessToken = tokens.AccessToken
 	auth.RefreshToken = tokens.RefreshToken
+	// Extract account_id from id_token JWT — required for the
+	// chatgpt-account-id header sent to chatgpt.com/backend-api/.
+	if tokens.IDToken != "" {
+		if aid := extractAccountIDFromJWT(tokens.IDToken); aid != "" {
+			auth.AccountID = aid
+			log.Printf("[codex] extracted account_id from id_token: %s", aid)
+		} else {
+			log.Printf("[codex] warning: id_token present but no chatgpt_account_id claim found")
+		}
+	} else {
+		log.Printf("[codex] warning: no id_token in token exchange response")
+	}
 	if tokens.ExpiresIn > 0 {
 		auth.ExpiresAt = time.Now().Unix() + tokens.ExpiresIn
 	} else {
@@ -325,6 +339,13 @@ func codexRefreshToken(auth *CodexAuthState, save func() error) error {
 		auth.AccessToken = rr.AccessToken
 		if rr.RefreshToken != "" {
 			auth.RefreshToken = rr.RefreshToken
+		}
+		// Update account_id if the refresh response includes a new id_token.
+		if rr.IDToken != "" {
+			if aid := extractAccountIDFromJWT(rr.IDToken); aid != "" {
+				auth.AccountID = aid
+				log.Printf("[codex] updated account_id from refreshed id_token: %s", aid)
+			}
 		}
 		if rr.ExpiresIn > 0 {
 			auth.ExpiresAt = time.Now().Unix() + rr.ExpiresIn
