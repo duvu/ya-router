@@ -137,9 +137,11 @@ body []byte,
 cap Capability,
 ) error {
 if err := p.EnsureAuthenticated(ctx); err != nil {
+log.Printf("[copilot] auth failed: %v", err)
 return fmt.Errorf("copilot auth: %w", err)
 }
 if !p.cb.canExecute() {
+log.Printf("[copilot] circuit breaker OPEN — rejecting request")
 return fmt.Errorf("copilot circuit breaker is open")
 }
 
@@ -154,7 +156,10 @@ if isEmbed {
 targetPath = "/embeddings"
 }
 
-req, err := http.NewRequestWithContext(ctx, r.Method, copilotAPIBase+targetPath, bytes.NewBuffer(body))
+upstreamURL := copilotAPIBase + targetPath
+log.Printf("[copilot] proxying %s → %s (body %d bytes)", cap, upstreamURL, len(body))
+
+req, err := http.NewRequestWithContext(ctx, r.Method, upstreamURL, bytes.NewBuffer(body))
 if err != nil {
 return err
 }
@@ -162,14 +167,25 @@ p.setCopilotHeaders(req, p.authState().CopilotToken, cap)
 
 resp, err := makeRequestWithRetry(sharedHTTPClient, req, body)
 if err != nil {
+log.Printf("[copilot] upstream error: %v", err)
 p.cb.onFailure()
 return err
 }
 defer resp.Body.Close()
 
+log.Printf("[copilot] upstream responded HTTP %d (Content-Type: %s)",
+	resp.StatusCode, resp.Header.Get("Content-Type"))
+
+if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+	peekBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	log.Printf("[copilot] upstream %d response: %s", resp.StatusCode, string(peekBody))
+	resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(peekBody), resp.Body))
+}
+
 if resp.StatusCode < 500 {
 p.cb.onSuccess()
 } else {
+log.Printf("[copilot] upstream 5xx error — circuit breaker failure")
 p.cb.onFailure()
 }
 

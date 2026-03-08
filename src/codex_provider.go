@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -89,18 +90,24 @@ func (p *CodexProvider) EnsureAuthenticated(_ context.Context) error {
 
 	// device_code mode — token stored in config.
 	if auth.AccessToken == "" {
+		log.Printf("[codex] no access token available")
 		return fmt.Errorf("no Codex token — run 'auth codex' first")
 	}
 
 	// Check expiry and refresh if needed.
 	now := time.Now().Unix()
 	if auth.ExpiresAt > 0 {
+		remaining := auth.ExpiresAt - now
 		threshold := int64(300) // 5 min safety margin
-		if auth.ExpiresAt-now <= threshold {
+		if remaining <= threshold {
+			log.Printf("[codex] token expiring in %ds (threshold=%ds), refreshing...", remaining, threshold)
 			if err := codexRefreshToken(auth, p.save); err != nil {
-				log.Printf("Codex refresh failed, re-authenticating: %v", err)
+				log.Printf("[codex] refresh failed: %v — re-authenticating", err)
 				return codexAuthenticate(auth, p.save)
 			}
+			log.Printf("[codex] token refreshed, new expiry in %ds", auth.ExpiresAt-time.Now().Unix())
+		} else {
+			log.Printf("[codex] token valid, expires in %dm%ds", remaining/60, remaining%60)
 		}
 	}
 	return nil
@@ -209,9 +216,11 @@ func (p *CodexProvider) ProxyRequest(
 	cap Capability,
 ) error {
 	if err := p.EnsureAuthenticated(ctx); err != nil {
+		log.Printf("[codex] auth failed: %v", err)
 		return fmt.Errorf("codex auth: %w", err)
 	}
 	if !p.cb.canExecute() {
+		log.Printf("[codex] circuit breaker OPEN — rejecting request")
 		return fmt.Errorf("codex circuit breaker is open")
 	}
 
@@ -220,9 +229,13 @@ func (p *CodexProvider) ProxyRequest(
 		targetPath = "/embeddings"
 	}
 
+	upstreamURL := codexAPIBase + targetPath
+	log.Printf("[codex] proxying %s → %s (body %d bytes, mode=%s)",
+		cap, upstreamURL, len(body), p.authState().Mode)
+
 	token := p.currentToken()
 	req, err := http.NewRequestWithContext(ctx, r.Method,
-		codexAPIBase+targetPath, bytes.NewBuffer(body))
+		upstreamURL, bytes.NewBuffer(body))
 	if err != nil {
 		return err
 	}
@@ -233,14 +246,27 @@ func (p *CodexProvider) ProxyRequest(
 
 	resp, err := makeRequestWithRetry(sharedHTTPClient, req, body)
 	if err != nil {
+		log.Printf("[codex] upstream error: %v", err)
 		p.cb.onFailure()
 		return err
 	}
 	defer resp.Body.Close()
 
+	log.Printf("[codex] upstream responded HTTP %d (Content-Type: %s)",
+		resp.StatusCode, resp.Header.Get("Content-Type"))
+
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		// Log client error response body for debugging (capped at 512 bytes).
+		peekBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		log.Printf("[codex] upstream %d response: %s", resp.StatusCode, string(peekBody))
+		// Re-create body for streaming to client.
+		resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(peekBody), resp.Body))
+	}
+
 	if resp.StatusCode < 500 {
 		p.cb.onSuccess()
 	} else {
+		log.Printf("[codex] upstream 5xx error — circuit breaker failure")
 		p.cb.onFailure()
 	}
 	return streamResponse(w, resp)

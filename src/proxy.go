@@ -230,27 +230,37 @@ for _, value := range values {
 retryReq.Header.Add(key, value)
 }
 }
-log.Printf("Upstream attempt %d/%d", attempt, maxChatRetries)
+log.Printf("Upstream attempt %d/%d → %s %s", attempt, maxChatRetries, retryReq.Method, retryReq.URL.String())
+start := time.Now()
 
 resp, err := client.Do(retryReq)
+elapsed := time.Since(start)
 if err != nil {
+log.Printf("Upstream attempt %d/%d FAILED after %s: %v", attempt, maxChatRetries, elapsed, err)
 lastErr = err
 if attempt == maxChatRetries {
 return nil, err
 }
-time.Sleep(time.Duration(baseChatRetryDelay*attempt*attempt) * time.Second)
+backoff := time.Duration(baseChatRetryDelay*attempt*attempt) * time.Second
+log.Printf("Retrying in %s...", backoff)
+time.Sleep(backoff)
 continue
 }
 
 lastResp = resp
+log.Printf("Upstream attempt %d/%d → HTTP %d (%s, Content-Type: %s)",
+	attempt, maxChatRetries, resp.StatusCode, elapsed, resp.Header.Get("Content-Type"))
 if !isRetriableError(resp.StatusCode, nil) {
 return resp, nil
 }
+log.Printf("Upstream returned retriable status %d, attempt %d/%d", resp.StatusCode, attempt, maxChatRetries)
 if attempt == maxChatRetries {
 return resp, nil
 }
 resp.Body.Close()
-time.Sleep(time.Duration(baseChatRetryDelay*attempt*attempt) * time.Second)
+backoff := time.Duration(baseChatRetryDelay*attempt*attempt) * time.Second
+log.Printf("Retrying in %s...", backoff)
+time.Sleep(backoff)
 }
 return lastResp, lastErr
 }
@@ -378,30 +388,46 @@ w http.ResponseWriter,
 r *http.Request,
 ctx context.Context,
 ) error {
+reqStart := time.Now()
 cap, err := capabilityFromPath(r.URL.Path)
 if err != nil {
+log.Printf("[REQ] %s %s → unsupported path", r.Method, r.URL.Path)
 return err
 }
 
 body, err := io.ReadAll(r.Body)
 if err != nil {
+log.Printf("[REQ] %s %s → body read error: %v", r.Method, r.URL.Path, err)
 return fmt.Errorf("reading request body: %w", err)
 }
 defer r.Body.Close()
 
 requestedModel := extractModelFromBody(body)
+log.Printf("[REQ] %s %s model=%q capability=%s body_size=%d from=%s",
+	r.Method, r.URL.Path, requestedModel, cap, len(body), r.RemoteAddr)
 
 route, err := router.Resolve(ctx, requestedModel, cap)
 if err != nil {
+log.Printf("[REQ] %s %s model=%q → routing FAILED: %v", r.Method, r.URL.Path, requestedModel, err)
 return fmt.Errorf("routing: %w", err)
 }
 
 if route.ResolvedModel != requestedModel {
+log.Printf("[REQ] model rewritten: %q → %q", requestedModel, route.ResolvedModel)
 body = patchBodyModel(body, route.ResolvedModel)
 }
 
-log.Printf("Routing %s %s model=%q → %s (upstream=%q)",
+log.Printf("[REQ] Routing %s %s model=%q → provider=%s upstream_model=%q",
 r.Method, r.URL.Path, requestedModel, route.Provider.ID(), route.ResolvedModel)
 
-return route.Provider.ProxyRequest(ctx, w, r, body, cap)
+proxyErr := route.Provider.ProxyRequest(ctx, w, r, body, cap)
+elapsed := time.Since(reqStart)
+if proxyErr != nil {
+	log.Printf("[REQ] COMPLETED %s %s model=%q provider=%s elapsed=%s ERROR: %v",
+		r.Method, r.URL.Path, requestedModel, route.Provider.ID(), elapsed, proxyErr)
+} else {
+	log.Printf("[REQ] COMPLETED %s %s model=%q provider=%s elapsed=%s OK",
+		r.Method, r.URL.Path, requestedModel, route.Provider.ID(), elapsed)
+}
+return proxyErr
 }

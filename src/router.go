@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -32,6 +33,7 @@ func NewModelRouter(registry *ProviderRegistry, routing RoutingConfig) *ModelRou
 func (r *ModelRouter) Resolve(ctx context.Context, requestedModel string, cap Capability) (*RouteResult, error) {
 	model := requestedModel
 	if model == "" {
+		log.Printf("[router] no model in request, using default=%q", r.routing.DefaultModel)
 		model = r.routing.DefaultModel
 	}
 
@@ -39,12 +41,14 @@ func (r *ModelRouter) Resolve(ctx context.Context, requestedModel string, cap Ca
 	if entry, ok := r.routing.ModelMap[model]; ok {
 		p, err := r.registry.Get(ProviderID(entry.Provider))
 		if err != nil {
+			log.Printf("[router] model_map hit for %q → provider %q NOT FOUND", model, entry.Provider)
 			return nil, fmt.Errorf("model %q maps to unknown provider %q", model, entry.Provider)
 		}
 		upstream := entry.UpstreamModel
 		if upstream == "" {
 			upstream = model
 		}
+		log.Printf("[router] model_map hit: %q → provider=%s upstream=%q", model, p.ID(), upstream)
 		return &RouteResult{Provider: p, ResolvedModel: upstream}, nil
 	}
 
@@ -53,10 +57,17 @@ func (r *ModelRouter) Resolve(ctx context.Context, requestedModel string, cap Ca
 
 	switch len(candidates) {
 	case 0:
+		log.Printf("[router] model %q not in any catalog, falling back to default provider", model)
 		return r.defaultProviderRoute(model)
 	case 1:
+		log.Printf("[router] catalog match: %q → provider=%s", model, candidates[0].Provider.ID())
 		return &candidates[0], nil
 	default:
+		providerNames := make([]string, len(candidates))
+		for i, c := range candidates {
+			providerNames[i] = string(c.Provider.ID())
+		}
+		log.Printf("[router] model %q AMBIGUOUS: found in providers %v", model, providerNames)
 		return nil, fmt.Errorf(
 			"model %q is ambiguous: found in %d providers; add an explicit routing.model_map entry",
 			model, len(candidates),
