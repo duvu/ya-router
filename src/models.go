@@ -53,9 +53,14 @@ func modelsHandler(registry *ProviderRegistry, cfg *Config) http.HandlerFunc {
 		var allModels []Model
 
 		// 1. Collect models from each provider's upstream API.
+		//    Call EnsureAuthenticated first to give providers a chance
+		//    to refresh expired tokens before we check Health.
 		for _, p := range registry.All() {
+			if err := p.EnsureAuthenticated(ctx); err != nil {
+				log.Printf("modelsHandler: provider %s auth: %v", p.ID(), err)
+			}
 			h := p.Health(ctx)
-			if !h.Authenticated && !cfg.Routing.ShowUnavailableModels {
+			if !h.Authenticated && !h.CanRefresh && !cfg.Routing.ShowUnavailableModels {
 				continue
 			}
 			ml, err := p.ListModels(ctx)

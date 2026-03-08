@@ -119,7 +119,7 @@ func (p *CopilotProvider) fetchModelsRaw() interface{} {
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		log.Printf("Copilot /models returned %d", resp.StatusCode)
-		return &ModelList{Object: "list", Data: nil}
+		return fmt.Errorf("copilot /models: HTTP %d", resp.StatusCode)
 	}
 	var ml ModelList
 	if err := json.NewDecoder(resp.Body).Decode(&ml); err != nil {
@@ -230,9 +230,14 @@ return err
 
 // Health returns the provider's current authentication state.
 func (p *CopilotProvider) Health(_ context.Context) ProviderHealth {
+p.mu.Lock()
+defer p.mu.Unlock()
 auth := p.authState()
+hasRefresh := auth.GitHubToken != ""
+authenticated := auth.CopilotToken != "" && auth.ExpiresAt > time.Now().Unix()
 return ProviderHealth{
-Authenticated: auth.CopilotToken != "" && auth.ExpiresAt > time.Now().Unix(),
+Authenticated: authenticated,
+CanRefresh:    hasRefresh,
 LastRefreshAt: time.Unix(auth.ExpiresAt, 0),
 }
 }

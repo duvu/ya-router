@@ -274,10 +274,13 @@ func (p *CodexProvider) ProxyRequest(
 
 // Health returns the provider's authentication state.
 func (p *CodexProvider) Health(_ context.Context) ProviderHealth {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	auth := p.authState()
 	authenticated := auth.AccessToken != ""
 	if auth.Mode != "api_key" && auth.ExpiresAt > 0 {
 		authenticated = authenticated && auth.ExpiresAt > time.Now().Unix()
 	}
-	return ProviderHealth{Authenticated: authenticated}
+	hasRefresh := auth.RefreshToken != "" || auth.Mode == "api_key"
+	return ProviderHealth{Authenticated: authenticated, CanRefresh: hasRefresh}
 }

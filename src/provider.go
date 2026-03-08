@@ -27,6 +27,7 @@ const (
 // ProviderHealth summarises a provider's current operational state.
 type ProviderHealth struct {
 	Authenticated bool      `json:"authenticated"`
+	CanRefresh    bool      `json:"can_refresh"`
 	LastError     string    `json:"last_error,omitempty"`
 	LastRefreshAt time.Time `json:"last_refresh_at,omitempty"`
 }

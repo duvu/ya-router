@@ -21,20 +21,9 @@ type ModelRouter struct {
 }
 
 // NewModelRouter constructs a ModelRouter wired to the given registry and routing config.
-// It also auto-registers Codex known models in the model_map to avoid ambiguity
-// with models that Copilot advertises but doesn't support for all capabilities.
 func NewModelRouter(registry *ProviderRegistry, routing RoutingConfig) *ModelRouter {
 	if routing.ModelMap == nil {
 		routing.ModelMap = make(map[string]ModelMapEntry)
-	}
-	// Auto-register codex known models so they always route to codex.
-	if _, err := registry.Get(ProviderCodex); err == nil {
-		for _, m := range codexKnownModels {
-			if _, exists := routing.ModelMap[m.ID]; !exists {
-				routing.ModelMap[m.ID] = ModelMapEntry{Provider: string(ProviderCodex)}
-				log.Printf("[router] auto-registered %q → codex", m.ID)
-			}
-		}
 	}
 	return &ModelRouter{registry: registry, routing: routing}
 }
@@ -81,16 +70,11 @@ func (r *ModelRouter) Resolve(ctx context.Context, requestedModel string, cap Ca
 		for i, c := range candidates {
 			providerNames[i] = string(c.Provider.ID())
 		}
-		// Resolve ambiguity: prefer default provider, then first match.
-		defID := ProviderID(r.routing.DefaultProvider)
-		for _, c := range candidates {
-			if c.Provider.ID() == defID {
-				log.Printf("[router] model %q ambiguous in %v → resolved to default provider=%s", model, providerNames, defID)
-				return &c, nil
-			}
-		}
-		log.Printf("[router] model %q ambiguous in %v → resolved to first provider=%s", model, providerNames, candidates[0].Provider.ID())
-		return &candidates[0], nil
+		log.Printf("[router] model %q AMBIGUOUS: found in providers %v — add an explicit routing.model_map entry to resolve", model, providerNames)
+		return nil, fmt.Errorf(
+			"model %q is ambiguous: found in %d providers %v; add an explicit routing.model_map entry",
+			model, len(candidates), providerNames,
+		)
 	}
 }
 
