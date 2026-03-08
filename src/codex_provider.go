@@ -109,6 +109,25 @@ func (p *CodexProvider) currentToken() string {
 	return p.authState().AccessToken
 }
 
+// reloadTokenFromDisk re-reads the config file and updates the in-memory
+// Codex auth state.  This allows the running proxy to pick up tokens
+// written by a separate "auth codex" CLI invocation.
+func (p *CodexProvider) reloadTokenFromDisk() {
+	fresh, err := loadConfig()
+	if err != nil {
+		log.Printf("[codex] config reload failed: %v", err)
+		return
+	}
+	new := &fresh.Providers.Codex.Auth
+	old := p.authState()
+	if new.AccessToken != "" && new.AccessToken != old.AccessToken {
+		log.Printf("[codex] detected new token on disk — reloading")
+		old.AccessToken = new.AccessToken
+		old.RefreshToken = new.RefreshToken
+		old.ExpiresAt = new.ExpiresAt
+	}
+}
+
 // EnsureAuthenticated ensures a valid Codex credential is available.
 // Uses device_code mode: check expiry, attempt refresh, fall back to
 // re-authentication error.
@@ -120,8 +139,12 @@ func (p *CodexProvider) EnsureAuthenticated(_ context.Context) error {
 
 	// device_code mode — token stored in config.
 	if auth.AccessToken == "" {
-		log.Printf("[codex] no access token available")
-		return fmt.Errorf("no Codex token — run 'auth codex' first")
+		// Maybe a separate 'auth codex' process wrote a token.
+		p.reloadTokenFromDisk()
+		if auth.AccessToken == "" {
+			log.Printf("[codex] no access token available")
+			return fmt.Errorf("no Codex token — run 'auth codex' first")
+		}
 	}
 
 	// Check expiry and refresh if needed.
@@ -262,6 +285,32 @@ func (p *CodexProvider) ProxyRequest(
 
 	log.Printf("[codex] upstream responded HTTP %d (Content-Type: %s)",
 		resp.StatusCode, resp.Header.Get("Content-Type"))
+
+	// On 401, try reloading token from disk (auth codex may have
+	// written a new token) and retry once.
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close()
+		log.Printf("[codex] 401 — reloading token from disk and retrying")
+		p.mu.Lock()
+		p.reloadTokenFromDisk()
+		newToken := p.authState().AccessToken
+		p.mu.Unlock()
+		if newToken != token {
+			req2, err := http.NewRequestWithContext(ctx, "POST",
+				upstreamURL, bytes.NewBuffer(responsesBody))
+			if err != nil {
+				return err
+			}
+			setCodexHeaders(req2, newToken)
+			resp, err = makeRequestWithRetry(sharedHTTPClient, req2, responsesBody)
+			if err != nil {
+				p.cb.onFailure()
+				return err
+			}
+			defer resp.Body.Close()
+			log.Printf("[codex] retry responded HTTP %d", resp.StatusCode)
+		}
+	}
 
 	if resp.StatusCode < 500 {
 		p.cb.onSuccess()
