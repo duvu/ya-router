@@ -1,255 +1,316 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
-	"time"
 )
 
-// TestDefaultModelEnforcementIntegration tests the complete flow of default model enforcement
-func TestDefaultModelEnforcementIntegration(t *testing.T) {
-	// Setup test configuration with specific default model
-	cfg := &Config{
-		DefaultModel:  "gpt-5-mini",
-		AllowedModels: []string{"gpt-4", "gpt-4.1", "gpt-5-mini", "claude-3.5-sonnet"},
-		CopilotToken:  "test_token_for_integration",
-		Port:          7071,
-	}
-	setDefaultTimeouts(cfg)
+// TestModelExtractionAndPatchIntegration tests extractModelFromBody
+// followed by patchBodyModel as a round-trip.
+func TestModelExtractionAndPatchIntegration(t *testing.T) {
+	original := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`
 
-	// Create mock server to capture the actual request sent to GitHub Copilot
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Capture the request that was actually sent
-		var req ChatCompletionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("Failed to decode captured request: %v", err)
-		}
-
-		// Send back a mock response
-		mockResponse := ChatCompletionResponse{
-			ID:      "test-id",
-			Object:  "chat.completion",
-			Created: time.Now().Unix(),
-			Model:   req.Model, // Echo back the model that was actually sent
-			Choices: []ChatCompletionChoice{
-				{
-					Index: 0,
-					Message: ChatCompletionMessage{
-						Role:    "assistant",
-						Content: "Hello! I received your message.",
-					},
-					FinishReason: "stop",
-				},
-			},
-			Usage: ChatCompletionUsage{
-				PromptTokens:     10,
-				CompletionTokens: 20,
-				TotalTokens:      30,
-			},
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(mockResponse)
-	}))
-	defer mockServer.Close()
-
-	testCases := []struct {
-		name               string
-		clientRequestModel string
-		expectedUsedModel  string
-		description        string
-	}{
-		{
-			name:               "client requests gpt-4",
-			clientRequestModel: "gpt-4",
-			expectedUsedModel:  "gpt-5-mini",
-			description:        "Client requests gpt-4 but service should use gpt-5-mini",
-		},
-		{
-			name:               "client requests claude-3.5-sonnet",
-			clientRequestModel: "claude-3.5-sonnet",
-			expectedUsedModel:  "gpt-5-mini",
-			description:        "Client requests claude-3.5-sonnet but service should use gpt-5-mini",
-		},
-		{
-			name:               "client requests default model",
-			clientRequestModel: "gpt-5-mini",
-			expectedUsedModel:  "gpt-5-mini",
-			description:        "Client requests gpt-5-mini and service should use gpt-5-mini",
-		},
-		{
-			name:               "client requests unknown model",
-			clientRequestModel: "unknown-model-123",
-			expectedUsedModel:  "gpt-5-mini",
-			description:        "Client requests unknown model but service should use gpt-5-mini",
-		},
+	model := extractModelFromBody([]byte(original))
+	if model != "gpt-4" {
+		t.Fatalf("extractModelFromBody = %q, want gpt-4", model)
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// Create client request
-			clientRequest := ChatCompletionRequest{
-				Model: tc.clientRequestModel,
-				Messages: []ChatCompletionMessage{
-					{Role: "user", Content: "Hello, world!"},
-				},
-			}
+	patched := patchBodyModel([]byte(original), "gpt-5-mini")
 
-			requestBody, err := json.Marshal(clientRequest)
-			if err != nil {
-				t.Fatalf("Failed to marshal client request: %v", err)
-			}
+	newModel := extractModelFromBody(patched)
+	if newModel != "gpt-5-mini" {
+		t.Errorf("after patch: model = %q, want gpt-5-mini", newModel)
+	}
 
-			// Test the request transformation logic
-			transformedBody, err := validateAndTransformRequestModel(requestBody, cfg)
-			if err != nil {
-				t.Fatalf("validateAndTransformRequestModel failed: %v", err)
-			}
-
-			// Parse the transformed request to verify model enforcement
-			var transformedRequest ChatCompletionRequest
-			if err := json.Unmarshal(transformedBody, &transformedRequest); err != nil {
-				t.Fatalf("Failed to unmarshal transformed request: %v", err)
-			}
-
-			// Verify that the model was enforced to the default
-			if transformedRequest.Model != tc.expectedUsedModel {
-				t.Errorf("Model enforcement failed: client requested %q, expected service to use %q, but got %q",
-					tc.clientRequestModel, tc.expectedUsedModel, transformedRequest.Model)
-			}
-
-			// Verify that the model is always the configured default
-			if transformedRequest.Model != cfg.DefaultModel {
-				t.Errorf("Model does not match configured default: got %q, want %q",
-					transformedRequest.Model, cfg.DefaultModel)
-			}
-
-			// Verify other fields were not modified
-			if transformedRequest.Messages[0].Content != clientRequest.Messages[0].Content {
-				t.Errorf("Message content was unexpectedly modified")
-			}
-
-			t.Logf("✅ %s: Client requested %q → Service uses %q (default: %q)",
-				tc.description, tc.clientRequestModel, transformedRequest.Model, cfg.DefaultModel)
-		})
+	// Verify messages are preserved
+	if !strings.Contains(string(patched), `"content":"hi"`) {
+		t.Errorf("message content lost after patch")
 	}
 }
 
-// TestProxyHandlerDefaultModelEnforcement tests the proxy handler with different configurations
-func TestProxyHandlerDefaultModelEnforcement(t *testing.T) {
-	testConfigs := []struct {
-		name          string
-		defaultModel  string
-		allowedModels []string
-	}{
-		{
-			name:          "gpt-5-mini default",
-			defaultModel:  "gpt-5-mini",
-			allowedModels: []string{"gpt-4", "gpt-4.1", "gpt-5-mini"},
-		},
-		{
-			name:          "claude default",
-			defaultModel:  "claude-3.5-sonnet",
-			allowedModels: []string{"claude-3.5-sonnet", "gpt-4"},
-		},
-		{
-			name:          "gemini default",
-			defaultModel:  "gemini-2.5-pro",
-			allowedModels: []string{"gemini-2.5-pro", "gpt-4", "claude-3.5-sonnet"},
-		},
-	}
-
-	for _, tcfg := range testConfigs {
-		t.Run(tcfg.name, func(t *testing.T) {
-			cfg := &Config{
-				DefaultModel:  tcfg.defaultModel,
-				AllowedModels: tcfg.allowedModels,
-			}
-			setDefaultTimeouts(cfg)
-
-			// Test requests with various models
-			testModels := []string{"gpt-4", "claude-3.5-sonnet", "gemini-2.5-pro", "unknown-model"}
-
-			for _, requestedModel := range testModels {
-				clientRequest := ChatCompletionRequest{
-					Model: requestedModel,
-					Messages: []ChatCompletionMessage{
-						{Role: "user", Content: "Test message"},
-					},
-				}
-
-				requestBody, err := json.Marshal(clientRequest)
-				if err != nil {
-					t.Fatalf("Failed to marshal request: %v", err)
-				}
-
-				// Test the transformation
-				transformedBody, err := validateAndTransformRequestModel(requestBody, cfg)
-				if err != nil {
-					t.Fatalf("Request transformation failed: %v", err)
-				}
-
-				var transformedRequest ChatCompletionRequest
-				if err := json.Unmarshal(transformedBody, &transformedRequest); err != nil {
-					t.Fatalf("Failed to unmarshal transformed request: %v", err)
-				}
-
-				// Verify enforcement
-				if transformedRequest.Model != cfg.DefaultModel {
-					t.Errorf("Config %s: requested %q but service uses %q, want %q (default)",
-						tcfg.name, requestedModel, transformedRequest.Model, cfg.DefaultModel)
-				}
-			}
-		})
-	}
-}
-
-// TestModelsEndpointConsistency tests that the /v1/models endpoint includes the default model
+// TestModelsEndpointConsistency tests the /v1/models endpoint returns
+// models from providers and respects allowed_models filtering.
 func TestModelsEndpointConsistency(t *testing.T) {
-	cfg := &Config{
-		DefaultModel:  "gpt-5-mini",
-		AllowedModels: []string{"gpt-4", "gpt-4.1", "gpt-5-mini"},
-	}
-	setDefaultTimeouts(cfg)
+	registry := NewProviderRegistry()
+	registry.Register(&mockProvider{
+		id:     ProviderCopilot,
+		name:   "Mock Copilot",
+		caps:   []Capability{CapabilityChat},
+		health: ProviderHealth{Authenticated: true},
+		models: &ModelList{Object: "list", Data: []Model{
+			{ID: "gpt-4", Object: "model", OwnedBy: "openai"},
+			{ID: "gpt-4.1", Object: "model", OwnedBy: "openai"},
+			{ID: "gpt-5-mini", Object: "model", OwnedBy: "openai"},
+		}},
+	})
 
-	// Create a test HTTP request to the models endpoint
+	cfg := defaultConfig()
+	cfg.Providers.Copilot.AllowedModels = []string{
+		"gpt-4", "gpt-4.1", "gpt-5-mini",
+	}
+
+	handler := modelsHandler(registry, cfg)
+
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
 
-	// Call the models handler
-	handler := modelsHandler(cfg)
-	handler(rec, req)
-
-	// Parse the response
 	if rec.Code != http.StatusOK {
-		t.Fatalf("Expected status 200, got %d", rec.Code)
+		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 
-	var modelList ModelList
-	if err := json.NewDecoder(rec.Body).Decode(&modelList); err != nil {
-		t.Fatalf("Failed to decode models response: %v", err)
+	var ml ModelList
+	if err := json.NewDecoder(rec.Body).Decode(&ml); err != nil {
+		t.Fatalf("decode error: %v", err)
 	}
 
-	// Verify that the default model is included in the models list
-	defaultModelFound := false
-	for _, model := range modelList.Data {
-		if model.ID == cfg.DefaultModel {
-			defaultModelFound = true
-			break
-		}
+	if len(ml.Data) == 0 {
+		t.Fatal("expected at least one model, got 0")
 	}
 
-	if !defaultModelFound {
-		modelIDs := make([]string, len(modelList.Data))
-		for i, model := range modelList.Data {
-			modelIDs[i] = model.ID
-		}
-		t.Errorf("Default model %q not found in models list. Available models: %v",
-			cfg.DefaultModel, modelIDs)
+	ids := map[string]bool{}
+	for _, m := range ml.Data {
+		ids[m.ID] = true
 	}
 
-	t.Logf("✅ Default model %q is included in /v1/models response", cfg.DefaultModel)
+	if !ids["gpt-5-mini"] {
+		t.Errorf("gpt-5-mini not in response; got %v", ids)
+	}
+}
+
+// TestModelsEndpointAggregatesMultipleProviders verifies the models
+// endpoint merges models from copilot and codex providers.
+func TestModelsEndpointAggregatesMultipleProviders(t *testing.T) {
+	registry := NewProviderRegistry()
+
+	copilotModels := []Model{
+		{ID: "gpt-4", Object: "model", OwnedBy: "openai"},
+	}
+	codexModels := []Model{
+		{ID: "o3-mini", Object: "model", OwnedBy: "openai"},
+	}
+
+	registry.Register(&mockProvider{
+		id:     ProviderCopilot,
+		name:   "Copilot",
+		caps:   []Capability{CapabilityChat},
+		health: ProviderHealth{Authenticated: true},
+		models: &ModelList{Object: "list", Data: copilotModels},
+	})
+	registry.Register(&mockProvider{
+		id:     ProviderCodex,
+		name:   "Codex",
+		caps:   []Capability{CapabilityChat},
+		health: ProviderHealth{Authenticated: true},
+		models: &ModelList{Object: "list", Data: codexModels},
+	})
+
+	cfg := defaultConfig()
+	handler := modelsHandler(registry, cfg)
+
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var ml ModelList
+	json.NewDecoder(rec.Body).Decode(&ml)
+
+	if len(ml.Data) != 2 {
+		t.Fatalf("expected 2 models (aggregated), got %d", len(ml.Data))
+	}
+
+	ids := map[string]bool{}
+	for _, m := range ml.Data {
+		ids[m.ID] = true
+	}
+
+	if !ids["gpt-4"] || !ids["o3-mini"] {
+		t.Errorf("expected both gpt-4 and o3-mini, got %v", ids)
+	}
+}
+
+// TestModelsEndpointEmptyWhenNoAuth verifies that the models endpoint
+// returns an empty list when no providers are authenticated.
+func TestModelsEndpointEmptyWhenNoAuth(t *testing.T) {
+	registry := NewProviderRegistry()
+	registry.Register(&mockProvider{
+		id:     ProviderCopilot,
+		name:   "Copilot",
+		caps:   []Capability{CapabilityChat},
+		health: ProviderHealth{Authenticated: false},
+		models: &ModelList{Object: "list", Data: []Model{
+			{ID: "gpt-4", Object: "model"},
+		}},
+	})
+
+	cfg := defaultConfig()
+	cfg.Routing.ShowUnavailableModels = false
+
+	handler := modelsHandler(registry, cfg)
+
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var ml ModelList
+	json.NewDecoder(rec.Body).Decode(&ml)
+
+	if len(ml.Data) != 0 {
+		t.Errorf("expected empty models list, got %d models", len(ml.Data))
+	}
+}
+
+// TestProviderRegistryIntegration tests the ProviderRegistry lifecycle.
+func TestProviderRegistryIntegration(t *testing.T) {
+	registry := NewProviderRegistry()
+
+	if got := len(registry.All()); got != 0 {
+		t.Fatalf("new registry has %d providers, want 0", got)
+	}
+
+	p1 := &mockProvider{id: ProviderCopilot, name: "Copilot"}
+	p2 := &mockProvider{id: ProviderCodex, name: "Codex"}
+
+	registry.Register(p1)
+	registry.Register(p2)
+
+	if got := len(registry.All()); got != 2 {
+		t.Fatalf("registry has %d providers, want 2", got)
+	}
+
+	got, err := registry.Get(ProviderCopilot)
+	if err != nil || got.ID() != ProviderCopilot {
+		t.Errorf("Get(copilot) failed: %v", err)
+	}
+
+	_, err = registry.Get("nonexistent")
+	if err == nil {
+		t.Errorf("Get(nonexistent) should return error")
+	}
+}
+
+// TestModelRouterResolve tests the model router resolution logic.
+func TestModelRouterResolve(t *testing.T) {
+	registry := NewProviderRegistry()
+	registry.Register(&mockProvider{
+		id:     ProviderCopilot,
+		name:   "Copilot",
+		caps:   []Capability{CapabilityChat, CapabilityEmbeddings},
+		health: ProviderHealth{Authenticated: true},
+		models: &ModelList{Object: "list", Data: []Model{
+			{ID: "gpt-4", Object: "model"},
+			{ID: "gpt-5-mini", Object: "model"},
+		}},
+	})
+	registry.Register(&mockProvider{
+		id:     ProviderCodex,
+		name:   "Codex",
+		caps:   []Capability{CapabilityChat},
+		health: ProviderHealth{Authenticated: true},
+		models: &ModelList{Object: "list", Data: []Model{
+			{ID: "o3-mini", Object: "model"},
+		}},
+	})
+
+	cfg := defaultConfig()
+	cfg.Routing.DefaultProvider = string(ProviderCopilot)
+	cfg.Routing.ModelMap = map[string]ModelMapEntry{
+		"o3-mini": {Provider: "codex"},
+	}
+
+	router := NewModelRouter(registry, cfg.Routing)
+
+	tests := []struct {
+		name    string
+		model   string
+		cap     Capability
+		wantPID ProviderID
+		wantErr bool
+	}{
+		{
+			name:    "explicit model_map hit",
+			model:   "o3-mini",
+			cap:     CapabilityChat,
+			wantPID: ProviderCodex,
+		},
+		{
+			name:    "default provider fallback",
+			model:   "gpt-4",
+			cap:     CapabilityChat,
+			wantPID: ProviderCopilot,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := router.Resolve(context.Background(), tt.model, tt.cap)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Resolve(%q, %q) error = %v, wantErr %v",
+					tt.model, tt.cap, err, tt.wantErr)
+			}
+			if err == nil && result.Provider.ID() != tt.wantPID {
+				t.Errorf("Resolve(%q, %q) = %q, want %q",
+					tt.model, tt.cap, result.Provider.ID(), tt.wantPID)
+			}
+		})
+	}
+}
+
+// TestConfigDefaultAuth verifies default auth config consistency.
+func TestConfigDefaultAuth(t *testing.T) {
+	cfg := defaultConfig()
+
+	if cfg.Providers.Copilot.Auth.Mode != "device_code" {
+		t.Errorf("Copilot auth mode = %q, want device_code",
+			cfg.Providers.Copilot.Auth.Mode)
+	}
+	if cfg.Providers.Codex.Auth.Mode != "device_code" {
+		t.Errorf("Codex auth mode = %q, want device_code",
+			cfg.Providers.Codex.Auth.Mode)
+	}
+}
+
+// TestIsDeviceCodeModeBackwardCompat verifies backward compatibility
+// with the old chatgpt_device_auth mode name.
+func TestIsDeviceCodeModeBackwardCompat(t *testing.T) {
+	tests := []struct {
+		mode string
+		want bool
+	}{
+		{"device_code", true},
+		{"chatgpt_device_auth", true},
+		{"api_key", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.mode, func(t *testing.T) {
+			if got := isDeviceCodeMode(tt.mode); got != tt.want {
+				t.Errorf("isDeviceCodeMode(%q) = %v, want %v",
+					tt.mode, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHealthHandler verifies the /healthz endpoint.
+func TestHealthHandler(t *testing.T) {
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	rec := httptest.NewRecorder()
+
+	healthHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var resp map[string]string
+	json.NewDecoder(rec.Body).Decode(&resp)
+
+	if resp["status"] != "ok" {
+		t.Errorf("health status = %q, want ok", resp["status"])
+	}
 }

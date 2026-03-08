@@ -1,642 +1,407 @@
+// proxy.go — HTTP proxy infrastructure (circuit breaker, retry, worker pool,
+// request coalescing) and the provider-dispatching request handler.
 package main
 
 import (
-	"bytes"
-	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"fmt"
-	"io"
-	"log"
-	"net"
-	"net/http"
-	"runtime"
-	"sync"
-	"time"
+"bytes"
+"context"
+"crypto/sha256"
+"encoding/hex"
+"fmt"
+"io"
+"log"
+"net"
+"net/http"
+"runtime"
+"strings"
+"sync"
+"time"
 )
 
 const (
-	copilotAPIBase = "https://api.githubcopilot.com"
+copilotAPIBase = "https://api.githubcopilot.com"
 
-	// Retry configuration for chat completions
-	maxChatRetries     = 3
-	baseChatRetryDelay = 1 // seconds
+maxChatRetries     = 3
+baseChatRetryDelay = 1 // seconds
 
-	// Circuit breaker configuration - timeout will be loaded from config
-	circuitBreakerFailureThreshold = 5
+circuitBreakerFailureThreshold = 5
 )
 
-// Simple circuit breaker state
+// CircuitBreakerState represents the state of the circuit breaker.
 type CircuitBreakerState int
 
 const (
-	CircuitClosed CircuitBreakerState = iota
-	CircuitOpen
-	CircuitHalfOpen
+CircuitClosed   CircuitBreakerState = iota
+CircuitOpen                         // too many failures; rejecting requests
+CircuitHalfOpen                     // testing if upstream has recovered
 )
 
-// Circuit breaker for upstream API calls
+// CircuitBreaker guards against cascading failures to an upstream endpoint.
+// Each provider holds its own instance.
 type CircuitBreaker struct {
-	failureCount    int64
-	lastFailureTime time.Time
-	state           CircuitBreakerState
-	timeout         time.Duration
-	mutex           sync.RWMutex
+failureCount    int64
+lastFailureTime time.Time
+state           CircuitBreakerState
+timeout         time.Duration
+mutex           sync.RWMutex
 }
 
-var circuitBreaker = &CircuitBreaker{
-	state:   CircuitClosed,
-	timeout: 30 * time.Second, // Default, will be updated from config
-}
-
-// validateAndTransformRequestModel parses the request body, validates the model, and transforms it if needed
-func validateAndTransformRequestModel(body []byte, cfg *Config) ([]byte, error) {
-	var req ChatCompletionRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		// If we can't parse it, just pass it through
-		log.Printf("Could not parse request JSON (passing through): %v", err)
-		return body, nil
-	}
-
-	originalModel := req.Model
-	validatedModel := validateAndTransformModel(req.Model, cfg)
-
-	// If model was changed, log it and update the request
-	if originalModel != validatedModel {
-		log.Printf("Model transformed: %s -> %s", originalModel, validatedModel)
-		req.Model = validatedModel
-
-		// Re-marshal the request
-		newBody, err := json.Marshal(req)
-		if err != nil {
-			log.Printf("Error marshaling transformed request: %v", err)
-			return body, nil // Return original on error
-		}
-		return newBody, nil
-	}
-
-	// No change needed
-	return body, nil
-}
-
-var tokenMu sync.Mutex
-
-// Circuit breaker methods
 func (cb *CircuitBreaker) canExecute() bool {
-	cb.mutex.RLock()
-	defer cb.mutex.RUnlock()
+cb.mutex.RLock()
+defer cb.mutex.RUnlock()
 
-	if cb.state == CircuitClosed {
-		return true
-	}
-
-	if cb.state == CircuitOpen {
-		if time.Since(cb.lastFailureTime) > cb.timeout {
-			cb.mutex.RUnlock()
-			cb.mutex.Lock()
-			cb.state = CircuitHalfOpen
-			cb.mutex.Unlock()
-			cb.mutex.RLock()
-			return true
-		}
-		return false
-	}
-
-	// CircuitHalfOpen
-	return true
+if cb.state == CircuitClosed {
+return true
+}
+if cb.state == CircuitOpen {
+if time.Since(cb.lastFailureTime) > cb.timeout {
+cb.mutex.RUnlock()
+cb.mutex.Lock()
+cb.state = CircuitHalfOpen
+cb.mutex.Unlock()
+cb.mutex.RLock()
+return true
+}
+return false
+}
+return true // CircuitHalfOpen
 }
 
 func (cb *CircuitBreaker) onSuccess() {
-	cb.mutex.Lock()
-	defer cb.mutex.Unlock()
-
-	cb.failureCount = 0
-	cb.state = CircuitClosed
+cb.mutex.Lock()
+defer cb.mutex.Unlock()
+cb.failureCount = 0
+cb.state = CircuitClosed
 }
 
 func (cb *CircuitBreaker) onFailure() {
-	cb.mutex.Lock()
-	defer cb.mutex.Unlock()
-
-	cb.failureCount++
-	cb.lastFailureTime = time.Now()
-
-	if cb.failureCount >= circuitBreakerFailureThreshold {
-		cb.state = CircuitOpen
-	}
+cb.mutex.Lock()
+defer cb.mutex.Unlock()
+cb.failureCount++
+cb.lastFailureTime = time.Now()
+if cb.failureCount >= circuitBreakerFailureThreshold {
+cb.state = CircuitOpen
+}
 }
 
+// sharedHTTPClient is initialised once via initializeTimeouts.
 var sharedHTTPClient *http.Client
 
-// initializeTimeouts initializes all timeout configurations from config
+// initializeTimeouts configures sharedHTTPClient from cfg.Timeouts.
 func initializeTimeouts(cfg *Config) {
-	// Update circuit breaker timeout
-	circuitBreaker.mutex.Lock()
-	circuitBreaker.timeout = time.Duration(cfg.Timeouts.CircuitBreaker) * time.Second
-	circuitBreaker.mutex.Unlock()
-
-	// Initialize HTTP client with config timeouts
-	sharedHTTPClient = &http.Client{
-		Timeout: time.Duration(cfg.Timeouts.HTTPClient) * time.Second,
-		Transport: &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 20,
-			IdleConnTimeout:     time.Duration(cfg.Timeouts.IdleConnTimeout) * time.Second,
-			DialContext: (&net.Dialer{
-				Timeout:   time.Duration(cfg.Timeouts.DialTimeout) * time.Second,
-				KeepAlive: time.Duration(cfg.Timeouts.KeepAlive) * time.Second,
-			}).DialContext,
-			TLSHandshakeTimeout: time.Duration(cfg.Timeouts.TLSHandshake) * time.Second,
-		},
-	}
+sharedHTTPClient = &http.Client{
+Timeout: time.Duration(cfg.Timeouts.HTTPClient) * time.Second,
+Transport: &http.Transport{
+Proxy:               http.ProxyFromEnvironment,
+MaxIdleConns:        100,
+MaxIdleConnsPerHost: 20,
+IdleConnTimeout:     time.Duration(cfg.Timeouts.IdleConnTimeout) * time.Second,
+DialContext: (&net.Dialer{
+Timeout:   time.Duration(cfg.Timeouts.DialTimeout) * time.Second,
+KeepAlive: time.Duration(cfg.Timeouts.KeepAlive) * time.Second,
+}).DialContext,
+TLSHandshakeTimeout: time.Duration(cfg.Timeouts.TLSHandshake) * time.Second,
+},
+}
 }
 
-// Buffer pool for request/response reuse
+// bufferPool reuses 32 KB slices for response copying.
 var bufferPool = sync.Pool{
-	New: func() interface{} {
-		// 32KB buffer for efficient copying
-		b := make([]byte, 32*1024)
-		return &b
-	},
+New: func() interface{} {
+b := make([]byte, 32*1024)
+return &b
+},
 }
 
-// Worker pool for handling requests
+// WorkerPool dispatches jobs across a fixed goroutine pool.
 type WorkerPool struct {
-	workers  int
-	jobQueue chan func()
-	quit     chan bool
-	wg       sync.WaitGroup
+workers  int
+jobQueue chan func()
+quit     chan bool
+wg       sync.WaitGroup
 }
 
 func NewWorkerPool(workers int) *WorkerPool {
-	if workers <= 0 {
-		workers = runtime.NumCPU()
-	}
-
-	wp := &WorkerPool{
-		workers:  workers,
-		jobQueue: make(chan func(), workers*2), // Buffer for burst traffic
-		quit:     make(chan bool),
-	}
-
-	wp.start()
-	return wp
+if workers <= 0 {
+workers = runtime.NumCPU()
+}
+wp := &WorkerPool{
+workers:  workers,
+jobQueue: make(chan func(), workers*2),
+quit:     make(chan bool),
+}
+wp.start()
+return wp
 }
 
 func (wp *WorkerPool) start() {
-	for i := 0; i < wp.workers; i++ {
-		wp.wg.Add(1)
-		go func() {
-			defer wp.wg.Done()
-			for {
-				select {
-				case job := <-wp.jobQueue:
-					job()
-				case <-wp.quit:
-					return
-				}
-			}
-		}()
-	}
+for i := 0; i < wp.workers; i++ {
+wp.wg.Add(1)
+go func() {
+defer wp.wg.Done()
+for {
+select {
+case job := <-wp.jobQueue:
+job()
+case <-wp.quit:
+return
+}
+}
+}()
+}
 }
 
-func (wp *WorkerPool) Submit(job func()) {
-	wp.jobQueue <- job
-}
-
+func (wp *WorkerPool) Submit(job func()) { wp.jobQueue <- job }
 func (wp *WorkerPool) Stop() {
-	close(wp.quit)
-	wp.wg.Wait()
+close(wp.quit)
+wp.wg.Wait()
 }
 
-// Global worker pool
 var globalWorkerPool = NewWorkerPool(runtime.NumCPU() * 2)
 
-// Request coalescing for identical requests
+// coalescingEntry holds a pending or completed coalesced request.
+type coalescingEntry struct {
+done   chan struct{}
+result interface{}
+}
+
+// CoalescingCache collapses identical concurrent requests into one upstream call.
 type CoalescingCache struct {
-	requests map[string]chan interface{}
-	mutex    sync.RWMutex
+requests map[string]*coalescingEntry
+mutex    sync.Mutex
 }
 
 func NewCoalescingCache() *CoalescingCache {
-	return &CoalescingCache{
-		requests: make(map[string]chan interface{}),
-	}
+return &CoalescingCache{requests: make(map[string]*coalescingEntry)}
 }
 
 func (cc *CoalescingCache) getRequestKey(method, url string, body []byte) string {
-	h := sha256.New()
-	h.Write([]byte(method))
-	h.Write([]byte(url))
-	h.Write(body)
-	return hex.EncodeToString(h.Sum(nil))
+h := sha256.New()
+h.Write([]byte(method))
+h.Write([]byte(url))
+h.Write(body)
+return hex.EncodeToString(h.Sum(nil))
 }
 
 func (cc *CoalescingCache) CoalesceRequest(key string, fn func() interface{}) interface{} {
-	cc.mutex.Lock()
+cc.mutex.Lock()
+if entry, exists := cc.requests[key]; exists {
+cc.mutex.Unlock()
+<-entry.done
+return entry.result
+}
+entry := &coalescingEntry{done: make(chan struct{})}
+cc.requests[key] = entry
+cc.mutex.Unlock()
 
-	// Check if request is already in progress
-	if ch, exists := cc.requests[key]; exists {
-		cc.mutex.Unlock()
-		// Wait for the existing request to complete
-		return <-ch
-	}
+entry.result = fn()
+close(entry.done)
 
-	// Create new channel for this request
-	ch := make(chan interface{}, 1)
-	cc.requests[key] = ch
-	cc.mutex.Unlock()
-
-	// Execute the request
-	result := fn()
-
-	// Broadcast result to all waiting goroutines
-	ch <- result
-	close(ch)
-
-	// Clean up
-	cc.mutex.Lock()
-	delete(cc.requests, key)
-	cc.mutex.Unlock()
-
-	return result
+cc.mutex.Lock()
+delete(cc.requests, key)
+cc.mutex.Unlock()
+return entry.result
 }
 
-// Global coalescing cache for models endpoint
-var modelsCoalescingCache = NewCoalescingCache()
-
-func ensureValidToken(cfg *Config) error {
-	tokenMu.Lock()
-	defer tokenMu.Unlock()
-
-	now := time.Now().Unix()
-
-	// Check if token is completely missing
-	if cfg.CopilotToken == "" {
-		log.Printf("No Copilot token found, starting authentication")
-		return authenticate(cfg)
-	}
-
-	// Proactive refresh: refresh when 20% of lifetime remains or <5 minutes
-	timeUntilExpiry := cfg.ExpiresAt - now
-	refreshThreshold := int64(300) // 5 minutes
-	if cfg.RefreshIn > 0 {
-		// Use 20% of RefreshIn as threshold, but minimum 5 minutes
-		proactiveThreshold := cfg.RefreshIn / 5 // 20% = 1/5
-		if proactiveThreshold > refreshThreshold {
-			refreshThreshold = proactiveThreshold
-		}
-	}
-
-	if timeUntilExpiry <= refreshThreshold {
-		log.Printf("Token expires in %d seconds (threshold: %d), attempting refresh", timeUntilExpiry, refreshThreshold)
-		if err := refreshToken(cfg); err != nil {
-			log.Printf("Token refresh failed, falling back to full authentication: %v", err)
-			return authenticate(cfg)
-		}
-		log.Printf("Token refresh completed successfully")
-	} else {
-		log.Printf("Token is valid: expires in %d seconds", timeUntilExpiry)
-	}
-
-	return nil
-}
-
-// isRetriableError determines if an HTTP error should be retried
+// isRetriableError returns true for transient HTTP/network errors.
+// 429 is NOT retried here — "quota exceeded" is permanent for the session;
+// "slow_down" (Retry-After) should be handled at a higher layer if needed.
 func isRetriableError(statusCode int, err error) bool {
 	if err != nil {
-		return true // Network errors are retriable
+		return true
 	}
-
-	// Retry on server errors and rate limiting
-	return statusCode >= 500 || statusCode == 429 || statusCode == 408
+	return statusCode >= 500 || statusCode == 408
 }
 
-// makeRequestWithRetry performs HTTP request with exponential backoff retry
+// makeRequestWithRetry executes req with exponential back-off retry.
+// body is used to re-create the request body on each attempt.
 func makeRequestWithRetry(client *http.Client, req *http.Request, body []byte) (*http.Response, error) {
-	var lastResp *http.Response
-	var lastErr error
+var lastResp *http.Response
+var lastErr error
+ctx := req.Context()
 
-	for attempt := 1; attempt <= maxChatRetries; attempt++ {
-		// Create a new request for each attempt (in case body was consumed)
-		retryReq, err := http.NewRequest(req.Method, req.URL.String(), bytes.NewBuffer(body))
-		if err != nil {
-			return nil, err
-		}
+for attempt := 1; attempt <= maxChatRetries; attempt++ {
+retryReq, err := http.NewRequestWithContext(ctx, req.Method, req.URL.String(), bytes.NewBuffer(body))
+if err != nil {
+return nil, err
+}
+for key, values := range req.Header {
+for _, value := range values {
+retryReq.Header.Add(key, value)
+}
+}
+log.Printf("Upstream attempt %d/%d", attempt, maxChatRetries)
 
-		// Copy all headers
-		for key, values := range req.Header {
-			for _, value := range values {
-				retryReq.Header.Add(key, value)
-			}
-		}
-
-		log.Printf("Chat completion attempt %d/%d", attempt, maxChatRetries)
-
-		resp, err := client.Do(retryReq)
-		if err != nil {
-			lastErr = err
-			if attempt == maxChatRetries {
-				log.Printf("Request failed after %d attempts: %v", maxChatRetries, err)
-				return nil, err
-			}
-
-			waitTime := time.Duration(baseChatRetryDelay*attempt*attempt) * time.Second
-			log.Printf("Request failed (attempt %d), retrying in %v: %v", attempt, waitTime, err)
-			time.Sleep(waitTime)
-			continue
-		}
-
-		lastResp = resp
-
-		// Check if we should retry based on status code
-		if !isRetriableError(resp.StatusCode, nil) {
-			log.Printf("Request successful on attempt %d: %d", attempt, resp.StatusCode)
-			return resp, nil
-		}
-
-		// Close the response body before retrying
-		resp.Body.Close()
-
-		if attempt == maxChatRetries {
-			log.Printf("Request failed after %d attempts with status: %d", maxChatRetries, resp.StatusCode)
-			return resp, nil // Return the last response even if it failed
-		}
-
-		waitTime := time.Duration(baseChatRetryDelay*attempt*attempt) * time.Second
-		log.Printf("Request failed with status %d (attempt %d), retrying in %v", resp.StatusCode, attempt, waitTime)
-		time.Sleep(waitTime)
-	}
-
-	return lastResp, lastErr
+resp, err := client.Do(retryReq)
+if err != nil {
+lastErr = err
+if attempt == maxChatRetries {
+return nil, err
+}
+time.Sleep(time.Duration(baseChatRetryDelay*attempt*attempt) * time.Second)
+continue
 }
 
-func proxyHandler(cfg *Config) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Create context with extended timeout for long-lived streaming responses
-		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.Timeouts.ProxyContext)*time.Second)
-		defer cancel()
-
-		// Check circuit breaker
-		if !circuitBreaker.canExecute() {
-			log.Printf("Circuit breaker is open, rejecting request")
-			http.Error(w, "Service temporarily unavailable", http.StatusServiceUnavailable)
-			return
-		}
-
-		// Limit request body size to 5MB
-		r.Body = http.MaxBytesReader(w, r.Body, 5*1024*1024)
-
-		// For streaming responses, we need to handle them differently
-		// Use a response wrapper to track if headers have been sent
-		respWrapper := &responseWrapper{ResponseWriter: w, headersSent: false}
-
-		// Create a done channel to track completion
-		done := make(chan error, 1)
-
-		// Submit request to worker pool
-		globalWorkerPool.Submit(func() {
-			defer func() {
-				if recovery := recover(); recovery != nil {
-					log.Printf("Worker panic recovered: %v", recovery)
-					done <- fmt.Errorf("internal server error")
-				}
-			}()
-
-			err := processProxyRequest(cfg, respWrapper, r, ctx)
-			done <- err
-		})
-
-		// Wait for worker to complete or context timeout
-		select {
-		case err := <-done:
-			if err != nil {
-				log.Printf("Worker error: %v", err)
-				// Only write error if headers haven't been sent
-				if !respWrapper.headersSent {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-				}
-			}
-		case <-ctx.Done():
-			log.Printf("Request timeout in worker pool")
-			// Only write timeout error if headers haven't been sent
-			if !respWrapper.headersSent {
-				http.Error(w, "Request timeout", http.StatusRequestTimeout)
-			}
-		}
-	}
+lastResp = resp
+if !isRetriableError(resp.StatusCode, nil) {
+return resp, nil
+}
+if attempt == maxChatRetries {
+return resp, nil
+}
+resp.Body.Close()
+time.Sleep(time.Duration(baseChatRetryDelay*attempt*attempt) * time.Second)
+}
+return lastResp, lastErr
 }
 
-// Response wrapper to track if headers have been sent
+// responseWrapper tracks whether headers have been sent to avoid duplicate writes.
 type responseWrapper struct {
-	http.ResponseWriter
-	headersSent bool
+http.ResponseWriter
+headersSent bool
 }
 
 func (rw *responseWrapper) WriteHeader(statusCode int) {
-	if !rw.headersSent {
-		rw.headersSent = true
-		rw.ResponseWriter.WriteHeader(statusCode)
-	}
+if !rw.headersSent {
+rw.headersSent = true
+rw.ResponseWriter.WriteHeader(statusCode)
+}
 }
 
 func (rw *responseWrapper) Write(data []byte) (int, error) {
-	if !rw.headersSent {
-		rw.headersSent = true
-	}
-	return rw.ResponseWriter.Write(data)
+if !rw.headersSent {
+rw.headersSent = true
+}
+return rw.ResponseWriter.Write(data)
 }
 
-// Process proxy request in worker goroutine - returns error instead of using channel
-func processProxyRequest(cfg *Config, w http.ResponseWriter, r *http.Request, ctx context.Context) error {
-	log.Printf("Starting processProxyRequest for %s %s", r.Method, r.URL.Path)
+// streamResponse copies the upstream response to w, flushing for SSE streams.
+func streamResponse(w http.ResponseWriter, resp *http.Response) error {
+copyHeaders(w, resp.Header)
+w.Header().Set("Access-Control-Allow-Origin", "*")
+w.Header().Set("Access-Control-Allow-Headers", "*")
+w.WriteHeader(resp.StatusCode)
 
-	if err := ensureValidToken(cfg); err != nil {
-		log.Printf("Token validation failed: %v", err)
-		return fmt.Errorf("authentication required")
-	}
+if resp.Header.Get("Content-Type") == "text/event-stream" {
+if flusher, ok := w.(http.Flusher); ok {
+buf := make([]byte, 1024)
+for {
+n, err := resp.Body.Read(buf)
+if n > 0 {
+if _, werr := w.Write(buf[:n]); werr != nil {
+return werr
+}
+flusher.Flush()
+}
+if err == io.EOF {
+return nil
+}
+if err != nil {
+return err
+}
+}
+}
+}
+bufPtr := bufferPool.Get().(*[]byte)
+defer bufferPool.Put(bufPtr)
+_, err := io.CopyBuffer(w, resp.Body, *bufPtr)
+return err
+}
 
-	// Log request
-	log.Printf("Request: %s %s", r.Method, r.URL.Path)
-	log.Printf("Request Content-Length: %d", r.ContentLength)
+// copyHeaders copies headers from src to w, skipping any named in skip.
+func copyHeaders(w http.ResponseWriter, src http.Header, skip ...string) {
+skipSet := make(map[string]bool, len(skip))
+for _, s := range skip {
+skipSet[strings.ToLower(s)] = true
+}
+for key, values := range src {
+if skipSet[strings.ToLower(key)] {
+continue
+}
+for _, value := range values {
+w.Header().Add(key, value)
+}
+}
+}
 
-	// Read the request body
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		log.Printf("Error reading request body: %v", err)
-		return fmt.Errorf("error reading request")
-	}
-	defer r.Body.Close()
+// capabilityFromPath maps a request path to a Capability.
+func capabilityFromPath(path string) (Capability, error) {
+switch {
+case strings.Contains(path, "/chat/completions"):
+return CapabilityChat, nil
+case strings.Contains(path, "/embeddings"):
+return CapabilityEmbeddings, nil
+default:
+return "", fmt.Errorf("unsupported path: %s", path)
+}
+}
 
-	// Transform and validate model if this is a chat completion request
-	isChatCompletions := r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/chat/completions/"
-	isEmbeddings := r.URL.Path == "/v1/embeddings" || r.URL.Path == "/v1/embeddings/"
-	embedModel := ""
-	if isChatCompletions {
-		body, err = validateAndTransformRequestModel(body, cfg)
-		if err != nil {
-			log.Printf("Error validating request model: %v", err)
-			return fmt.Errorf("error processing request")
-		}
-	}
-	if isEmbeddings {
-		body, embedModel = normalizeEmbeddingsRequestBody(body)
-	}
+// proxyHandler is the HTTP handler factory for proxied API paths.
+func proxyHandler(registry *ProviderRegistry, router *ModelRouter, cfg *Config) http.HandlerFunc {
+return func(w http.ResponseWriter, r *http.Request) {
+ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.Timeouts.ProxyContext)*time.Second)
+defer cancel()
 
-	// Transform path
-	var targetPath string
-	switch {
-	case isChatCompletions:
-		targetPath = "/chat/completions"
-	case isEmbeddings:
-		targetPath = "/embeddings"
-	default:
-		return fmt.Errorf("unsupported path: %s", r.URL.Path)
-	}
+r.Body = http.MaxBytesReader(w, r.Body, 5*1024*1024)
+rw := &responseWrapper{ResponseWriter: w}
+done := make(chan error, 1)
 
-	// Create new request to GitHub Copilot with context
-	targetURL := copilotAPIBase + targetPath
-	log.Printf("Sending to: %s", targetURL)
-	log.Printf("Request body length: %d", len(body))
+globalWorkerPool.Submit(func() {
+defer func() {
+if rec := recover(); rec != nil {
+log.Printf("Worker panic: %v", rec)
+done <- fmt.Errorf("internal server error")
+}
+}()
+done <- processProxyRequest(registry, router, cfg, rw, r, ctx)
+})
 
-	req, err := http.NewRequestWithContext(ctx, r.Method, targetURL, bytes.NewBuffer(body))
-	if err != nil {
-		log.Printf("Error creating request: %v", err)
-		return fmt.Errorf("error creating request")
-	}
+select {
+case err := <-done:
+if err != nil && !rw.headersSent {
+http.Error(w, err.Error(), http.StatusInternalServerError)
+}
+case <-ctx.Done():
+if !rw.headersSent {
+http.Error(w, "Request timeout", http.StatusRequestTimeout)
+}
+}
+}
+}
 
-	// Set headers exactly as the working direct approach
-	req.Header.Set("Authorization", "Bearer "+cfg.CopilotToken)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "GitHubCopilotChat/0.26.7")
-	req.Header.Set("Editor-Version", "vscode/1.99.3")
-	req.Header.Set("Editor-Plugin-Version", "copilot-chat/0.26.7")
-	req.Header.Set("Copilot-Integration-Id", "vscode-chat")
-	if isEmbeddings {
-		req.Header.Set("Openai-Intent", "embeddings")
-	} else {
-		req.Header.Set("Openai-Intent", "conversation-edits")
-	}
-	req.Header.Set("X-Initiator", "user")
+// processProxyRequest resolves the route and delegates to the provider.
+func processProxyRequest(
+registry *ProviderRegistry,
+router *ModelRouter,
+cfg *Config,
+w http.ResponseWriter,
+r *http.Request,
+ctx context.Context,
+) error {
+cap, err := capabilityFromPath(r.URL.Path)
+if err != nil {
+return err
+}
 
-	// Make the request with retry logic using shared client
-	resp, err := makeRequestWithRetry(sharedHTTPClient, req, body)
-	if err != nil {
-		circuitBreaker.onFailure()
-		log.Printf("Error making request after retries: %v", err)
-		return fmt.Errorf("error making request")
-	}
-	defer resp.Body.Close()
+body, err := io.ReadAll(r.Body)
+if err != nil {
+return fmt.Errorf("reading request body: %w", err)
+}
+defer r.Body.Close()
 
-	// Success - notify circuit breaker
-	if resp.StatusCode < 500 {
-		circuitBreaker.onSuccess()
-	} else {
-		circuitBreaker.onFailure()
-	}
+requestedModel := extractModelFromBody(body)
 
-	log.Printf("Response: %d - Content-Type: %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+route, err := router.Resolve(ctx, requestedModel, cap)
+if err != nil {
+return fmt.Errorf("routing: %w", err)
+}
 
-	// Embeddings responses are small; buffer and adjust to OpenAI-compatible shape.
-	if isEmbeddings && resp.Header.Get("Content-Type") != "text/event-stream" {
-		respBody, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			log.Printf("Error reading embeddings response: %v", readErr)
-			return readErr
-		}
+if route.ResolvedModel != requestedModel {
+body = patchBodyModel(body, route.ResolvedModel)
+}
 
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			respBody = ensureEmbeddingsResponseCompat(respBody, embedModel)
-		}
+log.Printf("Routing %s %s model=%q → %s (upstream=%q)",
+r.Method, r.URL.Path, requestedModel, route.Provider.ID(), route.ResolvedModel)
 
-		// Copy response headers, but drop Content-Length since body may have changed.
-		for key, values := range resp.Header {
-			if key == "Content-Length" {
-				continue
-			}
-			for _, value := range values {
-				w.Header().Add(key, value)
-			}
-		}
-
-		// Add CORS headers
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
-
-		w.WriteHeader(resp.StatusCode)
-		_, writeErr := w.Write(respBody)
-		if writeErr != nil {
-			log.Printf("Error writing embeddings response: %v", writeErr)
-			return writeErr
-		}
-
-		log.Printf("processProxyRequest completed successfully")
-		return nil
-	}
-
-	// Copy response headers
-	for key, values := range resp.Header {
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
-	}
-
-	// Add CORS headers
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "*")
-
-	// Copy status code
-	w.WriteHeader(resp.StatusCode)
-
-	// For streaming responses, use direct copy without buffer pooling
-	// to avoid blocking the stream
-	if resp.Header.Get("Content-Type") == "text/event-stream" {
-		log.Printf("Starting streaming response copy")
-		// Stream directly for event-stream responses with flushing support
-		if flusher, ok := w.(http.Flusher); ok {
-			// Copy in chunks and flush periodically for better streaming
-			buf := make([]byte, 1024) // Small buffer for streaming
-			for {
-				n, err := resp.Body.Read(buf)
-				if n > 0 {
-					_, writeErr := w.Write(buf[:n])
-					if writeErr != nil {
-						log.Printf("Error writing streaming chunk: %v", writeErr)
-						return writeErr
-					}
-					flusher.Flush() // Flush immediately for streaming
-				}
-				if err == io.EOF {
-					log.Printf("Streaming response completed successfully")
-					break
-				}
-				if err != nil {
-					log.Printf("Error reading streaming response: %v", err)
-					return err
-				}
-			}
-		} else {
-			// Fallback to direct copy if no flusher available
-			_, err = io.Copy(w, resp.Body)
-		}
-	} else {
-		log.Printf("Starting regular response copy")
-		// Use buffer pool for regular responses
-		bufPtr := bufferPool.Get().(*[]byte)
-		defer bufferPool.Put(bufPtr)
-		buf := *bufPtr
-		_, err = io.CopyBuffer(w, resp.Body, buf)
-	}
-
-	if err != nil {
-		log.Printf("Error copying response: %v", err)
-		return err
-	}
-
-	// Signal successful completion
-	log.Printf("processProxyRequest completed successfully")
-	return nil
+return route.Provider.ProxyRequest(ctx, w, r, body, cap)
 }

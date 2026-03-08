@@ -1,11 +1,41 @@
 {
   "port": 7071,
-  "allowed_models": [
-    "gpt-4",
-    "gpt-4.1",
-    "gpt-5-mini"
-  ],
-  "default_model": "gpt-5-mini",
+  "config_version": 1,
+  "enable_pprof": false,
+  "routing": {
+    "default_model": "gpt-5-mini",
+    "default_provider": "copilot",
+    "show_unavailable_models": false,
+    "model_map": {
+      "gpt-5-mini": {
+        "provider": "copilot"
+      },
+      "text-embedding-3-large": {
+        "provider": "codex"
+      }
+    }
+  },
+  "providers": {
+    "copilot": {
+      "enabled": true,
+      "auth": {
+        "mode": "device_code"
+      },
+      "allowed_models": [
+        "gpt-4",
+        "gpt-4.1",
+        "gpt-5-mini"
+      ]
+    },
+    "codex": {
+      "enabled": false,
+      "auth": {
+        "mode": "device_code",
+        "api_key_env": "OPENAI_API_KEY"
+      },
+      "allowed_models": []
+    }
+  },
   "timeouts": {
     "http_client": 300,
     "server_read": 30,

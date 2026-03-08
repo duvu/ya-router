@@ -1,275 +1,237 @@
-# GitHub Copilot Service Proxy
+# github-copilot-svcs
 
-This project provides a reverse proxy for GitHub Copilot, exposing OpenAI-compatible endpoints for use with tools and clients that expect the OpenAI API. It follows the authentication and token management approach used by [OpenCode](https://github.com/sst/opencode).
+`github-copilot-svcs` is a local or self-hosted proxy that exposes OpenAI-compatible endpoints and routes requests to one or more upstream providers.
 
-## Features
+Current implementation supports:
 
-  - Proactive token refresh (refreshes at 20% of token lifetime, minimum 5 minutes)
-  - Exponential backoff retry logic for failed token refreshes
-  - Automatic fallback to full re-authentication when needed
-  - Detailed token status monitoring
-  - Automatic retry with exponential backoff for chat completions (3 attempts)
-  - Network error recovery and rate limiting handling
-  - 30-second request timeout protection
+- GitHub Copilot
+- OpenAI Codex / OpenAI API
 
-## Downloads
+User-facing endpoints:
 
-Pre-built binaries are available for each release on the Releases page of this repository.
+- `GET /v1/models`
+- `POST /v1/chat/completions`
+- `POST /v1/embeddings`
+- `GET /health`
 
-- **macOS**: AMD64 (Intel), ARM64 (Apple Silicon)
-- **Windows**: AMD64, ARM64
-### Automated Releases
+If enabled in config, it also exposes profiling endpoints under `/debug/pprof/`.
 
-Releases are automatically created when code is merged to the `main` branch:
-- Version numbers follow semantic versioning (starting from v0.0.1)
-- Cross-platform binaries are built and attached to each release
-- Release notes include download links for all supported platforms
+Vietnamese operator guide: `docs/HUONG_DAN_SU_DUNG.md`
 
-## Performance & Production Features
+## What It Does
 
-This service includes enterprise-grade performance optimizations:
+- Aggregates models from enabled providers.
+- Routes chat and embeddings requests by requested model.
+- Keeps provider authentication isolated.
+- Migrates older single-provider Copilot configs to the current config schema.
 
-### 🚀 HTTP Server Optimizations
-- **Connection Pooling**: Shared HTTP client with configurable connection limits (100 max idle, 20 per host)
-- **Configurable Timeouts**: Fully customizable timeout settings via `config.json` for all server operations
-- **Streaming Support**: Read (30s), Write (300s), and Idle (120s) timeouts optimized for AI chat streaming
-- **Long Response Handling**: HTTP client and proxy context timeouts support up to 300s (5 minutes) for extended AI conversations
-- **Request Limits**: 5MB request body size limit to prevent memory exhaustion
-- **Advanced Transport**: Configurable dial timeout (10s), TLS handshake timeout (10s), keep-alive (30s)
+## Quick Start
 
-### 🔄 Reliability & Concurrency
-- **Circuit Breaker**: Automatic failure detection and recovery (5 failure threshold, 30s timeout)
-- **Context Propagation**: Request contexts with 25s timeout and proper cancellation
-- **Request Coalescing**: Deduplicates identical concurrent requests to models endpoint
-- **Exponential Backoff**: Enhanced retry logic with circuit breaker integration
-- **Worker Pool**: Concurrent request processing with dedicated worker goroutines (CPU*2 workers)
+### 1. Build
 
-### 💾 Resource Management
-- **Buffer Pooling**: sync.Pool for request/response buffer reuse to reduce GC pressure
-- **Memory Optimization**: Streaming support with 32KB buffers for large responses
-- **Graceful Shutdown**: Proper resource cleanup and coordinated shutdown with worker pool termination
-- **Shared Clients**: Centralized HTTP client eliminates resource duplication
-- **Worker Pool Management**: Automatic worker lifecycle management with graceful termination
-
-### 📊 Monitoring & Observability
-- **Profiling Endpoints**: `/debug/pprof/*` for memory, CPU, and goroutine analysis
-- **Enhanced Logging**: Circuit breaker state, request coalescing, worker pool metrics, and performance data
-- **Health Monitoring**: Detailed `/health` endpoint for load balancer integration
-- **Production Metrics**: Built-in support for operational monitoring and worker pool status
-
-## Quickstart with Makefile
-
-If you have `make` installed, you can build, run, and test the project easily:
-
-```bash
-make build      # Build the binary
-make run        # Start the proxy server
-make auth       # Authenticate with GitHub Copilot
-make models     # List available models
-make config     # Show current configuration
-make clean      # Remove the binary
-```
-
-## Installation & Usage
-
-### 1. Build the Application
 ```bash
 make build
-# or manually:
+
+# or
 go build -o github-copilot-svcs ./src
 ```
 
-### 2. Optional: Configure Timeouts
+### 2. Prepare Runtime Config
+
 ```bash
-# Copy example config and customize timeout values
+mkdir -p ~/.local/share/github-copilot-svcs
 cp config.example.json ~/.local/share/github-copilot-svcs/config.json
-# Edit the timeouts section as needed
 ```
 
-### 3. First Time Setup & Authentication
+### 3. Authenticate Providers
+
+GitHub Copilot:
+
 ```bash
-make auth
-# or manually:
-./github-copilot-svcs auth
+./github-copilot-svcs auth copilot
 ```
 
-### 4. Start the Proxy Server
+Codex with ChatGPT login or existing Codex CLI login:
+
 ```bash
-make run
-# or manually:
+./github-copilot-svcs auth codex
+```
+
+This command now defaults to the same ChatGPT/device-auth flow used by the official `codex login` flow. It will:
+
+- prefer an existing cached login under `CODEX_HOME` or `~/.codex`
+- otherwise run `codex login --device-auth`
+- then validate the resulting local credential cache
+
+Codex with API key mode:
+
+```bash
+export OPENAI_API_KEY=your_api_key
+./github-copilot-svcs auth codex --api-key
+```
+
+ChatGPT/device-auth mode requires:
+
+- `providers.codex.enabled = true`
+- `providers.codex.auth.mode = "chatgpt_device_auth"`
+- a valid `auth.json` under `providers.codex.auth.codex_home` or `~/.codex`
+
+### 4. Start The Service
+
+```bash
 ./github-copilot-svcs run
 ```
 
-## Docker Usage
+### 5. Verify
 
-Run with Docker to persist configuration across container restarts:
-
-```bash
-# Local development with docker-compose
-docker-compose up -d
-
-# Or manually with docker run
-docker run -d \
-  --name github-copilot-svcs \
-  -p 7071:7071 \
-  -v ./config:/home/appuser/.local/share/github-copilot-svcs \
-  docker.x51.vn/dev/github-copilot-svcs:latest
-```
-
-**Configuration persistence:**
-- Local development: `./config` directory is mounted to container config path
-- Production deployment: Host folder `./github-copilot-svcs` is mounted to persist authentication tokens
-
-**First-time authentication in container:**
-```bash
-# Authenticate inside the container (one-time setup)
-docker exec -it github-copilot-svcs /app/github-copilot-svcs auth
-```
-
-**Health check:**
 ```bash
 curl http://localhost:7071/health
+curl http://localhost:7071/v1/models
 ```
 
 ## CLI Commands
 
-| Command | Description |
-|---------|-------------|
-| `run` / `start` | Start the proxy server (use `--config-migrate` for migration) |
-| `auth`   | Authenticate with GitHub Copilot using device flow |
-| `status` | Show detailed authentication and token status |
-| `config` | Display current configuration details |
-| `models` | List all available AI models |
-| `migrate-config` | Migrate configuration file with new defaults |
-| `refresh`| Manually force token refresh |
-| `version`| Show version information |
-| `help`   | Show usage information |
+| Command | Purpose |
+|---|---|
+| `run` | Start the proxy server |
+| `run --config-migrate merge|none|override` | Start and control config migration |
+| `auth copilot` | Run GitHub device-flow authentication |
+| `auth codex` | Use cached Codex login or run `codex login --device-auth`, then validate credentials |
+| `status` | Show authentication state for configured providers |
+| `config` | Print current config summary |
+| `models` | List models from all enabled providers |
+| `models --provider copilot` | List Copilot models only |
+| `models --provider codex` | List Codex models only |
+| `refresh` | Refresh or reload credentials |
+| `refresh --provider copilot` | Force Copilot token refresh |
+| `refresh --provider codex` | Re-read Codex credentials |
+| `migrate-config --mode merge|override` | Run config migration manually |
+| `version` | Print binary version |
+| `help` | Show usage |
 
-### Listing models (including newly added free models)
+## User Workflows
 
-This proxy lists models directly from your GitHub Copilot account:
+### Copilot Only
 
-- CLI: `./github-copilot-svcs models`
-- HTTP: `GET http://localhost:7071/v1/models`
+1. Enable `providers.copilot.enabled`.
+2. Run `./github-copilot-svcs auth copilot`.
+3. Start the service with `./github-copilot-svcs run`.
+4. Point your client to `http://localhost:7071/v1`.
 
-Upstream endpoint used: `GET https://api.githubcopilot.com/models` (requires IDE headers).
+### Codex Only
 
-To avoid querying the upstream API continuously, the server caches the upstream model list in-memory for **24 hours** (fallback results are cached briefly).
+1. Set `providers.codex.enabled` to `true`.
+2. Set `routing.default_provider` to `codex` if unmatched models should go there.
+3. Configure `providers.codex.auth.mode`.
+4. Run `./github-copilot-svcs auth codex`.
+5. Start the service.
 
-### Enhanced Status Monitoring
+### Copilot And Codex Together
 
-The `status` command now provides detailed token information:
+1. Enable both providers.
+2. Authenticate each provider separately.
+3. Use `routing.model_map` for known or ambiguous model names.
+4. Inspect the merged model list with `./github-copilot-svcs models`.
+
+## API Usage
+
+### List Models
 
 ```bash
-./github-copilot-svcs status
+curl http://localhost:7071/v1/models
 ```
 
-Example output:
-```
-Configuration file: ~/.local/share/github-copilot-svcs/config.json
-Port: 7071
-Authentication: ✓ Authenticated
-Token expires: in 29m 53s (1793 seconds)
-Status: ✅ Token is healthy
-Has GitHub token: true
-Refresh interval: 1500 seconds
-```
+Behavior:
 
-Status indicators:
-- ✅ **Token is healthy**: Token has plenty of time remaining
-- ⚠️ **Token will be refreshed soon**: Token is approaching refresh threshold
-- ❌ **Token needs refresh**: Token has expired or will expire very soon
-
-## API Endpoints
-
-Once running, the proxy exposes these OpenAI-compatible endpoints:
+- Returns the merged model list from enabled providers.
+- By default, only authenticated providers are shown.
+- If `routing.show_unavailable_models` is `true`, unauthenticated providers may still appear if their implementation can provide models.
 
 ### Chat Completions
-```bash
-POST http://localhost:7071/v1/chat/completions
-Content-Type: application/json
 
-{
-  "model": "gpt-4",
-  "messages": [
-    {"role": "user", "content": "Hello, world!"}
-  ],
-  "max_tokens": 100
-}
+```bash
+curl -X POST http://localhost:7071/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-5-mini",
+    "messages": [
+      {"role": "user", "content": "Write a hello world in Go"}
+    ]
+  }'
 ```
 
-### Available Models
+Routing behavior:
+
+- The service reads `model` from the request body.
+- It resolves the target provider using `routing.model_map`, then provider model catalogs, then `routing.default_provider`.
+- If the chosen provider requires a different upstream model name, the request body is patched before forwarding.
+
+### Embeddings
+
 ```bash
-GET http://localhost:7071/v1/models
+curl -X POST http://localhost:7071/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "text-embedding-3-large",
+    "input": "hello world"
+  }'
 ```
 
-### Health Check
-```bash
-GET http://localhost:7071/health
-```
-
-### Profiling Endpoints (Production Monitoring)
-```bash
-GET http://localhost:7071/debug/pprof/          # Overview of available profiles
-GET http://localhost:7071/debug/pprof/heap      # Memory heap profile
-GET http://localhost:7071/debug/pprof/goroutine # Goroutine profile
-GET http://localhost:7071/debug/pprof/profile   # CPU profile (30s sampling)
-GET http://localhost:7071/debug/pprof/trace     # Execution trace
-```
-
-## Reliability & Error Handling
-
-### Automatic Token Management
-
-The proxy implements proactive token management to minimize authentication interruptions:
-
-- **Proactive Refresh**: Tokens are refreshed when 20% of their lifetime remains (typically 5-6 minutes before expiration for 25-minute tokens)
-- **Retry Logic**: Failed token refreshes are retried up to 3 times with exponential backoff (2s, 8s, 18s delays)
-- **Fallback Authentication**: If token refresh fails completely, the system falls back to full device flow re-authentication
-- **Background Monitoring**: Token status is continuously monitored during API requests
-
-### Request Retry Logic
-
-Chat completion requests are automatically retried to handle transient failures:
-
-- **Automatic Retries**: Up to 3 attempts for failed requests
-- **Smart Retry Logic**: Only retries on network errors, server errors (5xx), rate limiting (429), and timeouts (408)
-- **Exponential Backoff**: Retry delays of 1s, 4s, 9s to avoid overwhelming the API
-- **Timeout Protection**: 30-second timeout per request attempt
-
-### Error Recovery
+### Health
 
 ```bash
-# Manual token refresh if needed
-./github-copilot-svcs refresh
-
-# Check current token status
-./github-copilot-svcs status
-
-# Re-authenticate if all else fails
-./github-copilot-svcs auth
+curl http://localhost:7071/health
 ```
 
 ## Configuration
 
-The configuration is stored in `~/.local/share/github-copilot-svcs/config.json`:
+Runtime config path:
+
+- Linux and macOS: `~/.local/share/github-copilot-svcs/config.json`
+- In this repo's container image: `/home/appuser/.local/share/github-copilot-svcs/config.json`
+
+Example:
 
 ```json
 {
   "port": 7071,
-  "github_token": "gho_...",
-  "copilot_token": "ghu_...",
-
-  ### Model configuration behavior
-
-  - `default_model`: The proxy **enforces** this model for all chat requests (clients cannot override it).
-  - `allowed_models`: Controls what is returned by `GET /v1/models` and what appears in filtered model listings.
-    - If the field is **missing** in your config, safe defaults are applied.
-    - If you set it to an **explicit empty list** (`"allowed_models": []`), the proxy will treat it as **allow all discovered models**.
-
-  This makes it easy to pick up newly introduced models without needing to keep a hard-coded allowlist updated.
-  "expires_at": 1720000000,
-  "refresh_in": 1500,
+  "config_version": 1,
+  "enable_pprof": false,
+  "routing": {
+    "default_model": "gpt-5-mini",
+    "default_provider": "copilot",
+    "show_unavailable_models": false,
+    "model_map": {
+      "gpt-5-mini": {
+        "provider": "copilot"
+      },
+      "text-embedding-3-large": {
+        "provider": "codex"
+      }
+    }
+  },
+  "providers": {
+    "copilot": {
+      "enabled": true,
+      "auth": {
+        "mode": "device_code"
+      },
+      "allowed_models": [
+        "gpt-4",
+        "gpt-4.1",
+        "gpt-5-mini"
+      ]
+    },
+    "codex": {
+      "enabled": false,
+      "auth": {
+        "mode": "chatgpt_device_auth",
+        "api_key_env": "OPENAI_API_KEY",
+        "codex_home": "~/.codex"
+      },
+      "allowed_models": []
+    }
+  },
   "timeouts": {
     "http_client": 300,
     "server_read": 30,
@@ -285,262 +247,130 @@ The configuration is stored in `~/.local/share/github-copilot-svcs/config.json`:
 }
 ```
 
-### Configuration Fields
+### Important Fields
 
-- `port`: Server port (default: 7071)
-- `github_token`: GitHub OAuth token for Copilot access
-- `copilot_token`: GitHub Copilot API token
-- `expires_at`: Unix timestamp when the Copilot token expires
-- `refresh_in`: Seconds until token should be refreshed (typically 1500 = 25 minutes)
-- `allowed_models`: Array of allowed model names (default: ["gpt-4", "gpt-4.1", "gpt-5-mini"])
-- `default_model`: Default model to use (default: "gpt-5-mini")
+#### `routing.default_model`
 
-### Default Model Enforcement
+- Used when a client request does not include a `model` field.
+- It is not a global forced override for all requests.
 
-**Important**: This service enforces the use of the configured `default_model` for all requests, regardless of the model specified by client applications. This ensures:
+#### `routing.default_provider`
 
-- **Predictable Billing**: All usage is billed against the same model
-- **Consistent Feature Availability**: Features and capabilities remain consistent across all requests
-- **Policy Compliance**: Prevents clients from bypassing configured model restrictions
+- Used when the requested model cannot be resolved via explicit mapping or model discovery.
 
-**Behavior Examples**:
+#### `routing.model_map`
+
+- Explicit routing rules.
+- Recommended when the same model name may exist on multiple providers.
+
+#### `providers.<provider>.allowed_models`
+
+- Applied inside each provider's model listing logic.
+- Empty list means allow all discovered models for that provider.
+
+#### `providers.copilot.auth`
+
+- Uses `device_code` mode.
+- Token state is persisted under this section after authentication.
+
+#### `providers.codex.auth`
+
+- `api_key` reads from the env var in `api_key_env`.
+- `chatgpt_device_auth` reads local cached auth from `codex_home` or `~/.codex`.
+- `auth codex` defaults to `chatgpt_device_auth`.
+
+## Authentication Notes
+
+### Copilot
+
+- Uses GitHub OAuth device flow.
+- Persists auth state in the runtime config file.
+- Automatically refreshes tokens before expiry.
+- `refresh --provider copilot` forces a refresh attempt.
+
+### Codex
+
+Supported credential modes:
+
+- `api_key`
+- `chatgpt_device_auth`
+
+Operational guidance:
+
+- `api_key` is the preferred server-side mode.
+- `chatgpt_device_auth` is intended for trusted local or self-hosted environments.
+- `~/.codex/auth.json` is secret material and must never be logged or exposed.
+
+## Config Migration
+
+Older flat configs are migrated automatically to config version `1`.
+
+Modes:
+
+- `merge`: preserve existing values and fill missing fields from defaults
+- `override`: replace current config with defaults
+- `none`: disable startup migration
+
+Examples:
+
 ```bash
-# Client requests gpt-4, but service uses gpt-5-mini (the configured default)
-curl -X POST http://localhost:7071/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}'
-# → Actual request sent to GitHub Copilot uses "gpt-5-mini"
-
-# Client requests claude-3.5-sonnet, but service still uses gpt-5-mini
-curl -X POST http://localhost:7071/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "claude-3.5-sonnet", "messages": [{"role": "user", "content": "Hello"}]}'
-# → Actual request sent to GitHub Copilot uses "gpt-5-mini"
-```
-
-**Configuration**: To change the model used for all requests, update the `default_model` field in your configuration:
-
-```json
-{
-  "default_model": "claude-3.5-sonnet"
-}
-```
-
-After changing the configuration, restart the service for the changes to take effect.
-
-### Configuration Migration
-
-**Automatic Migration**: Starting from version 2.0, the server automatically runs configuration migration in `merge` mode at startup to ensure your configuration includes the latest settings while preserving authentication tokens.
-
-When upgrading to newer versions, you can control migration behavior:
-
-```bash
-# Default behavior - automatic merge at startup (recommended)
-./github-copilot-svcs run
-
-# Explicitly specify migration mode
 ./github-copilot-svcs run --config-migrate merge
-
-# Disable migration at startup
 ./github-copilot-svcs run --config-migrate none
-
-# Standalone migration command
-./github-copilot-svcs migrate-config --mode merge
-
-# Override mode - replaces entire config (you'll need to re-authenticate)
 ./github-copilot-svcs migrate-config --mode override
 ```
 
-**Migration Modes:**
-- `merge` (**default for `run` command**): Adds new configuration fields while preserving existing tokens and custom settings
-- `override`: Replaces the entire configuration with defaults (authentication tokens will be lost)
-- `none`: No migration
-
-### Timeout Configuration
-
-All timeout values are specified in seconds and have sensible defaults:
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `http_client` | 300 | HTTP client timeout for outbound requests to GitHub Copilot API |
-| `server_read` | 30 | Server timeout for reading incoming requests |
-| `server_write` | 300 | Server timeout for writing responses (increased for streaming) |
-| `server_idle` | 120 | Server timeout for idle connections |
-| `proxy_context` | 300 | Request context timeout for proxy operations |
-| `circuit_breaker` | 30 | Circuit breaker recovery timeout when API is failing |
-| `keep_alive` | 30 | TCP keep-alive timeout for HTTP connections |
-| `tls_handshake` | 10 | TLS handshake timeout |
-| `dial_timeout` | 10 | Connection dial timeout |
-| `idle_conn_timeout` | 90 | Idle connection timeout in connection pool |
-
-**Streaming Support**: The service is optimized for long-running streaming chat completions with timeouts up to 300 seconds (5 minutes) to support extended AI conversations.
-
-**Custom Configuration**: You can copy `config.example.json` as a starting point and modify timeout values based on your environment:
+## Docker
 
 ```bash
-cp config.example.json ~/.local/share/github-copilot-svcs/config.json
-# Edit the timeouts section as needed
+docker run -d \
+  --name github-copilot-svcs \
+  -p 7071:7071 \
+  -v ./config:/home/appuser/.local/share/github-copilot-svcs \
+  -e OPENAI_API_KEY=your_api_key \
+  docker.x51.vn/dev/github-copilot-svcs:latest
 ```
 
-## Authentication Flow
+First-time Copilot auth in container:
 
-The authentication follows GitHub Copilot's OAuth device flow:
-
-1. **Device Authorization**: Generates a device code and user code
-2. **User Authorization**: User visits GitHub and enters the user code
-3. **Token Exchange**: Polls for GitHub OAuth token
-4. **Copilot Token**: Exchanges GitHub token for Copilot API token
-5. **Automatic Refresh**: Refreshes Copilot token as needed
-
-## Model Mapping
-
-The proxy automatically maps common model names to GitHub Copilot models:
-
-| Input Model | GitHub Copilot Model | Provider |
-|-------------|---------------------|----------|
-| `gpt-4o`, `gpt-4.1`, `gpt-5-mini` | As specified | OpenAI |
-| `o3`, `o3-mini`, `o4-mini` | As specified | OpenAI |
-| `claude-3.5-sonnet`, `claude-3.7-sonnet`, `claude-3.7-sonnet-thought` | As specified | Anthropic |
-| `claude-opus-4`, `claude-sonnet-4` | As specified | Anthropic |
-| `gemini-2.5-pro`, `gemini-2.0-flash-001` | As specified | Google |
-
-**Supported Model Categories:**
-- **OpenAI GPT Models**: GPT-4o, GPT-4.1, GPT-5 Mini, O3/O4 reasoning models
-- **Anthropic Claude Models**: Claude 3.5/3.7 Sonnet variants, Claude Opus/Sonnet 4
-- **Google Gemini Models**: Gemini 2.0/2.5 Pro and Flash models
-
-## Security
-
-- Tokens are stored securely in the user's home directory with restricted permissions (0700)
-- All communication with GitHub Copilot uses HTTPS
-- No sensitive data is logged
-- Automatic token refresh prevents long-lived token exposure
+```bash
+docker exec -it github-copilot-svcs /app/github-copilot-svcs auth copilot
+```
 
 ## Troubleshooting
 
-### Authentication Issues
-```bash
-# Re-authenticate
-./github-copilot-svcs auth
+### `models` shows fewer models than expected
 
-# Check current status
+- Check `./github-copilot-svcs status`.
+- Verify the provider is enabled.
+- Verify `allowed_models` is not filtering your expected models.
+- For Codex API-key mode, confirm the env var exists in the same process environment.
+
+### Codex authentication fails
+
+- For `api_key`, confirm `OPENAI_API_KEY` or the configured env var is set.
+- For `chatgpt_device_auth`, confirm the auth cache exists and contains a usable access token.
+
+### A request routes to the wrong provider
+
+- Add an explicit entry in `routing.model_map`.
+- Confirm the exact model string sent by the client.
+
+### Need per-provider visibility
+
+```bash
 ./github-copilot-svcs status
-```
-
-### Connection Issues
-```bash
-# Check if service is running
-curl http://localhost:7071/health
-
-# View logs (if running in foreground)
-./github-copilot-svcs run
-```
-
-### Port Conflicts
-```bash
-# Use a different port
-# Edit ~/.local/share/github-copilot-svcs/config.json
-# Or delete config file and restart to select new port
-```
-
-## Integration Examples
-
-### Using with curl
-```bash
-curl -X POST http://localhost:7071/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4",
-    "messages": [{"role": "user", "content": "Write a hello world in Python"}],
-    "max_tokens": 100
-  }'
-```
-
-### Using with OpenAI Python Client
-```python
-import openai
-
-# Point OpenAI client to the proxy
-client = openai.OpenAI(
-    base_url="http://localhost:7071/v1",
-    api_key="dummy"  # Not used, but required by client
-)
-
-response = client.chat.completions.create(
-    model="gpt-4",
-    messages=[{"role": "user", "content": "Hello, world!"}]
-)
-print(response.choices[0].message.content)
-```
-
-### Using with LangChain
-```python
-from langchain.llms import OpenAI
-
-llm = OpenAI(
-    openai_api_base="http://localhost:7071/v1",
-    openai_api_key="dummy"  # Not used
-)
-response = llm("Write a hello world in Python")
-print(response)
+./github-copilot-svcs models --provider copilot
+./github-copilot-svcs models --provider codex
 ```
 
 ## Development
 
-### Project Structure
-```
-github-copilot-svcs/
-├── src/            # Go source code
-│   ├── main.go        # Main application and CLI
-│   ├── auth.go        # GitHub Copilot authentication
-│   ├── proxy.go       # Reverse proxy implementation
-│   ├── server.go      # Server utilities and graceful shutdown
-│   ├── transform.go   # Request/response transformation
-│   ├── cli.go         # CLI command handling
-│   ├── config.go      # Configuration and migration
-│   └── models.go      # Model handling and caching
-├── config.example.json  # Example configuration file
-├── go.mod              # Go module definition
-├── Makefile           # Build automation
-├── Dockerfile         # Container image build
-├── docker-compose.yml # Container orchestration
-└── README.md          # This documentation
-```
-
-### Building from Source
 ```bash
-git clone <repository>
-cd github-copilot-svcs
-make build
-# or manually:
-go mod tidy
-go build -o github-copilot-svcs ./src
-```
-
-### Running Tests
-```bash
+make fmt
+make vet
 make test
-# or manually:
-go test ./src/...
 ```
 
 ## License
 
-Apache License 2.0 - see LICENSE file for details.
-
-This is free software: you are free to change and redistribute it under the terms of the Apache 2.0 license.
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
-
-## Support
-
-For issues and questions:
-1. Check the troubleshooting section
-2. Review the logs for error messages
-3. Open an issue with detailed information about your setup and the problem
+Apache License 2.0. See `LICENSE`.

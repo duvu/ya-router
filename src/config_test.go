@@ -5,116 +5,179 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
-func TestMergeConfigs(t *testing.T) {
-	// Test data setup
-	existingConfig := &Config{
-		Port:          8080,
-		GitHubToken:   "existing_github_token",
-		CopilotToken:  "existing_copilot_token",
-		ExpiresAt:     1234567890,
-		RefreshIn:     1500,
-		AllowedModels: []string{"gpt-4"},
-		DefaultModel:  "gpt-4",
-	}
-	existingConfig.Timeouts.HTTPClient = 200
+func TestDefaultConfig(t *testing.T) {
+	cfg := defaultConfig()
 
-	defaultConfig := &Config{
-		Port:          7071,
-		AllowedModels: []string{"gpt-4", "gpt-4.1", "gpt-5-mini"},
-		DefaultModel:  "gpt-5-mini",
+	if cfg.Port != 7071 {
+		t.Errorf("Port = %d, want 7071", cfg.Port)
 	}
-	setDefaultTimeouts(defaultConfig)
+	if cfg.ConfigVersion != 1 {
+		t.Errorf("ConfigVersion = %d, want 1", cfg.ConfigVersion)
+	}
+	if cfg.Routing.DefaultModel != "gpt-5-mini" {
+		t.Errorf("DefaultModel = %q, want gpt-5-mini", cfg.Routing.DefaultModel)
+	}
+	if cfg.Routing.DefaultProvider != "copilot" {
+		t.Errorf("DefaultProvider = %q, want copilot", cfg.Routing.DefaultProvider)
+	}
+	if !cfg.Providers.Copilot.Enabled {
+		t.Error("Copilot should be enabled by default")
+	}
+	if cfg.Providers.Copilot.Auth.Mode != "device_code" {
+		t.Errorf("Copilot auth mode = %q, want device_code", cfg.Providers.Copilot.Auth.Mode)
+	}
+	if cfg.Providers.Codex.Enabled {
+		t.Error("Codex should be disabled by default")
+	}
+	if cfg.Providers.Codex.Auth.Mode != "device_code" {
+		t.Errorf("Codex auth mode = %q, want device_code", cfg.Providers.Codex.Auth.Mode)
+	}
+	if cfg.Timeouts.HTTPClient != 300 {
+		t.Errorf("HTTPClient timeout = %d, want 300", cfg.Timeouts.HTTPClient)
+	}
+}
+
+func TestApplyConfigDefaults_FillsZeros(t *testing.T) {
+	cfg := &Config{}
+	applyConfigDefaults(cfg)
+
+	if cfg.Port != 7071 {
+		t.Errorf("Port = %d, want 7071", cfg.Port)
+	}
+	if cfg.Routing.DefaultModel != "gpt-5-mini" {
+		t.Errorf("DefaultModel = %q, want gpt-5-mini", cfg.Routing.DefaultModel)
+	}
+	if cfg.Providers.Codex.Auth.Mode != "device_code" {
+		t.Errorf("Codex auth mode = %q, want device_code", cfg.Providers.Codex.Auth.Mode)
+	}
+	if cfg.Timeouts.CircuitBreaker != 30 {
+		t.Errorf("CircuitBreaker = %d, want 30", cfg.Timeouts.CircuitBreaker)
+	}
+}
+
+func TestApplyConfigDefaults_PreservesExisting(t *testing.T) {
+	cfg := &Config{
+		Port: 9090,
+		Routing: RoutingConfig{
+			DefaultModel:    "gpt-4",
+			DefaultProvider: "codex",
+		},
+	}
+	cfg.Providers.Codex.Auth.Mode = "api_key"
+	cfg.Timeouts.HTTPClient = 600
+
+	applyConfigDefaults(cfg)
+
+	if cfg.Port != 9090 {
+		t.Errorf("Port = %d, want 9090", cfg.Port)
+	}
+	if cfg.Routing.DefaultModel != "gpt-4" {
+		t.Errorf("DefaultModel = %q, want gpt-4", cfg.Routing.DefaultModel)
+	}
+	if cfg.Routing.DefaultProvider != "codex" {
+		t.Errorf("DefaultProvider = %q, want codex", cfg.Routing.DefaultProvider)
+	}
+	if cfg.Providers.Codex.Auth.Mode != "api_key" {
+		t.Errorf("Codex auth mode = %q, want api_key", cfg.Providers.Codex.Auth.Mode)
+	}
+	if cfg.Timeouts.HTTPClient != 600 {
+		t.Errorf("HTTPClient = %d, want 600", cfg.Timeouts.HTTPClient)
+	}
+}
+
+func TestMergeConfigs(t *testing.T) {
+	existing := &Config{
+		Port:          8080,
+		ConfigVersion: 1,
+		Routing: RoutingConfig{
+			DefaultModel:    "gpt-4",
+			DefaultProvider: "copilot",
+		},
+		Providers: ProvidersConfig{
+			Copilot: CopilotProviderConfig{
+				Enabled: true,
+				Auth: CopilotAuthState{
+					Mode:         "device_code",
+					GitHubToken:  "existing_github_token",
+					CopilotToken: "existing_copilot_token",
+					ExpiresAt:    1234567890,
+					RefreshIn:    1500,
+				},
+				AllowedModels: []string{"gpt-4"},
+			},
+		},
+	}
+	existing.Timeouts.HTTPClient = 200
+
+	defaults := &Config{
+		Port:          7071,
+		ConfigVersion: 1,
+		Routing: RoutingConfig{
+			DefaultModel:    "gpt-5-mini",
+			DefaultProvider: "copilot",
+		},
+		Providers: ProvidersConfig{
+			Copilot: CopilotProviderConfig{
+				Enabled:       true,
+				AllowedModels: []string{"gpt-4", "gpt-4.1", "gpt-5-mini"},
+			},
+		},
+	}
+	setDefaultTimeouts(defaults)
 
 	tests := []struct {
 		name     string
 		mode     ConfigMigrationMode
-		existing *Config
-		defaults *Config
 		validate func(t *testing.T, result *Config)
 	}{
 		{
-			name:     "merge preserves tokens and custom port",
-			mode:     ConfigMigrationMerge,
-			existing: existingConfig,
-			defaults: defaultConfig,
+			name: "merge preserves existing non-zero values",
+			mode: ConfigMigrationMerge,
 			validate: func(t *testing.T, result *Config) {
-				// Should preserve sensitive fields
-				if result.GitHubToken != "existing_github_token" {
-					t.Errorf("Expected GitHubToken to be preserved, got %s", result.GitHubToken)
-				}
-				if result.CopilotToken != "existing_copilot_token" {
-					t.Errorf("Expected CopilotToken to be preserved, got %s", result.CopilotToken)
-				}
-				if result.ExpiresAt != 1234567890 {
-					t.Errorf("Expected ExpiresAt to be preserved, got %d", result.ExpiresAt)
-				}
-				if result.RefreshIn != 1500 {
-					t.Errorf("Expected RefreshIn to be preserved, got %d", result.RefreshIn)
-				}
-
-				// Should preserve custom port (not default 7071)
 				if result.Port != 8080 {
-					t.Errorf("Expected Port to be preserved, got %d", result.Port)
+					t.Errorf("Port = %d, want 8080", result.Port)
 				}
-
-				// Should update model configuration from defaults
-				if result.DefaultModel != "gpt-5-mini" {
-					t.Errorf("Expected DefaultModel to be updated to gpt-5-mini, got %s", result.DefaultModel)
+				if result.Routing.DefaultModel != "gpt-4" {
+					t.Errorf("DefaultModel = %q, want gpt-4", result.Routing.DefaultModel)
 				}
-				if len(result.AllowedModels) != 3 {
-					t.Errorf("Expected 3 allowed models, got %d", len(result.AllowedModels))
+				if result.Providers.Copilot.Auth.GitHubToken != "existing_github_token" {
+					t.Errorf("GitHubToken not preserved")
 				}
-
-				// Should update timeout configuration from defaults
-				if result.Timeouts.HTTPClient != 300 {
-					t.Errorf("Expected HTTPClient timeout to be updated to default 300, got %d", result.Timeouts.HTTPClient)
+				if result.Providers.Copilot.Auth.CopilotToken != "existing_copilot_token" {
+					t.Errorf("CopilotToken not preserved")
+				}
+				if result.Timeouts.HTTPClient != 200 {
+					t.Errorf("HTTPClient = %d, want 200", result.Timeouts.HTTPClient)
+				}
+				// Zero timeouts should be filled from defaults
+				if result.Timeouts.ServerWrite != 300 {
+					t.Errorf("ServerWrite = %d, want 300", result.Timeouts.ServerWrite)
 				}
 			},
 		},
 		{
-			name:     "override replaces everything",
-			mode:     ConfigMigrationOverride,
-			existing: existingConfig,
-			defaults: defaultConfig,
+			name: "override replaces everything",
+			mode: ConfigMigrationOverride,
 			validate: func(t *testing.T, result *Config) {
-				// Should not preserve sensitive fields
-				if result.GitHubToken != "" {
-					t.Errorf("Expected GitHubToken to be empty after override, got %s", result.GitHubToken)
-				}
-				if result.CopilotToken != "" {
-					t.Errorf("Expected CopilotToken to be empty after override, got %s", result.CopilotToken)
-				}
-				if result.ExpiresAt != 0 {
-					t.Errorf("Expected ExpiresAt to be 0 after override, got %d", result.ExpiresAt)
-				}
-
-				// Should use defaults
 				if result.Port != 7071 {
-					t.Errorf("Expected Port to be default 7071, got %d", result.Port)
+					t.Errorf("Port = %d, want 7071", result.Port)
 				}
-				if result.DefaultModel != "gpt-5-mini" {
-					t.Errorf("Expected DefaultModel to be gpt-5-mini, got %s", result.DefaultModel)
+				if result.Routing.DefaultModel != "gpt-5-mini" {
+					t.Errorf("DefaultModel = %q, want gpt-5-mini", result.Routing.DefaultModel)
 				}
 			},
 		},
 		{
-			name:     "none returns existing unchanged",
-			mode:     ConfigMigrationNone,
-			existing: existingConfig,
-			defaults: defaultConfig,
+			name: "none returns existing unchanged",
+			mode: ConfigMigrationNone,
 			validate: func(t *testing.T, result *Config) {
-				// Should return existing config unchanged
-				if result.GitHubToken != "existing_github_token" {
-					t.Errorf("Expected GitHubToken unchanged, got %s", result.GitHubToken)
-				}
 				if result.Port != 8080 {
-					t.Errorf("Expected Port unchanged, got %d", result.Port)
+					t.Errorf("Port = %d, want 8080", result.Port)
 				}
-				if result.DefaultModel != "gpt-4" {
-					t.Errorf("Expected DefaultModel unchanged, got %s", result.DefaultModel)
+				if result.Routing.DefaultModel != "gpt-4" {
+					t.Errorf("DefaultModel = %q, want gpt-4", result.Routing.DefaultModel)
 				}
 			},
 		},
@@ -122,163 +185,216 @@ func TestMergeConfigs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := mergeConfigs(tt.existing, tt.defaults, tt.mode)
+			result := mergeConfigs(existing, defaults, tt.mode)
 			tt.validate(t, result)
 		})
 	}
 }
 
+func TestSaveAndLoadConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	testConfigPath := filepath.Join(tempDir, "config.json")
+	old := configPathOverride
+	configPathOverride = testConfigPath
+	defer func() { configPathOverride = old }()
+
+	cfg := defaultConfig()
+	cfg.Port = 9999
+	cfg.Providers.Copilot.Auth.GitHubToken = "test-token"
+	cfg.Providers.Copilot.Auth.CopilotToken = "copilot-tok"
+	cfg.Providers.Codex.Enabled = true
+	cfg.Providers.Codex.Auth.Mode = "api_key"
+
+	if err := saveConfig(cfg); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+
+	loaded, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+
+	if loaded.Port != 9999 {
+		t.Errorf("Port = %d, want 9999", loaded.Port)
+	}
+	if loaded.Providers.Copilot.Auth.GitHubToken != "test-token" {
+		t.Errorf("GitHubToken = %q, want test-token", loaded.Providers.Copilot.Auth.GitHubToken)
+	}
+	if loaded.Providers.Codex.Auth.Mode != "api_key" {
+		t.Errorf("Codex mode = %q, want api_key", loaded.Providers.Codex.Auth.Mode)
+	}
+}
+
+func TestLoadConfig_V0Migration(t *testing.T) {
+	tempDir := t.TempDir()
+	testConfigPath := filepath.Join(tempDir, "config.json")
+	old := configPathOverride
+	configPathOverride = testConfigPath
+	defer func() { configPathOverride = old }()
+
+	// Write a V0 config
+	v0 := map[string]interface{}{
+		"port":           8080,
+		"github_token":   "gh-tok",
+		"copilot_token":  "cp-tok",
+		"expires_at":     1234567890,
+		"refresh_in":     1500,
+		"allowed_models": []string{"gpt-4"},
+		"default_model":  "gpt-4",
+	}
+	data, _ := json.Marshal(v0)
+	if err := os.WriteFile(testConfigPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+
+	if cfg.ConfigVersion != 1 {
+		t.Errorf("ConfigVersion = %d, want 1", cfg.ConfigVersion)
+	}
+	if cfg.Port != 8080 {
+		t.Errorf("Port = %d, want 8080", cfg.Port)
+	}
+	if cfg.Providers.Copilot.Auth.GitHubToken != "gh-tok" {
+		t.Errorf("GitHubToken = %q, want gh-tok", cfg.Providers.Copilot.Auth.GitHubToken)
+	}
+	if cfg.Providers.Copilot.Auth.CopilotToken != "cp-tok" {
+		t.Errorf("CopilotToken = %q, want cp-tok", cfg.Providers.Copilot.Auth.CopilotToken)
+	}
+	if cfg.Routing.DefaultModel != "gpt-4" {
+		t.Errorf("DefaultModel = %q, want gpt-4", cfg.Routing.DefaultModel)
+	}
+	if !cfg.Providers.Copilot.Enabled {
+		t.Error("Copilot should be enabled after V0 migration")
+	}
+}
+
+func TestLoadConfig_MissingFile(t *testing.T) {
+	tempDir := t.TempDir()
+	testConfigPath := filepath.Join(tempDir, "nonexistent.json")
+	old := configPathOverride
+	configPathOverride = testConfigPath
+	defer func() { configPathOverride = old }()
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.Port != 7071 {
+		t.Errorf("Port = %d, want 7071 (default)", cfg.Port)
+	}
+}
+
 func TestLoadDefaultConfigFromExample(t *testing.T) {
-	// Create a temporary config.example.json for testing
 	tempDir := t.TempDir()
 	oldDir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.Chdir(oldDir)
-
 	if err := os.Chdir(tempDir); err != nil {
 		t.Fatal(err)
 	}
 
-	exampleConfig := map[string]interface{}{
+	example := map[string]interface{}{
 		"port":           7071,
-		"allowed_models": []string{"gpt-4", "gpt-4.1", "gpt-5-mini"},
-		"default_model":  "gpt-5-mini",
-		"timeouts": map[string]int{
-			"http_client": 300,
+		"config_version": 1,
+		"routing": map[string]interface{}{
+			"default_model":    "gpt-5-mini",
+			"default_provider": "copilot",
+		},
+		"providers": map[string]interface{}{
+			"copilot": map[string]interface{}{
+				"enabled":        true,
+				"allowed_models": []string{"gpt-4", "gpt-5-mini"},
+			},
 		},
 	}
 
-	file, err := os.Create("config.example.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-
-	if err := json.NewEncoder(file).Encode(exampleConfig); err != nil {
+	data, _ := json.Marshal(example)
+	if err := os.WriteFile("config.example.json", data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Test loading the config
-	config, err := loadDefaultConfigFromExample()
+	cfg, err := loadDefaultConfigFromExample()
 	if err != nil {
-		t.Fatalf("Expected no error, got %v", err)
+		t.Fatalf("loadDefaultConfigFromExample: %v", err)
 	}
 
-	if config.Port != 7071 {
-		t.Errorf("Expected port 7071, got %d", config.Port)
+	if cfg.Port != 7071 {
+		t.Errorf("Port = %d, want 7071", cfg.Port)
 	}
-	if config.DefaultModel != "gpt-5-mini" {
-		t.Errorf("Expected default model gpt-5-mini, got %s", config.DefaultModel)
-	}
-	if len(config.AllowedModels) != 3 {
-		t.Errorf("Expected 3 allowed models, got %d", len(config.AllowedModels))
-	}
-}
-
-func TestSetDefaultModels_DoesNotOverrideExplicitEmptyAllowedModels(t *testing.T) {
-	cfg := &Config{
-		AllowedModels: []string{},
-		DefaultModel:  "",
-	}
-
-	setDefaultModels(cfg)
-
-	if cfg.AllowedModels == nil {
-		t.Fatalf("Expected AllowedModels to remain an explicit empty slice, got nil")
-	}
-	if len(cfg.AllowedModels) != 0 {
-		t.Fatalf("Expected AllowedModels to remain empty, got %v", cfg.AllowedModels)
-	}
-	if cfg.DefaultModel != "gpt-5-mini" {
-		t.Fatalf("Expected DefaultModel to be defaulted to gpt-5-mini, got %s", cfg.DefaultModel)
+	if cfg.Routing.DefaultModel != "gpt-5-mini" {
+		t.Errorf("DefaultModel = %q, want gpt-5-mini", cfg.Routing.DefaultModel)
 	}
 }
 
 func TestMigrateConfigIntegration(t *testing.T) {
-	// Create temporary directory for config
 	tempDir := t.TempDir()
-
-	// Override config path for testing
 	testConfigPath := filepath.Join(tempDir, "config.json")
-	originalOverride := configPathOverride
+	old := configPathOverride
 	configPathOverride = testConfigPath
-	defer func() { configPathOverride = originalOverride }()
+	defer func() { configPathOverride = old }()
 
-	// Create existing config with tokens
-	existingConfig := &Config{
-		Port:          8080,
-		GitHubToken:   "test_github_token",
-		CopilotToken:  "test_copilot_token",
-		ExpiresAt:     time.Now().Unix() + 3600,
-		RefreshIn:     1500,
-		AllowedModels: []string{"gpt-4"},
-		DefaultModel:  "gpt-4",
-	}
-	setDefaultTimeouts(existingConfig)
-
-	// Save existing config
-	if err := saveConfig(existingConfig); err != nil {
+	// Save a V1 config with custom settings
+	cfg := defaultConfig()
+	cfg.Port = 8080
+	cfg.Providers.Copilot.Auth.GitHubToken = "test_github_token"
+	cfg.Providers.Copilot.Auth.CopilotToken = "test_copilot_token"
+	cfg.Routing.DefaultModel = "gpt-4"
+	cfg.Providers.Copilot.AllowedModels = []string{"gpt-4"}
+	if err := saveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
 
-	// Create config.example.json in temp directory
+	// Create config.example.json
 	oldDir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.Chdir(oldDir)
-
 	if err := os.Chdir(tempDir); err != nil {
 		t.Fatal(err)
 	}
 
-	exampleConfig := map[string]interface{}{
+	example := map[string]interface{}{
 		"port":           7071,
-		"allowed_models": []string{"gpt-4", "gpt-4.1", "gpt-5-mini"},
-		"default_model":  "gpt-5-mini",
+		"config_version": 1,
+		"routing": map[string]interface{}{
+			"default_model": "gpt-5-mini",
+		},
+		"providers": map[string]interface{}{
+			"copilot": map[string]interface{}{
+				"enabled":        true,
+				"allowed_models": []string{"gpt-4", "gpt-5-mini"},
+			},
+		},
 	}
-
-	file, err := os.Create("config.example.json")
-	if err != nil {
+	data, _ := json.Marshal(example)
+	if err := os.WriteFile("config.example.json", data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
 
-	if err := json.NewEncoder(file).Encode(exampleConfig); err != nil {
-		t.Fatal(err)
-	}
-
-	// Test merge migration
 	if err := migrateConfig(ConfigMigrationMerge); err != nil {
-		t.Fatalf("Migration failed: %v", err)
+		t.Fatalf("migrateConfig: %v", err)
 	}
 
-	// Load and verify migrated config
-	migratedConfig, err := loadConfig()
+	migrated, err := loadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Verify tokens are preserved
-	if migratedConfig.GitHubToken != "test_github_token" {
-		t.Errorf("GitHubToken not preserved: got %s", migratedConfig.GitHubToken)
+	if migrated.Port != 8080 {
+		t.Errorf("Port = %d, want 8080 (preserved)", migrated.Port)
 	}
-	if migratedConfig.CopilotToken != "test_copilot_token" {
-		t.Errorf("CopilotToken not preserved: got %s", migratedConfig.CopilotToken)
+	if migrated.Routing.DefaultModel != "gpt-4" {
+		t.Errorf("DefaultModel = %q, want gpt-4 (preserved)", migrated.Routing.DefaultModel)
 	}
-
-	// Verify new defaults are applied
-	if migratedConfig.DefaultModel != "gpt-5-mini" {
-		t.Errorf("DefaultModel not updated: got %s", migratedConfig.DefaultModel)
-	}
-	if len(migratedConfig.AllowedModels) != 3 {
-		t.Errorf("AllowedModels not updated: got %v", migratedConfig.AllowedModels)
-	}
-
-	// Verify custom port is preserved
-	if migratedConfig.Port != 8080 {
-		t.Errorf("Custom port not preserved: got %d", migratedConfig.Port)
+	if migrated.Providers.Copilot.Auth.GitHubToken != "test_github_token" {
+		t.Errorf("GitHubToken not preserved")
 	}
 }
+
