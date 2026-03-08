@@ -238,6 +238,15 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 	}
 	initializeTimeouts(cfg)
 
+	// Ensure codex known models are in model_map (persisted to config).
+	if cfg.Providers.Codex.Enabled {
+		if ensureCodexModelMap(cfg) {
+			if err := saveConfig(cfg); err != nil {
+				fmt.Printf("Warning: failed to persist codex model_map: %v\n", err)
+			}
+		}
+	}
+
 	// Build provider registry.
 	registry := NewProviderRegistry()
 	if cfg.Providers.Copilot.Enabled {

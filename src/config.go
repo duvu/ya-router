@@ -443,6 +443,23 @@ func mergeTimeouts(dst *TimeoutsConfig, src *TimeoutsConfig) {
 	}
 }
 
+// ensureCodexModelMap adds codex known models to routing.model_map if not
+// already present. Returns true if any entries were added (caller should save).
+func ensureCodexModelMap(cfg *Config) bool {
+	if cfg.Routing.ModelMap == nil {
+		cfg.Routing.ModelMap = make(map[string]ModelMapEntry)
+	}
+	added := false
+	for _, m := range codexKnownModels {
+		if _, exists := cfg.Routing.ModelMap[m.ID]; !exists {
+			cfg.Routing.ModelMap[m.ID] = ModelMapEntry{Provider: string(ProviderCodex)}
+			fmt.Printf("  model_map: added %q → codex\n", m.ID)
+			added = true
+		}
+	}
+	return added
+}
+
 // migrateConfig upgrades the on-disk config according to mode.
 func migrateConfig(mode ConfigMigrationMode) error {
 	if mode == ConfigMigrationNone {
