@@ -44,18 +44,26 @@ type CopilotProviderConfig struct {
 
 // CodexAuthState holds auth configuration and persisted token state
 // for the OpenAI Codex provider.
+//
+// Mode selects the transport and credential source:
+//   - "chatgpt" / "device_code" / "chatgpt_device_auth": ChatGPT backend.
+//     Reads credentials from the official Codex auth store (~/.codex/auth.json).
+//   - "api_key": OpenAI Platform API with a user-supplied API key.
 type CodexAuthState struct {
 	Mode         string `json:"mode"`
+	APIKey       string `json:"api_key,omitempty"`
 	AccessToken  string `json:"access_token,omitempty"`
 	RefreshToken string `json:"refresh_token,omitempty"`
 	ExpiresAt    int64  `json:"expires_at,omitempty"`
+	AccountID    string `json:"account_id,omitempty"`
 }
 
 // CodexProviderConfig holds config for the OpenAI Codex provider.
 type CodexProviderConfig struct {
-	Enabled       bool           `json:"enabled"`
-	Auth          CodexAuthState `json:"auth"`
-	AllowedModels []string       `json:"allowed_models"`
+	Enabled        bool           `json:"enabled"`
+	Auth           CodexAuthState `json:"auth"`
+	AllowedModels  []string       `json:"allowed_models"`
+	ChatGPTBaseURL string         `json:"chatgpt_base_url,omitempty"`
 }
 
 // ProvidersConfig groups all provider configurations.

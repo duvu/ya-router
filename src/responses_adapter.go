@@ -348,7 +348,8 @@ func handleResponsesAPIResponse(w http.ResponseWriter, resp *http.Response) erro
 	isSSE := strings.Contains(ct, "text/event-stream")
 
 	if resp.StatusCode >= 400 {
-		// Error: read body and try to forward as-is.
+		// Error: read body and forward as-is, but also return an error
+		// so the proxy layer can log the real upstream status.
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		log.Printf("[codex] upstream %d response: %s", resp.StatusCode, string(body))
 
@@ -356,7 +357,7 @@ func handleResponsesAPIResponse(w http.ResponseWriter, resp *http.Response) erro
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.WriteHeader(resp.StatusCode)
 		w.Write(body)
-		return nil
+		return fmt.Errorf("upstream HTTP %d", resp.StatusCode)
 	}
 
 	if isSSE {

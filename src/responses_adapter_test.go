@@ -229,32 +229,30 @@ func TestChatToResponsesBody_MaxCompletionTokens(t *testing.T) {
 	}
 }
 
-func TestJwtClaims(t *testing.T) {
+func TestExtractAccountIDFromJWT(t *testing.T) {
 	// Build a fake JWT: header.payload.signature
-	payload := map[string]string{
-		"organization_id": "org-abc123",
-		"project_id":      "proj-xyz",
+	payload := map[string]interface{}{
+		"https://api.openai.com/auth": map[string]string{
+			"chatgpt_account_id": "acct-test-123",
+		},
 	}
 	payloadJSON, _ := json.Marshal(payload)
 	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
 	fakeJWT := "eyJhbGciOiJSUzI1NiJ9." + payloadB64 + ".fakesig"
 
-	org, proj := jwtClaims(fakeJWT)
-	if org != "org-abc123" {
-		t.Errorf("orgID = %q, want org-abc123", org)
-	}
-	if proj != "proj-xyz" {
-		t.Errorf("projectID = %q, want proj-xyz", proj)
+	accountID := extractAccountIDFromJWT(fakeJWT)
+	if accountID != "acct-test-123" {
+		t.Errorf("accountID = %q, want acct-test-123", accountID)
 	}
 }
 
-func TestJwtClaims_Invalid(t *testing.T) {
-	org, proj := jwtClaims("not-a-jwt")
-	if org != "" || proj != "" {
-		t.Errorf("expected empty, got org=%q proj=%q", org, proj)
+func TestExtractAccountIDFromJWT_Invalid(t *testing.T) {
+	accountID := extractAccountIDFromJWT("not-a-jwt")
+	if accountID != "" {
+		t.Errorf("expected empty, got %q", accountID)
 	}
-	org, proj = jwtClaims("")
-	if org != "" || proj != "" {
-		t.Errorf("expected empty for empty string, got org=%q proj=%q", org, proj)
+	accountID = extractAccountIDFromJWT("")
+	if accountID != "" {
+		t.Errorf("expected empty for empty string, got %q", accountID)
 	}
 }

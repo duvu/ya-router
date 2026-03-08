@@ -274,22 +274,23 @@ func TestConfigDefaultAuth(t *testing.T) {
 	}
 }
 
-// TestIsDeviceCodeModeBackwardCompat verifies backward compatibility
-// with the old chatgpt_device_auth mode name.
-func TestIsDeviceCodeModeBackwardCompat(t *testing.T) {
+// TestIsChatGPTModeBackwardCompat verifies backward compatibility
+// with the old chatgpt_device_auth and device_code mode names.
+func TestIsChatGPTModeBackwardCompat(t *testing.T) {
 	tests := []struct {
 		mode string
 		want bool
 	}{
 		{"device_code", true},
 		{"chatgpt_device_auth", true},
+		{"chatgpt", true},
 		{"api_key", false},
 		{"", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.mode, func(t *testing.T) {
-			if got := isDeviceCodeMode(tt.mode); got != tt.want {
-				t.Errorf("isDeviceCodeMode(%q) = %v, want %v",
+			if got := isChatGPTMode(tt.mode); got != tt.want {
+				t.Errorf("isChatGPTMode(%q) = %v, want %v",
 					tt.mode, got, tt.want)
 			}
 		})

@@ -1,13 +1,15 @@
 // codex_provider.go — OpenAI Codex backend provider implementation.
-// Auth tokens are persisted in the project config folder alongside
-// Copilot tokens.  The token value itself is never logged.
+//
+// Two transport modes:
+//   - ChatGPT mode (device_code / chatgpt): sends to chatgpt.com/backend-api/
+//     with chatgpt-account-id header.  Reads credentials from the official
+//     Codex auth store (~/.codex/auth.json).
+//   - API key mode: sends to api.openai.com/v1/ with Bearer API key.
 package main
 
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -17,7 +19,11 @@ import (
 	"time"
 )
 
-const codexAPIBase = "https://api.openai.com/v1"
+const (
+	// Default upstream URLs per transport mode.
+	defaultChatGPTBaseURL  = "https://chatgpt.com/backend-api/"
+	defaultPlatformBaseURL = "https://api.openai.com/v1"
+)
 
 // CodexProvider implements Provider for the OpenAI Codex / API backend.
 type CodexProvider struct {
@@ -27,53 +33,35 @@ type CodexProvider struct {
 	cache *ModelCache
 }
 
-// jwtClaims extracts organization_id and project_id from a JWT access
-// token without signature verification (we only need the claims).
-func jwtClaims(token string) (orgID, projectID string) {
-	parts := strings.SplitN(token, ".", 3)
-	if len(parts) < 2 {
-		return
+// chatgptBaseURL returns the ChatGPT backend URL, honouring the config
+// override and ensuring a trailing slash.
+func (p *CodexProvider) chatgptBaseURL() string {
+	if u := p.cfg.Providers.Codex.ChatGPTBaseURL; u != "" {
+		if !strings.HasSuffix(u, "/") {
+			return u + "/"
+		}
+		return u
 	}
-	// base64url decode the payload.
-	payload := parts[1]
-	if m := len(payload) % 4; m != 0 {
-		payload += strings.Repeat("=", 4-m)
-	}
-	b, err := base64.URLEncoding.DecodeString(payload)
-	if err != nil {
-		return
-	}
-	var claims struct {
-		OrgID     string `json:"organization_id"`
-		ProjectID string `json:"project_id"`
-	}
-	if json.Unmarshal(b, &claims) == nil {
-		orgID = claims.OrgID
-		projectID = claims.ProjectID
-	}
-	return
+	return defaultChatGPTBaseURL
 }
 
-// setCodexHeaders sets the standard headers for Codex API requests,
-// including the openai-beta flag and org/project from the JWT.
-func setCodexHeaders(req *http.Request, token string) {
+// setChatGPTHeaders sets headers for ChatGPT-backend requests.
+func setChatGPTHeaders(req *http.Request, token, accountID string) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", codexUserAgent)
-	req.Header.Set("OpenAI-Beta", "codex-2025-05-19")
-	if orgID, projectID := jwtClaims(token); orgID != "" {
-		req.Header.Set("OpenAI-Organization", orgID)
-		if projectID != "" {
-			req.Header.Set("OpenAI-Project", projectID)
-		}
+	if accountID != "" {
+		req.Header.Set("chatgpt-account-id", accountID)
 	}
 }
 
-// isDeviceCodeMode returns true for both the canonical "device_code" name
-// and the legacy alias "chatgpt_device_auth".
-func isDeviceCodeMode(mode string) bool {
-	return mode == "device_code" || mode == "chatgpt_device_auth"
+// setPlatformHeaders sets headers for OpenAI Platform API requests.
+func setPlatformHeaders(req *http.Request, token string) {
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", codexUserAgent)
 }
 
 // NewCodexProvider constructs a CodexProvider from cfg.
@@ -102,6 +90,23 @@ func (p *CodexProvider) save() error {
 	return saveConfig(p.cfg)
 }
 
+// authCredentials returns the current token, account ID, and whether this
+// is ChatGPT mode, all under lock.
+func (p *CodexProvider) authCredentials() (token, accountID string, chatgpt bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	auth := p.authState()
+	chatgpt = isChatGPTMode(auth.Mode)
+	if chatgpt {
+		return auth.AccessToken, auth.AccountID, true
+	}
+	// api_key mode: use APIKey as the bearer token.
+	if auth.APIKey != "" {
+		return auth.APIKey, "", false
+	}
+	return auth.AccessToken, "", false
+}
+
 // currentToken returns the current access token under lock.
 func (p *CodexProvider) currentToken() string {
 	p.mu.Lock()
@@ -125,25 +130,63 @@ func (p *CodexProvider) reloadTokenFromDisk() {
 		old.AccessToken = new.AccessToken
 		old.RefreshToken = new.RefreshToken
 		old.ExpiresAt = new.ExpiresAt
+		old.AccountID = new.AccountID
+	}
+}
+
+// reloadFromOfficialStore reads the official Codex auth store and
+// merges fresh credentials into the in-memory auth state.
+func (p *CodexProvider) reloadFromOfficialStore() {
+	official, err := loadOfficialCodexAuth()
+	if err != nil {
+		log.Printf("[codex] official store load failed: %v", err)
+		return
+	}
+	if official == nil {
+		return
+	}
+	auth := p.authState()
+	if official.AccessToken != "" && official.AccessToken != auth.AccessToken {
+		log.Printf("[codex] loaded fresh token from official store")
+		auth.AccessToken = official.AccessToken
+		auth.RefreshToken = official.RefreshToken
+		auth.AccountID = official.AccountID
+	} else if auth.AccountID == "" && official.AccountID != "" {
+		auth.AccountID = official.AccountID
 	}
 }
 
 // EnsureAuthenticated ensures a valid Codex credential is available.
-// Uses device_code mode: check expiry, attempt refresh, fall back to
-// re-authentication error.
 func (p *CodexProvider) EnsureAuthenticated(_ context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	auth := p.authState()
 
-	// device_code mode — token stored in config.
+	// API key mode — nothing to refresh.
+	if isAPIKeyMode(auth.Mode) {
+		if auth.APIKey != "" {
+			return nil
+		}
+		return fmt.Errorf("no Codex API key — run 'auth codex --api-key' first")
+	}
+
+	// ChatGPT mode: try official store first, then proxy config.
 	if auth.AccessToken == "" {
-		// Maybe a separate 'auth codex' process wrote a token.
-		p.reloadTokenFromDisk()
+		p.reloadFromOfficialStore()
 		if auth.AccessToken == "" {
-			log.Printf("[codex] no access token available")
-			return fmt.Errorf("no Codex token — run 'auth codex' first")
+			p.reloadTokenFromDisk()
+		}
+		if auth.AccessToken == "" {
+			return fmt.Errorf("no Codex token — run 'auth codex' or 'codex auth login'")
+		}
+	}
+
+	// Ensure we have an account ID (required for ChatGPT backend).
+	if auth.AccountID == "" {
+		p.reloadFromOfficialStore()
+		if auth.AccountID == "" {
+			log.Printf("[codex] warning: no account_id found; ChatGPT requests may fail")
 		}
 	}
 
@@ -151,16 +194,23 @@ func (p *CodexProvider) EnsureAuthenticated(_ context.Context) error {
 	now := time.Now().Unix()
 	if auth.ExpiresAt > 0 {
 		remaining := auth.ExpiresAt - now
-		threshold := int64(300) // 5 min safety margin
+		threshold := int64(300)
 		if remaining <= threshold {
-			log.Printf("[codex] token expiring in %ds (threshold=%ds), refreshing...", remaining, threshold)
+			log.Printf("[codex] token expiring in %ds, refreshing...", remaining)
 			if err := codexRefreshToken(auth, p.save); err != nil {
-				log.Printf("[codex] refresh failed: %v — re-authenticating", err)
-				return codexAuthenticate(auth, p.save)
+				log.Printf("[codex] refresh failed: %v", err)
+				// Try reloading from official store in case CLI refreshed.
+				p.reloadFromOfficialStore()
+				if auth.AccessToken == "" {
+					return fmt.Errorf("codex token expired and refresh failed: %w", err)
+				}
+			} else {
+				log.Printf("[codex] token refreshed, new expiry in %ds",
+					auth.ExpiresAt-time.Now().Unix())
 			}
-			log.Printf("[codex] token refreshed, new expiry in %ds", auth.ExpiresAt-time.Now().Unix())
 		} else {
-			log.Printf("[codex] token valid, expires in %dm%ds", remaining/60, remaining%60)
+			log.Printf("[codex] token valid, expires in %dm%ds",
+				remaining/60, remaining%60)
 		}
 	}
 	return nil
@@ -230,10 +280,12 @@ func (p *CodexProvider) knownModelList() *ModelList {
 	return ml
 }
 
-// ProxyRequest proxies chat or embeddings requests to the OpenAI API.
-// For chat requests the Responses API (/v1/responses) is used because the
-// device_code token (ChatGPT Plus) is only authorised there; the adapter
-// translates between Chat Completions and Responses formats on-the-fly.
+// ProxyRequest proxies chat or embeddings requests to the upstream API.
+//
+// For ChatGPT mode: sends to {chatgpt_base_url}/responses using the
+// Responses API format, with chatgpt-account-id header.
+// For API key mode: sends to api.openai.com/v1/responses (or chat/completions
+// as fallback).
 func (p *CodexProvider) ProxyRequest(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -250,30 +302,48 @@ func (p *CodexProvider) ProxyRequest(
 		return fmt.Errorf("codex circuit breaker is open")
 	}
 
-	// Embeddings still use the classic endpoint.
+	token, accountID, chatgptMode := p.authCredentials()
+
+	// Embeddings: only available in platform (api_key) mode.
 	if cap == CapabilityEmbeddings {
-		return p.proxyClassic(ctx, w, r, body, "/embeddings")
+		if chatgptMode {
+			return fmt.Errorf("codex embeddings not supported in ChatGPT mode")
+		}
+		return p.proxyClassic(ctx, w, r, body, "/embeddings", token, false)
 	}
 
 	// Chat: convert to Responses API format.
 	responsesBody, err := chatToResponsesBody(body)
 	if err != nil {
 		log.Printf("[codex] chat→responses conversion failed: %v — falling back to classic", err)
-		return p.proxyClassic(ctx, w, r, body, "/chat/completions")
+		if chatgptMode {
+			return fmt.Errorf("codex chat conversion failed: %w", err)
+		}
+		return p.proxyClassic(ctx, w, r, body, "/chat/completions", token, false)
 	}
 
-	upstreamURL := codexAPIBase + "/responses"
-	streaming := isStreamingRequest(body)
-	log.Printf("[codex] proxying chat → %s (body %d bytes, stream=%v)",
-		upstreamURL, len(responsesBody), streaming)
+	// Build upstream URL based on mode.
+	var upstreamURL string
+	if chatgptMode {
+		upstreamURL = p.chatgptBaseURL() + "responses"
+	} else {
+		upstreamURL = defaultPlatformBaseURL + "/responses"
+	}
 
-	token := p.currentToken()
+	streaming := isStreamingRequest(body)
+	log.Printf("[codex] proxying chat → %s (body %d bytes, stream=%v, chatgpt=%v)",
+		upstreamURL, len(responsesBody), streaming, chatgptMode)
+
 	req, err := http.NewRequestWithContext(ctx, "POST",
 		upstreamURL, bytes.NewBuffer(responsesBody))
 	if err != nil {
 		return err
 	}
-	setCodexHeaders(req, token)
+	if chatgptMode {
+		setChatGPTHeaders(req, token, accountID)
+	} else {
+		setPlatformHeaders(req, token)
+	}
 
 	resp, err := makeRequestWithRetry(sharedHTTPClient, req, responsesBody)
 	if err != nil {
@@ -286,32 +356,6 @@ func (p *CodexProvider) ProxyRequest(
 	log.Printf("[codex] upstream responded HTTP %d (Content-Type: %s)",
 		resp.StatusCode, resp.Header.Get("Content-Type"))
 
-	// On 401, try reloading token from disk (auth codex may have
-	// written a new token) and retry once.
-	if resp.StatusCode == http.StatusUnauthorized {
-		resp.Body.Close()
-		log.Printf("[codex] 401 — reloading token from disk and retrying")
-		p.mu.Lock()
-		p.reloadTokenFromDisk()
-		newToken := p.authState().AccessToken
-		p.mu.Unlock()
-		if newToken != token {
-			req2, err := http.NewRequestWithContext(ctx, "POST",
-				upstreamURL, bytes.NewBuffer(responsesBody))
-			if err != nil {
-				return err
-			}
-			setCodexHeaders(req2, newToken)
-			resp, err = makeRequestWithRetry(sharedHTTPClient, req2, responsesBody)
-			if err != nil {
-				p.cb.onFailure()
-				return err
-			}
-			defer resp.Body.Close()
-			log.Printf("[codex] retry responded HTTP %d", resp.StatusCode)
-		}
-	}
-
 	if resp.StatusCode < 500 {
 		p.cb.onSuccess()
 	} else {
@@ -323,24 +367,34 @@ func (p *CodexProvider) ProxyRequest(
 }
 
 // proxyClassic sends a request to a classic OpenAI endpoint (embeddings,
-// or chat/completions as a fallback).
+// or chat/completions as a fallback).  Only used for api_key mode.
 func (p *CodexProvider) proxyClassic(
 	ctx context.Context,
 	w http.ResponseWriter,
-	r *http.Request,
+	_ *http.Request,
 	body []byte,
 	path string,
+	token string,
+	chatgptMode bool,
 ) error {
-	upstreamURL := codexAPIBase + path
+	var upstreamURL string
+	if chatgptMode {
+		upstreamURL = p.chatgptBaseURL() + strings.TrimPrefix(path, "/")
+	} else {
+		upstreamURL = defaultPlatformBaseURL + path
+	}
 	log.Printf("[codex] proxying classic → %s (body %d bytes)", upstreamURL, len(body))
 
-	token := p.currentToken()
-	req, err := http.NewRequestWithContext(ctx, r.Method,
+	req, err := http.NewRequestWithContext(ctx, "POST",
 		upstreamURL, bytes.NewBuffer(body))
 	if err != nil {
 		return err
 	}
-	setCodexHeaders(req, token)
+	if chatgptMode {
+		setChatGPTHeaders(req, token, "")
+	} else {
+		setPlatformHeaders(req, token)
+	}
 
 	resp, err := makeRequestWithRetry(sharedHTTPClient, req, body)
 	if err != nil {
@@ -355,8 +409,10 @@ func (p *CodexProvider) proxyClassic(
 
 	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 		peekBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		log.Printf("[codex] upstream %d response: %s", resp.StatusCode, string(peekBody))
-		resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(peekBody), resp.Body))
+		log.Printf("[codex] upstream %d response: %s",
+			resp.StatusCode, string(peekBody))
+		resp.Body = io.NopCloser(
+			io.MultiReader(bytes.NewReader(peekBody), resp.Body))
 	}
 
 	if resp.StatusCode < 500 {

@@ -1,13 +1,16 @@
 // codex_auth.go — OpenAI device-code authentication for Codex.
 // Uses the same endpoints and client_id as the official Codex CLI:
-//   1. POST /api/accounts/deviceauth/usercode → {device_auth_id, user_code}
-//   2. User visits auth.openai.com/codex/device → enters code
-//   3. Poll /api/accounts/deviceauth/token → {authorization_code, code_verifier}
-//   4. Exchange auth code (PKCE) at /oauth/token → {id_token, access_token, refresh_token}
-// Tokens are persisted in the project config folder, not ~/.codex.
+//  1. POST /api/accounts/deviceauth/usercode → {device_auth_id, user_code}
+//  2. User visits auth.openai.com/codex/device → enters code
+//  3. Poll /api/accounts/deviceauth/token → {authorization_code, code_verifier}
+//  4. Exchange auth code (PKCE) at /oauth/token → {id_token, access_token, refresh_token}
+//
+// For chatgpt mode, tokens are read from / written to the official Codex
+// auth store (~/.codex/auth.json or $CODEX_HOME/auth.json).
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +18,8 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -321,7 +326,197 @@ func codexRefreshToken(auth *CodexAuthState, save func() error) error {
 		} else {
 			auth.ExpiresAt = time.Now().Unix() + 3600
 		}
+
+		// Also persist refreshed tokens to the official Codex store.
+		if isChatGPTMode(auth.Mode) {
+			if err := persistToOfficialStore(auth); err != nil {
+				log.Printf("[codex] warning: failed to persist refreshed tokens to official store: %v", err)
+			}
+		}
+
 		return save()
 	}
 	return errors.New("maximum retry attempts exceeded")
+}
+
+// -----------------------------------------------------------------------
+// Official Codex auth store (~/.codex/auth.json)
+// -----------------------------------------------------------------------
+
+// officialCodexAuthJSON mirrors the on-disk auth.json used by the
+// official openai/codex CLI.
+type officialCodexAuthJSON struct {
+	OpenAIAPIKey *string            `json:"OPENAI_API_KEY"`
+	Tokens       *officialTokenData `json:"tokens"`
+	LastRefresh  *string            `json:"last_refresh"`
+}
+
+// officialTokenData mirrors TokenData from the official Codex CLI.
+type officialTokenData struct {
+	IDToken      string  `json:"id_token"`
+	AccessToken  string  `json:"access_token"`
+	RefreshToken string  `json:"refresh_token"`
+	AccountID    *string `json:"account_id,omitempty"`
+}
+
+// isChatGPTMode returns true for any mode that uses the ChatGPT backend.
+func isChatGPTMode(mode string) bool {
+	switch mode {
+	case "chatgpt", "device_code", "chatgpt_device_auth":
+		return true
+	default:
+		return false
+	}
+}
+
+// isAPIKeyMode returns true for explicit API key mode.
+func isAPIKeyMode(mode string) bool {
+	return mode == "api_key"
+}
+
+// codexHomePath returns the official Codex home directory, honoring
+// $CODEX_HOME and falling back to ~/.codex.
+func codexHomePath() (string, error) {
+	if h := os.Getenv("CODEX_HOME"); h != "" {
+		return h, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	return filepath.Join(home, ".codex"), nil
+}
+
+// officialAuthJSONPath returns the path to the official auth.json file.
+func officialAuthJSONPath() (string, error) {
+	ch, err := codexHomePath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(ch, "auth.json"), nil
+}
+
+// loadOfficialCodexAuth reads the official Codex auth store and
+// populates a CodexAuthState.  Returns nil, nil if no auth.json exists.
+func loadOfficialCodexAuth() (*CodexAuthState, error) {
+	path, err := officialAuthJSONPath()
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+
+	var aj officialCodexAuthJSON
+	if err := json.Unmarshal(data, &aj); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+
+	// API key mode.
+	if aj.OpenAIAPIKey != nil && *aj.OpenAIAPIKey != "" {
+		return &CodexAuthState{
+			Mode:   "api_key",
+			APIKey: *aj.OpenAIAPIKey,
+		}, nil
+	}
+
+	// ChatGPT token mode.
+	if aj.Tokens == nil || aj.Tokens.AccessToken == "" {
+		return nil, nil
+	}
+
+	state := &CodexAuthState{
+		Mode:         "chatgpt",
+		AccessToken:  aj.Tokens.AccessToken,
+		RefreshToken: aj.Tokens.RefreshToken,
+	}
+	// Account ID: prefer explicit field, fall back to JWT claims.
+	if aj.Tokens.AccountID != nil && *aj.Tokens.AccountID != "" {
+		state.AccountID = *aj.Tokens.AccountID
+	} else if aj.Tokens.IDToken != "" {
+		state.AccountID = extractAccountIDFromJWT(aj.Tokens.IDToken)
+	}
+
+	log.Printf("[codex] loaded official auth: has_token=true account_id=%q",
+		state.AccountID)
+	return state, nil
+}
+
+// extractAccountIDFromJWT parses the id_token JWT to extract
+// chatgpt_account_id from the https://api.openai.com/auth claim.
+func extractAccountIDFromJWT(jwt string) string {
+	parts := strings.SplitN(jwt, ".", 3)
+	if len(parts) < 2 {
+		return ""
+	}
+	payload := parts[1]
+	if m := len(payload) % 4; m != 0 {
+		payload += strings.Repeat("=", 4-m)
+	}
+	b, err := base64.URLEncoding.DecodeString(payload)
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Auth *struct {
+			AccountID string `json:"chatgpt_account_id"`
+		} `json:"https://api.openai.com/auth"`
+	}
+	if json.Unmarshal(b, &claims) == nil && claims.Auth != nil {
+		return claims.Auth.AccountID
+	}
+	return ""
+}
+
+// persistToOfficialStore writes the current auth state to ~/.codex/auth.json
+// in the format expected by the official Codex CLI.
+func persistToOfficialStore(auth *CodexAuthState) error {
+	path, err := officialAuthJSONPath()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create codex home: %w", err)
+	}
+
+	// Try to load existing to preserve id_token if available.
+	var existing officialCodexAuthJSON
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &existing)
+	}
+
+	idToken := ""
+	if existing.Tokens != nil {
+		idToken = existing.Tokens.IDToken
+	}
+
+	var accountID *string
+	if auth.AccountID != "" {
+		accountID = &auth.AccountID
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	aj := officialCodexAuthJSON{
+		Tokens: &officialTokenData{
+			IDToken:      idToken,
+			AccessToken:  auth.AccessToken,
+			RefreshToken: auth.RefreshToken,
+			AccountID:    accountID,
+		},
+		LastRefresh: &now,
+	}
+	data, err := json.MarshalIndent(aj, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }

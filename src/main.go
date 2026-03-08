@@ -24,6 +24,7 @@ func main() {
 		authCmd := flag.NewFlagSet("auth", flag.ExitOnError)
 		modeFlag := authCmd.String("mode", "device_code", "Auth mode: device_code (default)")
 		tokenFlag := authCmd.String("token", "", "Manually set an access token (codex only)")
+		apiKeyFlag := authCmd.String("api-key", "", "OpenAI Platform API key (codex only)")
 		args := os.Args[2:]
 		provider := "copilot"
 		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -34,13 +35,11 @@ func main() {
 		var err error
 		switch provider {
 		case "codex":
-			if *tokenFlag != "" {
+			if *apiKeyFlag != "" {
+				err = handleAuthCodexAPIKey(*apiKeyFlag)
+			} else if *tokenFlag != "" {
 				err = handleAuthCodexManualToken(*tokenFlag)
 			} else {
-				if *modeFlag != "device_code" {
-					fmt.Printf("auth codex: invalid --mode %q (only device_code is supported)\n", *modeFlag)
-					os.Exit(1)
-				}
 				err = handleAuthCodex(*modeFlag)
 			}
 		default:

@@ -18,7 +18,8 @@ func printUsage() {
 	fmt.Printf("  run|start             Start the proxy server\n")
 	fmt.Printf("    --config-migrate    Config migration mode: merge (default), none, override\n")
 	fmt.Printf("  auth [copilot|codex]  Authenticate a provider (default: copilot)\n")
-  fmt.Printf("    --mode              Auth mode: device_code (default)\n")
+	fmt.Printf("    --mode              Auth mode: device_code (default)\n")
+	fmt.Printf("    --api-key <key>     Use OpenAI Platform API key (codex only)\n")
 	fmt.Printf("    --token <token>     Manually set access token (codex only, fallback)\n")
 	fmt.Printf("  status                Show authentication status for all providers\n")
 	fmt.Printf("  config                Show current configuration\n")
@@ -54,7 +55,8 @@ func handleAuthCopilot(mode string) error {
 }
 
 // handleAuthCodex runs the OpenAI OAuth device-code flow for Codex.
-// Tokens are stored in the project config folder.
+// Tokens are stored both in the project config and in the official
+// Codex auth store (~/.codex/auth.json).
 func handleAuthCodex(_ string) error {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -63,13 +65,13 @@ func handleAuthCodex(_ string) error {
 	initializeTimeouts(cfg)
 
 	cfg.Providers.Codex.Enabled = true
-	cfg.Providers.Codex.Auth.Mode = "device_code"
+	cfg.Providers.Codex.Auth.Mode = "chatgpt"
 
 	if err := saveConfig(cfg); err != nil {
 		return fmt.Errorf("failed to persist Codex auth mode: %w", err)
 	}
 
-	fmt.Println("Starting OpenAI Codex authentication (mode: device_code)...")
+	fmt.Println("Starting OpenAI Codex authentication (mode: chatgpt device_code)...")
 
 	auth := &cfg.Providers.Codex.Auth
 	// Force re-authentication (clear existing token).
@@ -79,7 +81,39 @@ func handleAuthCodex(_ string) error {
 		return fmt.Errorf("Codex authentication failed: %w", err)
 	}
 
+	// Also persist to official Codex auth store.
+	if err := persistToOfficialStore(auth); err != nil {
+		fmt.Printf("Warning: could not write to official Codex store: %v\n", err)
+	} else {
+		p, _ := officialAuthJSONPath()
+		fmt.Printf("Tokens also saved to %s\n", p)
+	}
+
 	fmt.Println("Codex credentials validated successfully!")
+	return nil
+}
+
+// handleAuthCodexAPIKey stores an OpenAI Platform API key for Codex.
+func handleAuthCodexAPIKey(apiKey string) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+	initializeTimeouts(cfg)
+
+	cfg.Providers.Codex.Enabled = true
+	cfg.Providers.Codex.Auth.Mode = "api_key"
+	cfg.Providers.Codex.Auth.APIKey = apiKey
+	// Clear any ChatGPT tokens.
+	cfg.Providers.Codex.Auth.AccessToken = ""
+	cfg.Providers.Codex.Auth.RefreshToken = ""
+	cfg.Providers.Codex.Auth.ExpiresAt = 0
+	cfg.Providers.Codex.Auth.AccountID = ""
+
+	if err := saveConfig(cfg); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+	fmt.Println("Codex API key saved (mode: api_key → api.openai.com/v1).")
 	return nil
 }
 
@@ -158,7 +192,32 @@ func printCodexStatus(cfg *Config) {
 	fmt.Println("Provider: OpenAI Codex")
 	auth := &cfg.Providers.Codex.Auth
 	now := time.Now().Unix()
-	if auth.AccessToken != "" {
+
+	if isAPIKeyMode(auth.Mode) {
+		if auth.APIKey != "" {
+			fmt.Printf("  Auth: ✓ API key configured\n")
+			fmt.Printf("  Backend: api.openai.com/v1\n")
+		} else {
+			fmt.Printf("  Auth: ✗ No API key — run '%s auth codex --api-key <key>'\n", os.Args[0])
+		}
+		fmt.Printf("  Mode: %s\n", auth.Mode)
+		fmt.Println()
+		return
+	}
+
+	// ChatGPT mode: check for tokens from official store if needed.
+	token := auth.AccessToken
+	accountID := auth.AccountID
+	source := "proxy config"
+	if token == "" {
+		if official, err := loadOfficialCodexAuth(); err == nil && official != nil {
+			token = official.AccessToken
+			accountID = official.AccountID
+			source = "~/.codex/auth.json"
+		}
+	}
+
+	if token != "" {
 		if auth.ExpiresAt > 0 {
 			remaining := auth.ExpiresAt - now
 			if remaining > 0 {
@@ -176,10 +235,13 @@ func printCodexStatus(cfg *Config) {
 			fmt.Printf("  Auth: ✓ Token available (no expiry info)\n")
 		}
 		fmt.Printf("  Has refresh token: %t\n", auth.RefreshToken != "")
+		fmt.Printf("  Account ID: %s\n", accountID)
+		fmt.Printf("  Credential source: %s\n", source)
 	} else {
 		fmt.Printf("  Auth: ✗ Not authenticated — run '%s auth codex'\n", os.Args[0])
 	}
 	fmt.Printf("  Mode: %s\n", auth.Mode)
+	fmt.Printf("  Backend: %s\n", defaultChatGPTBaseURL)
 	fmt.Println()
 }
 
