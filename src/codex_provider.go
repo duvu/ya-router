@@ -115,6 +115,11 @@ func (p *CodexProvider) reloadTokenFromDisk() {
 		old.RefreshToken = new.RefreshToken
 		old.ExpiresAt = new.ExpiresAt
 		old.AccountID = new.AccountID
+	} else if old.AccountID == "" && new.AccountID != "" {
+		// Same token but account_id was subsequently added to disk (e.g. by
+		// a separate 'auth codex' invocation running against the same config).
+		log.Printf("[codex] updated account_id from on-disk config: %s", new.AccountID)
+		old.AccountID = new.AccountID
 	}
 }
 
@@ -163,6 +168,18 @@ func (p *CodexProvider) EnsureAuthenticated(_ context.Context) error {
 		}
 		if auth.AccessToken == "" {
 			return fmt.Errorf("no Codex token — run 'auth codex' first")
+		}
+	} else if auth.AccountID == "" {
+		// Token already loaded but account_id may be missing (e.g. the token
+		// was persisted before account_id extraction was implemented, or a
+		// concurrent 'auth codex' process wrote a fresh token with account_id
+		// while this server was already running).  Try to pick it up.
+		p.reloadFromOfficialStore()
+		if auth.AccountID == "" {
+			p.reloadTokenFromDisk()
+		}
+		if auth.AccountID != "" {
+			log.Printf("[codex] picked up account_id from on-disk credentials: %s", auth.AccountID)
 		}
 	}
 
