@@ -162,6 +162,9 @@ func (p *CodexProvider) knownModelList() *ModelList {
 }
 
 // ProxyRequest proxies chat or embeddings requests to the OpenAI API.
+// For chat requests the Responses API (/v1/responses) is used because the
+// device_code token (ChatGPT Plus) is only authorised there; the adapter
+// translates between Chat Completions and Responses formats on-the-fly.
 func (p *CodexProvider) ProxyRequest(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -178,14 +181,66 @@ func (p *CodexProvider) ProxyRequest(
 		return fmt.Errorf("codex circuit breaker is open")
 	}
 
-	targetPath := "/chat/completions"
+	// Embeddings still use the classic endpoint.
 	if cap == CapabilityEmbeddings {
-		targetPath = "/embeddings"
+		return p.proxyClassic(ctx, w, r, body, "/embeddings")
 	}
 
-	upstreamURL := codexAPIBase + targetPath
-	log.Printf("[codex] proxying %s → %s (body %d bytes, mode=%s)",
-		cap, upstreamURL, len(body), p.authState().Mode)
+	// Chat: convert to Responses API format.
+	responsesBody, err := chatToResponsesBody(body)
+	if err != nil {
+		log.Printf("[codex] chat→responses conversion failed: %v — falling back to classic", err)
+		return p.proxyClassic(ctx, w, r, body, "/chat/completions")
+	}
+
+	upstreamURL := codexAPIBase + "/responses"
+	streaming := isStreamingRequest(body)
+	log.Printf("[codex] proxying chat → %s (body %d bytes, stream=%v)",
+		upstreamURL, len(responsesBody), streaming)
+
+	token := p.currentToken()
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		upstreamURL, bytes.NewBuffer(responsesBody))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "github-copilot-svcs/1.0")
+
+	resp, err := makeRequestWithRetry(sharedHTTPClient, req, responsesBody)
+	if err != nil {
+		log.Printf("[codex] upstream error: %v", err)
+		p.cb.onFailure()
+		return err
+	}
+	defer resp.Body.Close()
+
+	log.Printf("[codex] upstream responded HTTP %d (Content-Type: %s)",
+		resp.StatusCode, resp.Header.Get("Content-Type"))
+
+	if resp.StatusCode < 500 {
+		p.cb.onSuccess()
+	} else {
+		log.Printf("[codex] upstream 5xx error — circuit breaker failure")
+		p.cb.onFailure()
+	}
+
+	return handleResponsesAPIResponse(w, resp)
+}
+
+// proxyClassic sends a request to a classic OpenAI endpoint (embeddings,
+// or chat/completions as a fallback).
+func (p *CodexProvider) proxyClassic(
+	ctx context.Context,
+	w http.ResponseWriter,
+	r *http.Request,
+	body []byte,
+	path string,
+) error {
+	upstreamURL := codexAPIBase + path
+	log.Printf("[codex] proxying classic → %s (body %d bytes)", upstreamURL, len(body))
 
 	token := p.currentToken()
 	req, err := http.NewRequestWithContext(ctx, r.Method,
@@ -210,10 +265,8 @@ func (p *CodexProvider) ProxyRequest(
 		resp.StatusCode, resp.Header.Get("Content-Type"))
 
 	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-		// Log client error response body for debugging (capped at 512 bytes).
 		peekBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		log.Printf("[codex] upstream %d response: %s", resp.StatusCode, string(peekBody))
-		// Re-create body for streaming to client.
 		resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(peekBody), resp.Body))
 	}
 
