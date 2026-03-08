@@ -65,7 +65,7 @@ func TestApplyConfigDefaults_PreservesExisting(t *testing.T) {
 			DefaultProvider: "codex",
 		},
 	}
-	cfg.Providers.Codex.Auth.Mode = "api_key"
+	cfg.Providers.Codex.Auth.Mode = "device_code"
 	cfg.Timeouts.HTTPClient = 600
 
 	applyConfigDefaults(cfg)
@@ -79,8 +79,8 @@ func TestApplyConfigDefaults_PreservesExisting(t *testing.T) {
 	if cfg.Routing.DefaultProvider != "codex" {
 		t.Errorf("DefaultProvider = %q, want codex", cfg.Routing.DefaultProvider)
 	}
-	if cfg.Providers.Codex.Auth.Mode != "api_key" {
-		t.Errorf("Codex auth mode = %q, want api_key", cfg.Providers.Codex.Auth.Mode)
+	if cfg.Providers.Codex.Auth.Mode != "device_code" {
+		t.Errorf("Codex auth mode = %q, want device_code", cfg.Providers.Codex.Auth.Mode)
 	}
 	if cfg.Timeouts.HTTPClient != 600 {
 		t.Errorf("HTTPClient = %d, want 600", cfg.Timeouts.HTTPClient)
@@ -203,7 +203,7 @@ func TestSaveAndLoadConfig(t *testing.T) {
 	cfg.Providers.Copilot.Auth.GitHubToken = "test-token"
 	cfg.Providers.Copilot.Auth.CopilotToken = "copilot-tok"
 	cfg.Providers.Codex.Enabled = true
-	cfg.Providers.Codex.Auth.Mode = "api_key"
+	cfg.Providers.Codex.Auth.Mode = "device_code"
 
 	if err := saveConfig(cfg); err != nil {
 		t.Fatalf("saveConfig: %v", err)
@@ -220,8 +220,8 @@ func TestSaveAndLoadConfig(t *testing.T) {
 	if loaded.Providers.Copilot.Auth.GitHubToken != "test-token" {
 		t.Errorf("GitHubToken = %q, want test-token", loaded.Providers.Copilot.Auth.GitHubToken)
 	}
-	if loaded.Providers.Codex.Auth.Mode != "api_key" {
-		t.Errorf("Codex mode = %q, want api_key", loaded.Providers.Codex.Auth.Mode)
+	if loaded.Providers.Codex.Auth.Mode != "device_code" {
+		t.Errorf("Codex mode = %q, want device_code", loaded.Providers.Codex.Auth.Mode)
 	}
 }
 

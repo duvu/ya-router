@@ -46,7 +46,6 @@ type CopilotProviderConfig struct {
 // for the OpenAI Codex provider.
 type CodexAuthState struct {
 	Mode         string `json:"mode"`
-	APIKeyEnv    string `json:"api_key_env,omitempty"`
 	AccessToken  string `json:"access_token,omitempty"`
 	RefreshToken string `json:"refresh_token,omitempty"`
 	ExpiresAt    int64  `json:"expires_at,omitempty"`
@@ -263,7 +262,6 @@ func defaultConfig() *Config {
 	// allowed_models left empty = allow all models from upstream
 	cfg.Providers.Codex.Enabled = false
 	cfg.Providers.Codex.Auth.Mode = "device_code"
-	cfg.Providers.Codex.Auth.APIKeyEnv = "OPENAI_API_KEY"
 	setDefaultTimeouts(cfg)
 	return cfg
 }
@@ -282,9 +280,6 @@ func applyConfigDefaults(cfg *Config) {
 	// allowed_models: empty = allow all models from upstream
 	if cfg.Providers.Codex.Auth.Mode == "" {
 		cfg.Providers.Codex.Auth.Mode = "device_code"
-	}
-	if cfg.Providers.Codex.Auth.APIKeyEnv == "" {
-		cfg.Providers.Codex.Auth.APIKeyEnv = "OPENAI_API_KEY"
 	}
 	setDefaultTimeouts(cfg)
 }

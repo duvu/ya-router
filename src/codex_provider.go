@@ -6,12 +6,10 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 )
@@ -66,27 +64,13 @@ func (p *CodexProvider) currentToken() string {
 }
 
 // EnsureAuthenticated ensures a valid Codex credential is available.
-// For api_key mode it reads from the environment variable.
-// For device_code mode it mirrors Copilot's pattern: check expiry,
-// attempt refresh, fall back to re-authentication error.
+// Uses device_code mode: check expiry, attempt refresh, fall back to
+// re-authentication error.
 func (p *CodexProvider) EnsureAuthenticated(_ context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	auth := p.authState()
-
-	if auth.Mode == "api_key" {
-		envVar := auth.APIKeyEnv
-		if envVar == "" {
-			envVar = "OPENAI_API_KEY"
-		}
-		key := os.Getenv(envVar)
-		if key == "" {
-			return fmt.Errorf("env var %q is not set", envVar)
-		}
-		auth.AccessToken = key
-		return nil
-	}
 
 	// device_code mode — token stored in config.
 	if auth.AccessToken == "" {
@@ -142,40 +126,10 @@ func (p *CodexProvider) ListModels(ctx context.Context) (*ModelList, error) {
 	})
 }
 
-// fetchModels fetches models from the upstream API or returns the known list.
-func (p *CodexProvider) fetchModels(ctx context.Context) (*ModelList, error) {
-	// device_code JWT lacks api.model.read scope → use known models list.
-	if isDeviceCodeMode(p.authState().Mode) {
-		return p.knownModelList(), nil
-	}
-
-	// api_key mode — real API key can list models.
-	req, err := http.NewRequestWithContext(ctx, "GET", codexAPIBase+"/models", nil)
-	if err != nil {
-		return nil, err
-	}
-	token := p.currentToken()
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("User-Agent", "github-copilot-svcs/1.0")
-
-	resp, err := sharedHTTPClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		log.Printf("codex /models returned %d — using known models", resp.StatusCode)
-		return p.knownModelList(), nil
-	}
-	var ml ModelList
-	if err := json.NewDecoder(resp.Body).Decode(&ml); err != nil {
-		return nil, err
-	}
-	if len(p.cfg.Providers.Codex.AllowedModels) > 0 {
-		return filterAllowedModels(&ml, p.cfg.Providers.Codex.AllowedModels), nil
-	}
-	return &ml, nil
+// fetchModels returns the known-models list (device_code JWT lacks
+// api.model.read scope, so we never call the upstream /models endpoint).
+func (p *CodexProvider) fetchModels(_ context.Context) (*ModelList, error) {
+	return p.knownModelList(), nil
 }
 
 // knownModelList returns the canonical Codex model list, merging the hardcoded
@@ -278,9 +232,9 @@ func (p *CodexProvider) Health(_ context.Context) ProviderHealth {
 	defer p.mu.Unlock()
 	auth := p.authState()
 	authenticated := auth.AccessToken != ""
-	if auth.Mode != "api_key" && auth.ExpiresAt > 0 {
+	if auth.ExpiresAt > 0 {
 		authenticated = authenticated && auth.ExpiresAt > time.Now().Unix()
 	}
-	hasRefresh := auth.RefreshToken != "" || auth.Mode == "api_key"
+	hasRefresh := auth.RefreshToken != ""
 	return ProviderHealth{Authenticated: authenticated, CanRefresh: hasRefresh}
 }

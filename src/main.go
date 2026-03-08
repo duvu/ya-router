@@ -22,7 +22,7 @@ func main() {
 
 	case "auth":
 		authCmd := flag.NewFlagSet("auth", flag.ExitOnError)
-		modeFlag := authCmd.String("mode", "device_code", "Auth mode: device_code (default), api_key (codex only)")
+		modeFlag := authCmd.String("mode", "device_code", "Auth mode: device_code (default)")
 		tokenFlag := authCmd.String("token", "", "Manually set an access token (codex only)")
 		args := os.Args[2:]
 		provider := "copilot"
@@ -37,8 +37,8 @@ func main() {
 			if *tokenFlag != "" {
 				err = handleAuthCodexManualToken(*tokenFlag)
 			} else {
-				if *modeFlag != "device_code" && *modeFlag != "api_key" {
-					fmt.Printf("auth codex: invalid --mode %q (use device_code or api_key)\n", *modeFlag)
+				if *modeFlag != "device_code" {
+					fmt.Printf("auth codex: invalid --mode %q (only device_code is supported)\n", *modeFlag)
 					os.Exit(1)
 				}
 				err = handleAuthCodex(*modeFlag)

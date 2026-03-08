@@ -18,7 +18,7 @@ func printUsage() {
 	fmt.Printf("  run|start             Start the proxy server\n")
 	fmt.Printf("    --config-migrate    Config migration mode: merge (default), none, override\n")
 	fmt.Printf("  auth [copilot|codex]  Authenticate a provider (default: copilot)\n")
-	fmt.Printf("    --mode              Auth mode: device_code (default), api_key (codex only)\n")
+  fmt.Printf("    --mode              Auth mode: device_code (default)\n")
 	fmt.Printf("    --token <token>     Manually set access token (codex only, fallback)\n")
 	fmt.Printf("  status                Show authentication status for all providers\n")
 	fmt.Printf("  config                Show current configuration\n")
@@ -53,10 +53,9 @@ func handleAuthCopilot(mode string) error {
 	return nil
 }
 
-// handleAuthCodex runs the OpenAI OAuth device-code flow for Codex
-// (mode=device_code) or validates the API key (mode=api_key).
+// handleAuthCodex runs the OpenAI OAuth device-code flow for Codex.
 // Tokens are stored in the project config folder.
-func handleAuthCodex(mode string) error {
+func handleAuthCodex(_ string) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -64,28 +63,20 @@ func handleAuthCodex(mode string) error {
 	initializeTimeouts(cfg)
 
 	cfg.Providers.Codex.Enabled = true
-	cfg.Providers.Codex.Auth.Mode = mode
+	cfg.Providers.Codex.Auth.Mode = "device_code"
 
 	if err := saveConfig(cfg); err != nil {
 		return fmt.Errorf("failed to persist Codex auth mode: %w", err)
 	}
 
-	fmt.Printf("Starting OpenAI Codex authentication (mode: %s)...\n", mode)
+	fmt.Println("Starting OpenAI Codex authentication (mode: device_code)...")
 
-	if isDeviceCodeMode(mode) {
-		auth := &cfg.Providers.Codex.Auth
-		// Force re-authentication (clear existing token).
-		auth.AccessToken = ""
-		auth.ExpiresAt = 0
-		if err := codexAuthenticate(auth, func() error { return saveConfig(cfg) }); err != nil {
-			return fmt.Errorf("Codex authentication failed: %w", err)
-		}
-	} else {
-		// api_key mode — validate the env var is set.
-		p := NewCodexProvider(cfg)
-		if err := p.EnsureAuthenticated(context.Background()); err != nil {
-			return fmt.Errorf("Codex authentication failed: %w", err)
-		}
+	auth := &cfg.Providers.Codex.Auth
+	// Force re-authentication (clear existing token).
+	auth.AccessToken = ""
+	auth.ExpiresAt = 0
+	if err := codexAuthenticate(auth, func() error { return saveConfig(cfg) }); err != nil {
+		return fmt.Errorf("Codex authentication failed: %w", err)
 	}
 
 	fmt.Println("Codex credentials validated successfully!")
@@ -166,36 +157,27 @@ func printCopilotStatus(auth *CopilotAuthState) {
 func printCodexStatus(cfg *Config) {
 	fmt.Println("Provider: OpenAI Codex")
 	auth := &cfg.Providers.Codex.Auth
-	if auth.Mode == "api_key" {
-		p := NewCodexProvider(cfg)
-		if err := p.EnsureAuthenticated(context.Background()); err != nil {
-			fmt.Printf("  Auth: ✗ Credential error: %v\n", err)
-		} else {
-			fmt.Printf("  Auth: ✓ API key available\n")
-		}
-	} else {
-		now := time.Now().Unix()
-		if auth.AccessToken != "" {
-			if auth.ExpiresAt > 0 {
-				remaining := auth.ExpiresAt - now
-				if remaining > 0 {
-					fmt.Printf("  Auth: ✓ Authenticated (expires in %dm %ds)\n",
-						remaining/60, remaining%60)
-					if remaining <= 300 {
-						fmt.Printf("  Status: ⚠  Refresh imminent\n")
-					} else {
-						fmt.Printf("  Status: ✅ Token healthy\n")
-					}
+	now := time.Now().Unix()
+	if auth.AccessToken != "" {
+		if auth.ExpiresAt > 0 {
+			remaining := auth.ExpiresAt - now
+			if remaining > 0 {
+				fmt.Printf("  Auth: ✓ Authenticated (expires in %dm %ds)\n",
+					remaining/60, remaining%60)
+				if remaining <= 300 {
+					fmt.Printf("  Status: ⚠  Refresh imminent\n")
 				} else {
-					fmt.Printf("  Auth: ⚠  Token EXPIRED (%d s ago)\n", -remaining)
+					fmt.Printf("  Status: ✅ Token healthy\n")
 				}
 			} else {
-				fmt.Printf("  Auth: ✓ Token available (no expiry info)\n")
+				fmt.Printf("  Auth: ⚠  Token EXPIRED (%d s ago)\n", -remaining)
 			}
-			fmt.Printf("  Has refresh token: %t\n", auth.RefreshToken != "")
 		} else {
-			fmt.Printf("  Auth: ✗ Not authenticated — run '%s auth codex'\n", os.Args[0])
+			fmt.Printf("  Auth: ✓ Token available (no expiry info)\n")
 		}
+		fmt.Printf("  Has refresh token: %t\n", auth.RefreshToken != "")
+	} else {
+		fmt.Printf("  Auth: ✗ Not authenticated — run '%s auth codex'\n", os.Args[0])
 	}
 	fmt.Printf("  Mode: %s\n", auth.Mode)
 	fmt.Println()
@@ -384,10 +366,6 @@ func refreshCopilot(cfg *Config) error {
 
 func refreshCodex(cfg *Config) error {
 	auth := &cfg.Providers.Codex.Auth
-	if auth.Mode == "api_key" {
-		fmt.Println("Codex: api_key mode — no refresh needed")
-		return nil
-	}
 	if auth.AccessToken == "" {
 		return fmt.Errorf("no Codex token — run 'auth codex' first")
 	}
