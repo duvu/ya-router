@@ -359,7 +359,7 @@ func (p *CodexProvider) ProxyRequest(
 		p.cb.onFailure()
 	}
 
-	return handleResponsesAPIResponse(w, resp, streaming)
+	return handleResponsesAPIResponse(w, resp, streaming, chatgpt)
 }
 
 // proxyClassic sends a request to a classic OpenAI Platform endpoint

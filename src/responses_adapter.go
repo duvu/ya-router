@@ -441,9 +441,11 @@ func aggregateSSEToCompletion(r io.Reader) ([]byte, error) {
 // clientWantsStream indicates whether the original client request asked
 // for streaming; when forcing stream=true upstream (chatgpt.com mode) but
 // the client wants a blocking response, we aggregate the SSE here.
-func handleResponsesAPIResponse(w http.ResponseWriter, resp *http.Response, clientWantsStream bool) error {
+// upstreamSSE should be set to true when the upstream was forced to stream
+// (chatgpt.com mode), since that endpoint may not set Content-Type correctly.
+func handleResponsesAPIResponse(w http.ResponseWriter, resp *http.Response, clientWantsStream, upstreamSSE bool) error {
 	ct := resp.Header.Get("Content-Type")
-	isSSE := strings.Contains(ct, "text/event-stream")
+	isSSE := strings.Contains(ct, "text/event-stream") || upstreamSSE
 
 	if resp.StatusCode >= 400 {
 		// Error: read body and forward as-is, but also return an error
