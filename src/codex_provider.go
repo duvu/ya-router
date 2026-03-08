@@ -205,6 +205,19 @@ func (p *CodexProvider) EnsureAuthenticated(_ context.Context) error {
 				remaining/60, remaining%60)
 		}
 	}
+
+	// Final fallback: the device-code access_token is itself a JWT that
+	// contains chatgpt_account_id.  Extract it directly so requests work
+	// even when neither config.json nor ~/.codex/auth.json have the field.
+	if auth.AccountID == "" && auth.AccessToken != "" {
+		if aid := extractAccountIDFromJWT(auth.AccessToken); aid != "" {
+			auth.AccountID = aid
+			log.Printf("[codex] extracted account_id from access_token JWT: %s", aid)
+			// Persist so we don't repeat this on every request.
+			_ = p.save()
+		}
+	}
+
 	return nil
 }
 
