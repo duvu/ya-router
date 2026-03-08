@@ -285,6 +285,14 @@ rw.headersSent = true
 return rw.ResponseWriter.Write(data)
 }
 
+// Flush implements http.Flusher so that streaming SSE responses work
+// correctly through the responseWrapper middleware.
+func (rw *responseWrapper) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // streamResponse copies the upstream response to w, flushing for SSE streams.
 func streamResponse(w http.ResponseWriter, resp *http.Response) error {
 copyHeaders(w, resp.Header)
