@@ -6,10 +6,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -22,6 +25,49 @@ type CodexProvider struct {
 	mu    sync.Mutex
 	cb    *CircuitBreaker
 	cache *ModelCache
+}
+
+// jwtClaims extracts organization_id and project_id from a JWT access
+// token without signature verification (we only need the claims).
+func jwtClaims(token string) (orgID, projectID string) {
+	parts := strings.SplitN(token, ".", 3)
+	if len(parts) < 2 {
+		return
+	}
+	// base64url decode the payload.
+	payload := parts[1]
+	if m := len(payload) % 4; m != 0 {
+		payload += strings.Repeat("=", 4-m)
+	}
+	b, err := base64.URLEncoding.DecodeString(payload)
+	if err != nil {
+		return
+	}
+	var claims struct {
+		OrgID     string `json:"organization_id"`
+		ProjectID string `json:"project_id"`
+	}
+	if json.Unmarshal(b, &claims) == nil {
+		orgID = claims.OrgID
+		projectID = claims.ProjectID
+	}
+	return
+}
+
+// setCodexHeaders sets the standard headers for Codex API requests,
+// including the openai-beta flag and org/project from the JWT.
+func setCodexHeaders(req *http.Request, token string) {
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", codexUserAgent)
+	req.Header.Set("OpenAI-Beta", "codex-2025-05-19")
+	if orgID, projectID := jwtClaims(token); orgID != "" {
+		req.Header.Set("OpenAI-Organization", orgID)
+		if projectID != "" {
+			req.Header.Set("OpenAI-Project", projectID)
+		}
+	}
 }
 
 // isDeviceCodeMode returns true for both the canonical "device_code" name
@@ -204,10 +250,7 @@ func (p *CodexProvider) ProxyRequest(
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "github-copilot-svcs/1.0")
+	setCodexHeaders(req, token)
 
 	resp, err := makeRequestWithRetry(sharedHTTPClient, req, responsesBody)
 	if err != nil {
@@ -248,10 +291,7 @@ func (p *CodexProvider) proxyClassic(
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "github-copilot-svcs/1.0")
+	setCodexHeaders(req, token)
 
 	resp, err := makeRequestWithRetry(sharedHTTPClient, req, body)
 	if err != nil {
