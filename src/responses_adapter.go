@@ -126,16 +126,19 @@ func convertToolsForResponses(raw json.RawMessage) json.RawMessage {
 //     types rewritten for Responses API compatibility (text→input_text, etc.)
 func extractMessages(v json.RawMessage) (instructions string, inputJSON json.RawMessage, err error) {
 	var msgs []struct {
-		Role    string          `json:"role"`
-		Content json.RawMessage `json:"content"`
+		Role       string          `json:"role"`
+		Content    json.RawMessage `json:"content"`
+		ToolCalls  json.RawMessage `json:"tool_calls,omitempty"`
+		ToolCallID string          `json:"tool_call_id,omitempty"`
 	}
 	if err = json.Unmarshal(v, &msgs); err != nil {
 		return "", v, fmt.Errorf("parse messages: %w", err)
 	}
 	var instrParts []string
-	var inputMsgs []map[string]json.RawMessage
+	var inputItems []json.RawMessage
 	for _, m := range msgs {
-		if m.Role == "system" {
+		switch m.Role {
+		case "system":
 			// content may be a plain string or an array of parts.
 			var text string
 			if json.Unmarshal(m.Content, &text) == nil {
@@ -153,18 +156,88 @@ func extractMessages(v json.RawMessage) (instructions string, inputJSON json.Raw
 					}
 				}
 			}
-		} else {
+
+		case "tool":
+			// Chat Completions tool result → Responses API function_call_output
+			var contentStr string
+			if json.Unmarshal(m.Content, &contentStr) != nil {
+				// If content is not a plain string, marshal it as-is.
+				contentStr = string(m.Content)
+			}
+			item := map[string]string{
+				"type":    "function_call_output",
+				"call_id": m.ToolCallID,
+				"output":  contentStr,
+			}
+			b, _ := json.Marshal(item)
+			inputItems = append(inputItems, b)
+
+		case "assistant":
+			// Check if this assistant message has tool_calls.
+			if len(m.ToolCalls) > 0 {
+				// First emit the assistant message text (if any).
+				if len(m.Content) > 0 && string(m.Content) != `""` && string(m.Content) != "null" {
+					msg := map[string]json.RawMessage{
+						"role":    json.RawMessage(`"assistant"`),
+						"content": normalizeContentParts(m.Content),
+					}
+					b, _ := json.Marshal(msg)
+					inputItems = append(inputItems, b)
+				}
+				// Convert each tool_call to a function_call input item.
+				var toolCalls []struct {
+					ID       string `json:"id"`
+					Type     string `json:"type"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				}
+				if json.Unmarshal(m.ToolCalls, &toolCalls) == nil {
+					for _, tc := range toolCalls {
+						item := map[string]string{
+							"type":      "function_call",
+							"call_id":   tc.ID,
+							"name":      tc.Function.Name,
+							"arguments": tc.Function.Arguments,
+						}
+						b, _ := json.Marshal(item)
+						inputItems = append(inputItems, b)
+					}
+				}
+			} else {
+				// Normal assistant message without tool calls.
+				msg := map[string]json.RawMessage{
+					"role":    json.RawMessage(`"assistant"`),
+					"content": normalizeContentParts(m.Content),
+				}
+				b, _ := json.Marshal(msg)
+				inputItems = append(inputItems, b)
+			}
+
+		default:
+			// user, developer, etc. — pass through with normalized content.
 			roleJSON, _ := json.Marshal(m.Role)
-			inputMsgs = append(inputMsgs, map[string]json.RawMessage{
+			msg := map[string]json.RawMessage{
 				"role":    roleJSON,
 				"content": normalizeContentParts(m.Content),
-			})
+			}
+			b, _ := json.Marshal(msg)
+			inputItems = append(inputItems, b)
 		}
 	}
-	if inputMsgs == nil {
-		inputMsgs = []map[string]json.RawMessage{}
+	if inputItems == nil {
+		inputItems = []json.RawMessage{}
 	}
-	result, _ := json.Marshal(inputMsgs)
+	// Build a JSON array from the items.
+	result := []byte("[")
+	for i, item := range inputItems {
+		if i > 0 {
+			result = append(result, ',')
+		}
+		result = append(result, item...)
+	}
+	result = append(result, ']')
 	return strings.Join(instrParts, "\n"), result, nil
 }
 

@@ -987,3 +987,81 @@ func TestStreamResponsesAsChat_TextAndToolCall(t *testing.T) {
 		t.Error("finish_reason should be tool_calls when mixed output")
 	}
 }
+
+// -----------------------------------------------------------------------
+// extractMessages: tool role and assistant tool_calls conversion
+// -----------------------------------------------------------------------
+
+func TestExtractMessages_ToolRoleConversion(t *testing.T) {
+	messages := `[
+		{"role":"system","content":"You are helpful."},
+		{"role":"user","content":"What's the weather?"},
+		{"role":"assistant","content":"","tool_calls":[
+			{"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Hanoi\"}"}}
+		]},
+		{"role":"tool","tool_call_id":"call_abc","content":"25°C, sunny"}
+	]`
+	instr, inputJSON, err := extractMessages(json.RawMessage(messages))
+	if err != nil {
+		t.Fatalf("extractMessages: %v", err)
+	}
+	if instr != "You are helpful." {
+		t.Errorf("instructions = %q, want 'You are helpful.'", instr)
+	}
+	// Parse the input array.
+	var items []map[string]interface{}
+	if err := json.Unmarshal(inputJSON, &items); err != nil {
+		t.Fatalf("unmarshal inputJSON: %v", err)
+	}
+	// Item 0: user message
+	if items[0]["role"] != "user" {
+		t.Errorf("item[0].role = %v, want user", items[0]["role"])
+	}
+	// Item 1: function_call (from assistant tool_calls)
+	if items[1]["type"] != "function_call" {
+		t.Errorf("item[1].type = %v, want function_call", items[1]["type"])
+	}
+	if items[1]["call_id"] != "call_abc" {
+		t.Errorf("item[1].call_id = %v, want call_abc", items[1]["call_id"])
+	}
+	if items[1]["name"] != "get_weather" {
+		t.Errorf("item[1].name = %v, want get_weather", items[1]["name"])
+	}
+	// Item 2: function_call_output (from tool role)
+	if items[2]["type"] != "function_call_output" {
+		t.Errorf("item[2].type = %v, want function_call_output", items[2]["type"])
+	}
+	if items[2]["call_id"] != "call_abc" {
+		t.Errorf("item[2].call_id = %v, want call_abc", items[2]["call_id"])
+	}
+	if items[2]["output"] != "25°C, sunny" {
+		t.Errorf("item[2].output = %v, want '25°C, sunny'", items[2]["output"])
+	}
+}
+
+func TestExtractMessages_AssistantWithContentAndToolCalls(t *testing.T) {
+	messages := `[
+		{"role":"user","content":"Search for X"},
+		{"role":"assistant","content":"Let me search for that.","tool_calls":[
+			{"id":"call_1","type":"function","function":{"name":"search","arguments":"{}"}}
+		]}
+	]`
+	_, inputJSON, err := extractMessages(json.RawMessage(messages))
+	if err != nil {
+		t.Fatalf("extractMessages: %v", err)
+	}
+	var items []map[string]interface{}
+	json.Unmarshal(inputJSON, &items)
+	// Should have 3 items: user, assistant text, function_call
+	if len(items) != 3 {
+		t.Fatalf("expected 3 items, got %d: %s", len(items), string(inputJSON))
+	}
+	// Assistant text message first.
+	if items[1]["role"] != "assistant" {
+		t.Errorf("item[1] should be assistant message")
+	}
+	// Then function_call.
+	if items[2]["type"] != "function_call" {
+		t.Errorf("item[2].type = %v, want function_call", items[2]["type"])
+	}
+}
