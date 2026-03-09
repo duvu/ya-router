@@ -4,6 +4,10 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -399,7 +403,7 @@ func TestBuildChatGPTCodexRequest_AllowlistOnly(t *testing.T) {
 		"max_tokens", "max_output_tokens", "max_completion_tokens",
 		"n", "stop", "logprobs", "top_logprobs", "logit_bias",
 		"stream_options", "frequency_penalty", "presence_penalty",
-		"seed", "response_format", "tools", "tool_choice",
+		"seed", "response_format", "tool_choice",
 		"parallel_tool_calls", "function_call", "functions",
 		"messages",
 	}
@@ -671,5 +675,315 @@ func TestExtractAccountIDFromJWT_Invalid(t *testing.T) {
 	accountID = extractAccountIDFromJWT("")
 	if accountID != "" {
 		t.Errorf("expected empty for empty string, got %q", accountID)
+	}
+}
+
+// -----------------------------------------------------------------------
+// Tool conversion tests
+// -----------------------------------------------------------------------
+
+func TestConvertToolsForResponses(t *testing.T) {
+	input := `[
+		{
+			"type": "function",
+			"function": {
+				"name": "get_weather",
+				"description": "Get weather",
+				"parameters": {"type":"object","properties":{"city":{"type":"string"}}}
+			}
+		},
+		{
+			"type": "function",
+			"function": {
+				"name": "list_files",
+				"description": "List files in dir",
+				"parameters": {"type":"object","properties":{"path":{"type":"string"}}},
+				"strict": true
+			}
+		}
+	]`
+	out := convertToolsForResponses(json.RawMessage(input))
+	var tools []map[string]interface{}
+	if err := json.Unmarshal(out, &tools); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(tools))
+	}
+	// First tool: no strict field.
+	if tools[0]["name"] != "get_weather" {
+		t.Errorf("tool[0].name = %v, want get_weather", tools[0]["name"])
+	}
+	if tools[0]["type"] != "function" {
+		t.Errorf("tool[0].type = %v, want function", tools[0]["type"])
+	}
+	if _, ok := tools[0]["function"]; ok {
+		t.Error("tool[0] must not have nested 'function' key")
+	}
+	if _, ok := tools[0]["strict"]; ok {
+		t.Error("tool[0] should not have strict (was nil)")
+	}
+	// Second tool: strict=true should be present.
+	if tools[1]["name"] != "list_files" {
+		t.Errorf("tool[1].name = %v, want list_files", tools[1]["name"])
+	}
+	if tools[1]["strict"] != true {
+		t.Errorf("tool[1].strict = %v, want true", tools[1]["strict"])
+	}
+}
+
+func TestBuildChatGPTCodexRequest_ToolsConverted(t *testing.T) {
+	input := `{
+		"model": "gpt-5.4",
+		"messages": [{"role": "user", "content": "Use get_weather tool"}],
+		"tools": [
+			{
+				"type": "function",
+				"function": {
+					"name": "get_weather",
+					"description": "Get weather",
+					"parameters": {"type": "object"}
+				}
+			}
+		],
+		"stream": true
+	}`
+	out, _, err := buildChatGPTCodexRequest([]byte(input))
+	if err != nil {
+		t.Fatalf("buildChatGPTCodexRequest: %v", err)
+	}
+	var m map[string]json.RawMessage
+	json.Unmarshal(out, &m)
+	if _, ok := m["tools"]; !ok {
+		t.Fatal("output must contain 'tools'")
+	}
+	// Verify Responses API format (flat, no nested "function").
+	var tools []map[string]interface{}
+	json.Unmarshal(m["tools"], &tools)
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	if tools[0]["name"] != "get_weather" {
+		t.Errorf("tool.name = %v, want get_weather", tools[0]["name"])
+	}
+	if _, ok := tools[0]["function"]; ok {
+		t.Error("Responses API tool must not have nested 'function' key")
+	}
+}
+
+func TestBuildPlatformResponsesRequest_ToolsConverted(t *testing.T) {
+	input := `{
+		"model": "gpt-5.4",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"tools": [
+			{
+				"type": "function",
+				"function": {
+					"name": "read_file",
+					"description": "Read file",
+					"parameters": {"type": "object"}
+				}
+			}
+		]
+	}`
+	out, _, err := buildPlatformResponsesRequest([]byte(input))
+	if err != nil {
+		t.Fatalf("buildPlatformResponsesRequest: %v", err)
+	}
+	var m map[string]json.RawMessage
+	json.Unmarshal(out, &m)
+	if _, ok := m["tools"]; !ok {
+		t.Fatal("tools should be converted and forwarded, not dropped")
+	}
+	var tools []map[string]interface{}
+	json.Unmarshal(m["tools"], &tools)
+	if tools[0]["name"] != "read_file" {
+		t.Errorf("tool.name = %v, want read_file", tools[0]["name"])
+	}
+}
+
+// -----------------------------------------------------------------------
+// Non-streaming tool_call conversion tests
+// -----------------------------------------------------------------------
+
+func TestResponsesToChatCompletion_FunctionCall(t *testing.T) {
+	input := `{
+		"id": "resp_123",
+		"object": "response",
+		"created_at": 1700000000,
+		"model": "gpt-5.4",
+		"output": [
+			{
+				"type": "function_call",
+				"id": "fc_1",
+				"call_id": "call_abc",
+				"name": "get_weather",
+				"arguments": "{\"city\":\"Hanoi\"}"
+			}
+		],
+		"usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120}
+	}`
+	out, err := responsesToChatCompletion([]byte(input))
+	if err != nil {
+		t.Fatalf("responsesToChatCompletion: %v", err)
+	}
+	var cc map[string]interface{}
+	json.Unmarshal(out, &cc)
+	choices := cc["choices"].([]interface{})
+	choice := choices[0].(map[string]interface{})
+	if choice["finish_reason"] != "tool_calls" {
+		t.Errorf("finish_reason = %v, want tool_calls", choice["finish_reason"])
+	}
+	msg := choice["message"].(map[string]interface{})
+	if msg["role"] != "assistant" {
+		t.Errorf("role = %v, want assistant", msg["role"])
+	}
+	toolCalls := msg["tool_calls"].([]interface{})
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool_call, got %d", len(toolCalls))
+	}
+	tc := toolCalls[0].(map[string]interface{})
+	if tc["id"] != "call_abc" {
+		t.Errorf("tool_call.id = %v, want call_abc", tc["id"])
+	}
+	fn := tc["function"].(map[string]interface{})
+	if fn["name"] != "get_weather" {
+		t.Errorf("function.name = %v, want get_weather", fn["name"])
+	}
+	if fn["arguments"] != "{\"city\":\"Hanoi\"}" {
+		t.Errorf("function.arguments = %v", fn["arguments"])
+	}
+}
+
+func TestResponsesToChatCompletion_MessageAndFunctionCall(t *testing.T) {
+	// Mixed output: text message + tool call.
+	input := `{
+		"id": "resp_456",
+		"object": "response",
+		"created_at": 1700000000,
+		"model": "gpt-5.4",
+		"output": [
+			{
+				"type": "message",
+				"id": "msg_1",
+				"role": "assistant",
+				"content": [{"type": "output_text", "text": "Let me check"}]
+			},
+			{
+				"type": "function_call",
+				"id": "fc_1",
+				"call_id": "call_xyz",
+				"name": "search",
+				"arguments": "{\"q\":\"test\"}"
+			}
+		]
+	}`
+	out, err := responsesToChatCompletion([]byte(input))
+	if err != nil {
+		t.Fatalf("responsesToChatCompletion: %v", err)
+	}
+	var cc map[string]interface{}
+	json.Unmarshal(out, &cc)
+	choices := cc["choices"].([]interface{})
+	choice := choices[0].(map[string]interface{})
+	if choice["finish_reason"] != "tool_calls" {
+		t.Errorf("finish_reason should be tool_calls when tools present")
+	}
+	msg := choice["message"].(map[string]interface{})
+	if msg["content"] != "Let me check" {
+		t.Errorf("content = %v, want 'Let me check'", msg["content"])
+	}
+	if msg["tool_calls"] == nil {
+		t.Error("tool_calls should be present")
+	}
+}
+
+// -----------------------------------------------------------------------
+// Streaming tool_call SSE tests
+// -----------------------------------------------------------------------
+
+func TestStreamResponsesAsChat_ToolCall(t *testing.T) {
+	sseData := "event: response.created\n" +
+		"data: {\"response\":{\"id\":\"resp_t1\",\"model\":\"gpt-5.4\"}}\n\n" +
+		"event: response.output_item.added\n" +
+		"data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"call_001\",\"name\":\"get_weather\"},\"output_index\":0}\n\n" +
+		"event: response.function_call_arguments.delta\n" +
+		"data: {\"delta\":\"{\\\"ci\",\"call_id\":\"call_001\"}\n\n" +
+		"event: response.function_call_arguments.delta\n" +
+		"data: {\"delta\":\"ty\\\":\\\"HN\\\"}\",\"call_id\":\"call_001\"}\n\n" +
+		"event: response.completed\n" +
+		"data: {\"response\":{\"usage\":{\"input_tokens\":50,\"output_tokens\":15,\"total_tokens\":65}}}\n\n"
+
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(sseData)),
+	}
+	rec := httptest.NewRecorder()
+	if err := streamResponsesAsChat(rec, resp, true); err != nil {
+		t.Fatalf("streamResponsesAsChat: %v", err)
+	}
+	body := rec.Body.String()
+
+	// Should have role=assistant in the first chunk.
+	if !strings.Contains(body, `"role":"assistant"`) {
+		t.Error("missing role:assistant in streaming output")
+	}
+	// Should have tool_calls with function name.
+	if !strings.Contains(body, `"name":"get_weather"`) {
+		t.Error("missing tool function name in streaming output")
+	}
+	// Should have argument deltas.
+	if !strings.Contains(body, `"arguments":"{\"ci"`) {
+		t.Errorf("missing first argument delta")
+	}
+	if !strings.Contains(body, `"arguments":"ty\":\"HN\"}"`) {
+		t.Errorf("missing second argument delta")
+	}
+	// finish_reason should be tool_calls.
+	if !strings.Contains(body, `"finish_reason":"tool_calls"`) {
+		t.Error("finish_reason should be tool_calls")
+	}
+	// Usage should be present.
+	if !strings.Contains(body, `"completion_tokens":15`) {
+		t.Error("missing completion_tokens in usage")
+	}
+	// Should end with [DONE].
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Error("missing [DONE] marker")
+	}
+}
+
+func TestStreamResponsesAsChat_TextAndToolCall(t *testing.T) {
+	// Mixed: text output then a tool call.
+	sseData := "event: response.created\n" +
+		"data: {\"response\":{\"id\":\"resp_mix\",\"model\":\"gpt-5.4\"}}\n\n" +
+		"event: response.output_text.delta\n" +
+		"data: {\"delta\":\"Let me check\"}\n\n" +
+		"event: response.output_item.added\n" +
+		"data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"call_m1\",\"name\":\"search\"},\"output_index\":1}\n\n" +
+		"event: response.function_call_arguments.delta\n" +
+		"data: {\"delta\":\"{}\",\"call_id\":\"call_m1\"}\n\n" +
+		"event: response.completed\n" +
+		"data: {\"response\":{\"usage\":{\"input_tokens\":30,\"output_tokens\":10,\"total_tokens\":40}}}\n\n"
+
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(sseData)),
+	}
+	rec := httptest.NewRecorder()
+	if err := streamResponsesAsChat(rec, resp, false); err != nil {
+		t.Fatalf("streamResponsesAsChat: %v", err)
+	}
+	body := rec.Body.String()
+
+	// Text content should be present.
+	if !strings.Contains(body, `"content":"Let me check"`) {
+		t.Error("missing text content")
+	}
+	// Tool call should be present.
+	if !strings.Contains(body, `"name":"search"`) {
+		t.Error("missing tool call name")
+	}
+	// finish_reason should be tool_calls (tool calls override stop).
+	if !strings.Contains(body, `"finish_reason":"tool_calls"`) {
+		t.Error("finish_reason should be tool_calls when mixed output")
 	}
 }

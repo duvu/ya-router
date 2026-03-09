@@ -80,6 +80,46 @@ func normalizeContentParts(content json.RawMessage) json.RawMessage {
 	return out
 }
 
+// convertToolsForResponses rewrites the Chat Completions "tools" array into the
+// Responses API format.  In Chat Completions each tool wraps its definition
+// inside a "function" object; the Responses API flattens it:
+//
+//	Chat Completions: {"type":"function","function":{"name":"f",…}}
+//	Responses API:    {"type":"function","name":"f",…}
+func convertToolsForResponses(raw json.RawMessage) json.RawMessage {
+	var tools []struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name        string          `json:"name"`
+			Description string          `json:"description,omitempty"`
+			Parameters  json.RawMessage `json:"parameters,omitempty"`
+			Strict      *bool           `json:"strict,omitempty"`
+		} `json:"function"`
+	}
+	if json.Unmarshal(raw, &tools) != nil {
+		return raw
+	}
+	out := make([]map[string]interface{}, 0, len(tools))
+	for _, t := range tools {
+		rt := map[string]interface{}{
+			"type": "function",
+			"name": t.Function.Name,
+		}
+		if t.Function.Description != "" {
+			rt["description"] = t.Function.Description
+		}
+		if t.Function.Parameters != nil {
+			rt["parameters"] = t.Function.Parameters
+		}
+		if t.Function.Strict != nil {
+			rt["strict"] = *t.Function.Strict
+		}
+		out = append(out, rt)
+	}
+	b, _ := json.Marshal(out)
+	return b
+}
+
 // extractMessages splits the Chat Completions "messages" array into:
 //   - instructions: system-role content joined with newlines
 //   - inputJSON:    remaining messages as a JSON array, with content-part
@@ -139,6 +179,7 @@ var chatGPTCodexAllowedKeys = map[string]bool{
 	"model":        true,
 	"input":        true,
 	"instructions": true,
+	"tools":        true,
 	"stream":       true,
 	"store":        true,
 	"temperature":  true,
@@ -189,6 +230,11 @@ func buildChatGPTCodexRequest(chatBody []byte) ([]byte, bool, error) {
 		}
 	}
 
+	// Convert Chat Completions tools format to Responses API format.
+	if v, ok := raw["tools"]; ok {
+		out["tools"] = convertToolsForResponses(v)
+	}
+
 	// Endpoint requirements.
 	out["stream"], _ = json.Marshal(true)
 	out["store"], _ = json.Marshal(false)
@@ -230,9 +276,11 @@ func buildPlatformResponsesRequest(chatBody []byte) ([]byte, bool, error) {
 			out["max_output_tokens"] = v
 		case "stream_options":
 			// Consumed locally — never forwarded upstream.
+		case "tools":
+			out["tools"] = convertToolsForResponses(v)
 		case "n", "stop", "logprobs", "top_logprobs", "logit_bias",
 			"frequency_penalty", "presence_penalty", "seed",
-			"response_format", "tools", "tool_choice",
+			"response_format", "tool_choice",
 			"parallel_tool_calls", "function_call", "functions":
 			// Drop fields unsupported by Responses API.
 		default:
@@ -254,10 +302,13 @@ func buildPlatformResponsesRequest(chatBody []byte) ([]byte, bool, error) {
 
 // responsesAPIOutput is a single output item from the Responses API.
 type responsesAPIOutput struct {
-	Type    string `json:"type"`
-	ID      string `json:"id"`
-	Role    string `json:"role"`
-	Content []struct {
+	Type      string `json:"type"`
+	ID        string `json:"id"`
+	Role      string `json:"role"`
+	CallID    string `json:"call_id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+	Content   []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
@@ -302,17 +353,37 @@ func responsesToChatCompletion(respBody []byte) ([]byte, error) {
 		return json.Marshal(errResp)
 	}
 
-	// Extract assistant text from output items.
+	// Extract assistant text and tool calls from output items.
 	var text strings.Builder
+	var toolCalls []map[string]interface{}
 	for _, item := range rr.Output {
-		if item.Type != "message" {
-			continue
-		}
-		for _, c := range item.Content {
-			if c.Type == "output_text" {
-				text.WriteString(c.Text)
+		switch item.Type {
+		case "message":
+			for _, c := range item.Content {
+				if c.Type == "output_text" {
+					text.WriteString(c.Text)
+				}
 			}
+		case "function_call":
+			toolCalls = append(toolCalls, map[string]interface{}{
+				"id":   item.CallID,
+				"type": "function",
+				"function": map[string]string{
+					"name":      item.Name,
+					"arguments": item.Arguments,
+				},
+			})
 		}
+	}
+
+	finishReason := "stop"
+	msg := map[string]interface{}{
+		"role":    "assistant",
+		"content": text.String(),
+	}
+	if len(toolCalls) > 0 {
+		finishReason = "tool_calls"
+		msg["tool_calls"] = toolCalls
 	}
 
 	cc := map[string]interface{}{
@@ -322,12 +393,9 @@ func responsesToChatCompletion(respBody []byte) ([]byte, error) {
 		"model":   rr.Model,
 		"choices": []map[string]interface{}{
 			{
-				"index": 0,
-				"message": map[string]string{
-					"role":    "assistant",
-					"content": text.String(),
-				},
-				"finish_reason": "stop",
+				"index":         0,
+				"message":       msg,
+				"finish_reason": finishReason,
 			},
 		},
 	}
@@ -367,11 +435,14 @@ func streamResponsesAsChat(w http.ResponseWriter, resp *http.Response, includeUs
 	scanner.Buffer(make([]byte, 0, 64*1024), 512*1024)
 
 	var (
-		chatID    = fmt.Sprintf("chatcmpl-%d", time.Now().UnixMilli())
-		model     string
-		created   = time.Now().Unix()
-		sentRole  bool
-		eventType string
+		chatID          = fmt.Sprintf("chatcmpl-%d", time.Now().UnixMilli())
+		model           string
+		created         = time.Now().Unix()
+		sentRole        bool
+		eventType       string
+		hadToolCalls    bool
+		toolCallCount   int
+		toolCallIndices = make(map[string]int) // call_id → index
 	)
 
 	for scanner.Scan() {
@@ -428,6 +499,70 @@ func streamResponsesAsChat(w http.ResponseWriter, resp *http.Response, includeUs
 			fmt.Fprintf(w, "data: %s\n\n", chunk)
 			flusher.Flush()
 
+		case "response.output_item.added":
+			var ev struct {
+				Item struct {
+					Type   string `json:"type"`
+					CallID string `json:"call_id"`
+					Name   string `json:"name"`
+				} `json:"item"`
+			}
+			if json.Unmarshal([]byte(data), &ev) != nil || ev.Item.Type != "function_call" {
+				continue
+			}
+			hadToolCalls = true
+			idx := toolCallCount
+			toolCallCount++
+			toolCallIndices[ev.Item.CallID] = idx
+
+			// Build delta with role (on first chunk) + tool_calls.
+			delta := map[string]interface{}{
+				"tool_calls": []map[string]interface{}{
+					{
+						"index": idx,
+						"id":    ev.Item.CallID,
+						"type":  "function",
+						"function": map[string]string{
+							"name":      ev.Item.Name,
+							"arguments": "",
+						},
+					},
+				},
+			}
+			if !sentRole {
+				sentRole = true
+				delta["role"] = "assistant"
+			}
+			chunk := chatChunkDynamic(chatID, model, created, delta, nil)
+			fmt.Fprintf(w, "data: %s\n\n", chunk)
+			flusher.Flush()
+
+		case "response.function_call_arguments.delta":
+			var ev struct {
+				Delta  string `json:"delta"`
+				CallID string `json:"call_id"`
+			}
+			if json.Unmarshal([]byte(data), &ev) != nil {
+				continue
+			}
+			idx, ok := toolCallIndices[ev.CallID]
+			if !ok {
+				continue
+			}
+			delta := map[string]interface{}{
+				"tool_calls": []map[string]interface{}{
+					{
+						"index": idx,
+						"function": map[string]string{
+							"arguments": ev.Delta,
+						},
+					},
+				},
+			}
+			chunk := chatChunkDynamic(chatID, model, created, delta, nil)
+			fmt.Fprintf(w, "data: %s\n\n", chunk)
+			flusher.Flush()
+
 		case "response.completed":
 			// Extract usage from the completed event; only include it in the
 			// final chunk when the client requested it via
@@ -451,6 +586,9 @@ func streamResponsesAsChat(w http.ResponseWriter, resp *http.Response, includeUs
 			}
 			// Send finish_reason chunk.
 			finish := "stop"
+			if hadToolCalls {
+				finish = "tool_calls"
+			}
 			chunk := chatChunkFinish(chatID, model, created, &finish, usage)
 			fmt.Fprintf(w, "data: %s\n\n", chunk)
 			flusher.Flush()
@@ -479,6 +617,26 @@ func streamResponsesAsChat(w http.ResponseWriter, resp *http.Response, includeUs
 
 // chatChunk builds a Chat Completions streaming chunk JSON.
 func chatChunk(id, model string, created int64, delta map[string]string, finishReason *string) []byte {
+	chunk := map[string]interface{}{
+		"id":      id,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   model,
+		"choices": []map[string]interface{}{
+			{
+				"index":         0,
+				"delta":         delta,
+				"finish_reason": finishReason,
+			},
+		},
+	}
+	b, _ := json.Marshal(chunk)
+	return b
+}
+
+// chatChunkDynamic builds a streaming chunk with an arbitrary delta object
+// (used for tool_calls and mixed deltas that contain non-string fields).
+func chatChunkDynamic(id, model string, created int64, delta map[string]interface{}, finishReason *string) []byte {
 	chunk := map[string]interface{}{
 		"id":      id,
 		"object":  "chat.completion.chunk",
