@@ -8,6 +8,217 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// normalizeContentParts
+// ---------------------------------------------------------------------------
+
+func TestNormalizeContentParts_PlainString(t *testing.T) {
+	in := json.RawMessage(`"Hello world"`)
+	out := normalizeContentParts(in)
+	if string(out) != `"Hello world"` {
+		t.Errorf("plain string should pass through unchanged, got %s", out)
+	}
+}
+
+func TestNormalizeContentParts_TextToInputText(t *testing.T) {
+	in := json.RawMessage(`[{"type":"text","text":"Hello"}]`)
+	out := normalizeContentParts(in)
+
+	var parts []map[string]json.RawMessage
+	if err := json.Unmarshal(out, &parts); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 part, got %d", len(parts))
+	}
+	var typ string
+	json.Unmarshal(parts[0]["type"], &typ)
+	if typ != "input_text" {
+		t.Errorf("type = %q, want input_text", typ)
+	}
+	var text string
+	json.Unmarshal(parts[0]["text"], &text)
+	if text != "Hello" {
+		t.Errorf("text = %q, want Hello", text)
+	}
+}
+
+func TestNormalizeContentParts_ImageUrlToInputImage(t *testing.T) {
+	in := json.RawMessage(`[{"type":"image_url","image_url":{"url":"https://example.com/img.png"}}]`)
+	out := normalizeContentParts(in)
+
+	var parts []map[string]json.RawMessage
+	json.Unmarshal(out, &parts)
+
+	var typ string
+	json.Unmarshal(parts[0]["type"], &typ)
+	if typ != "input_image" {
+		t.Errorf("type = %q, want input_image", typ)
+	}
+	// image_url object should still be preserved
+	if _, ok := parts[0]["image_url"]; !ok {
+		t.Error("image_url key should be preserved in output")
+	}
+}
+
+func TestNormalizeContentParts_MixedParts(t *testing.T) {
+	in := json.RawMessage(`[{"type":"text","text":"Say"},{"type":"image_url","image_url":{"url":"u"}}]`)
+	out := normalizeContentParts(in)
+
+	var parts []map[string]json.RawMessage
+	json.Unmarshal(out, &parts)
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d", len(parts))
+	}
+	var t0, t1 string
+	json.Unmarshal(parts[0]["type"], &t0)
+	json.Unmarshal(parts[1]["type"], &t1)
+	if t0 != "input_text" {
+		t.Errorf("parts[0].type = %q, want input_text", t0)
+	}
+	if t1 != "input_image" {
+		t.Errorf("parts[1].type = %q, want input_image", t1)
+	}
+}
+
+func TestNormalizeContentParts_UnknownTypePassesThrough(t *testing.T) {
+	// Unknown types must pass through unchanged (forward-compatibility).
+	in := json.RawMessage(`[{"type":"computer_screenshot","data":"base64stuff"}]`)
+	out := normalizeContentParts(in)
+
+	var parts []map[string]json.RawMessage
+	json.Unmarshal(out, &parts)
+	var typ string
+	json.Unmarshal(parts[0]["type"], &typ)
+	if typ != "computer_screenshot" {
+		t.Errorf("unknown type should pass through, got %q", typ)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// extractMessages — array content
+// ---------------------------------------------------------------------------
+
+func TestExtractMessages_ArrayContentNormalized(t *testing.T) {
+	msgs := json.RawMessage(`[
+		{"role":"user","content":[{"type":"text","text":"Say hi"}]}
+	]`)
+	_, inputJSON, err := extractMessages(msgs)
+	if err != nil {
+		t.Fatalf("extractMessages: %v", err)
+	}
+
+	var input []map[string]json.RawMessage
+	json.Unmarshal(inputJSON, &input)
+	if len(input) != 1 {
+		t.Fatalf("input len = %d, want 1", len(input))
+	}
+
+	var content []map[string]json.RawMessage
+	json.Unmarshal(input[0]["content"], &content)
+	if len(content) != 1 {
+		t.Fatalf("content parts len = %d, want 1", len(content))
+	}
+	var typ string
+	json.Unmarshal(content[0]["type"], &typ)
+	if typ != "input_text" {
+		t.Errorf("content[0].type = %q, want input_text (Chat Completions 'text' must be converted)", typ)
+	}
+}
+
+func TestExtractMessages_SystemArrayContentExtracted(t *testing.T) {
+	// System messages with array content: text must be extracted into instructions.
+	msgs := json.RawMessage(`[
+		{"role":"system","content":[{"type":"text","text":"Be concise."}]},
+		{"role":"user","content":"Hello"}
+	]`)
+	instructions, inputJSON, err := extractMessages(msgs)
+	if err != nil {
+		t.Fatalf("extractMessages: %v", err)
+	}
+	if instructions != "Be concise." {
+		t.Errorf("instructions = %q, want 'Be concise.'", instructions)
+	}
+	var input []map[string]json.RawMessage
+	json.Unmarshal(inputJSON, &input)
+	if len(input) != 1 {
+		t.Fatalf("input len = %d, want 1 (only user message)", len(input))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildChatGPTCodexRequest — array content
+// ---------------------------------------------------------------------------
+
+func TestBuildChatGPTCodexRequest_ArrayContentNormalized(t *testing.T) {
+	// Simulates the failing client that sends content as array parts.
+	input := `{
+		"model": "gpt-5.4",
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "Hello"}]}
+		],
+		"stream": true
+	}`
+
+	out, _, err := buildChatGPTCodexRequest([]byte(input))
+	if err != nil {
+		t.Fatalf("buildChatGPTCodexRequest: %v", err)
+	}
+
+	var m map[string]json.RawMessage
+	json.Unmarshal(out, &m)
+
+	var inputMsgs []map[string]json.RawMessage
+	json.Unmarshal(m["input"], &inputMsgs)
+	if len(inputMsgs) != 1 {
+		t.Fatalf("input msgs = %d, want 1", len(inputMsgs))
+	}
+	var parts []map[string]json.RawMessage
+	json.Unmarshal(inputMsgs[0]["content"], &parts)
+	if len(parts) != 1 {
+		t.Fatalf("content parts = %d, want 1", len(parts))
+	}
+	var typ string
+	json.Unmarshal(parts[0]["type"], &typ)
+	if typ != "input_text" {
+		t.Errorf("content part type = %q, want input_text — 'text' must be rewritten to avoid OpenAIException upstream", typ)
+	}
+}
+
+func TestBuildChatGPTCodexRequest_ImageUrlNormalized(t *testing.T) {
+	input := `{
+		"model": "gpt-5.4",
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "Describe this"},
+				{"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}
+			]}
+		]
+	}`
+
+	out, _, err := buildChatGPTCodexRequest([]byte(input))
+	if err != nil {
+		t.Fatalf("buildChatGPTCodexRequest: %v", err)
+	}
+
+	var m map[string]json.RawMessage
+	json.Unmarshal(out, &m)
+	var msgs []map[string]json.RawMessage
+	json.Unmarshal(m["input"], &msgs)
+	var parts []map[string]json.RawMessage
+	json.Unmarshal(msgs[0]["content"], &parts)
+
+	var t0, t1 string
+	json.Unmarshal(parts[0]["type"], &t0)
+	json.Unmarshal(parts[1]["type"], &t1)
+	if t0 != "input_text" {
+		t.Errorf("parts[0].type = %q, want input_text", t0)
+	}
+	if t1 != "input_image" {
+		t.Errorf("parts[1].type = %q, want input_image", t1)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // buildPlatformResponsesRequest
 // ---------------------------------------------------------------------------
 

@@ -38,9 +38,52 @@ func streamOptionsIncludeUsage(raw map[string]json.RawMessage) bool {
 	return json.Unmarshal(v, &so) == nil && so.IncludeUsage
 }
 
+// normalizeContentParts rewrites Chat Completions content-part type names to
+// the Responses API equivalents so the upstream never receives an unsupported
+// "text" or "image_url" type value.
+//
+// Chat Completions → Responses API mapping:
+//
+//	"text"      → "input_text"
+//	"image_url" → "input_image"
+//
+// Plain string content is returned unchanged.  Unknown part types are passed
+// through without modification to preserve forward-compatibility.
+func normalizeContentParts(content json.RawMessage) json.RawMessage {
+	// Plain string content: nothing to rewrite.
+	var s string
+	if json.Unmarshal(content, &s) == nil {
+		return content
+	}
+	// Array of content parts: rewrite Chat Completions type names.
+	var parts []map[string]json.RawMessage
+	if json.Unmarshal(content, &parts) != nil {
+		return content
+	}
+	for i, part := range parts {
+		typeRaw, ok := part["type"]
+		if !ok {
+			continue
+		}
+		var t string
+		if json.Unmarshal(typeRaw, &t) != nil {
+			continue
+		}
+		switch t {
+		case "text":
+			parts[i]["type"], _ = json.Marshal("input_text")
+		case "image_url":
+			parts[i]["type"], _ = json.Marshal("input_image")
+		}
+	}
+	out, _ := json.Marshal(parts)
+	return out
+}
+
 // extractMessages splits the Chat Completions "messages" array into:
 //   - instructions: system-role content joined with newlines
-//   - inputJSON:    remaining messages as a JSON array
+//   - inputJSON:    remaining messages as a JSON array, with content-part
+//     types rewritten for Responses API compatibility (text→input_text, etc.)
 func extractMessages(v json.RawMessage) (instructions string, inputJSON json.RawMessage, err error) {
 	var msgs []struct {
 		Role    string          `json:"role"`
@@ -53,15 +96,28 @@ func extractMessages(v json.RawMessage) (instructions string, inputJSON json.Raw
 	var inputMsgs []map[string]json.RawMessage
 	for _, m := range msgs {
 		if m.Role == "system" {
+			// content may be a plain string or an array of parts.
 			var text string
 			if json.Unmarshal(m.Content, &text) == nil {
 				instrParts = append(instrParts, text)
+			} else {
+				var parts []struct {
+					Type string `json:"type"`
+					Text string `json:"text,omitempty"`
+				}
+				if json.Unmarshal(m.Content, &parts) == nil {
+					for _, p := range parts {
+						if p.Text != "" {
+							instrParts = append(instrParts, p.Text)
+						}
+					}
+				}
 			}
 		} else {
 			roleJSON, _ := json.Marshal(m.Role)
 			inputMsgs = append(inputMsgs, map[string]json.RawMessage{
 				"role":    roleJSON,
-				"content": m.Content,
+				"content": normalizeContentParts(m.Content),
 			})
 		}
 	}
