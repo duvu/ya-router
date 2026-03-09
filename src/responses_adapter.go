@@ -575,6 +575,7 @@ func streamResponsesAsChat(w http.ResponseWriter, resp *http.Response, includeUs
 		case "response.output_item.added":
 			var ev struct {
 				Item struct {
+					ID     string `json:"id"`
 					Type   string `json:"type"`
 					CallID string `json:"call_id"`
 					Name   string `json:"name"`
@@ -587,6 +588,9 @@ func streamResponsesAsChat(w http.ResponseWriter, resp *http.Response, includeUs
 			idx := toolCallCount
 			toolCallCount++
 			toolCallIndices[ev.Item.CallID] = idx
+			if ev.Item.ID != "" {
+				toolCallIndices[ev.Item.ID] = idx
+			}
 
 			// Build delta with role (on first chunk) + tool_calls.
 			delta := map[string]interface{}{
@@ -613,12 +617,18 @@ func streamResponsesAsChat(w http.ResponseWriter, resp *http.Response, includeUs
 		case "response.function_call_arguments.delta":
 			var ev struct {
 				Delta  string `json:"delta"`
+				ItemID string `json:"item_id"`
 				CallID string `json:"call_id"`
 			}
 			if json.Unmarshal([]byte(data), &ev) != nil {
 				continue
 			}
-			idx, ok := toolCallIndices[ev.CallID]
+			// Responses API uses item_id in delta events; fall back to call_id.
+			lookupKey := ev.ItemID
+			if lookupKey == "" {
+				lookupKey = ev.CallID
+			}
+			idx, ok := toolCallIndices[lookupKey]
 			if !ok {
 				continue
 			}

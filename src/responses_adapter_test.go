@@ -906,11 +906,11 @@ func TestStreamResponsesAsChat_ToolCall(t *testing.T) {
 	sseData := "event: response.created\n" +
 		"data: {\"response\":{\"id\":\"resp_t1\",\"model\":\"gpt-5.4\"}}\n\n" +
 		"event: response.output_item.added\n" +
-		"data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"call_001\",\"name\":\"get_weather\"},\"output_index\":0}\n\n" +
+		"data: {\"item\":{\"id\":\"fc_001\",\"type\":\"function_call\",\"call_id\":\"call_001\",\"name\":\"get_weather\"},\"output_index\":0}\n\n" +
 		"event: response.function_call_arguments.delta\n" +
-		"data: {\"delta\":\"{\\\"ci\",\"call_id\":\"call_001\"}\n\n" +
+		"data: {\"delta\":\"{\\\"ci\",\"item_id\":\"fc_001\"}\n\n" +
 		"event: response.function_call_arguments.delta\n" +
-		"data: {\"delta\":\"ty\\\":\\\"HN\\\"}\",\"call_id\":\"call_001\"}\n\n" +
+		"data: {\"delta\":\"ty\\\":\\\"HN\\\"}\",\"item_id\":\"fc_001\"}\n\n" +
 		"event: response.completed\n" +
 		"data: {\"response\":{\"usage\":{\"input_tokens\":50,\"output_tokens\":15,\"total_tokens\":65}}}\n\n"
 
@@ -959,9 +959,9 @@ func TestStreamResponsesAsChat_TextAndToolCall(t *testing.T) {
 		"event: response.output_text.delta\n" +
 		"data: {\"delta\":\"Let me check\"}\n\n" +
 		"event: response.output_item.added\n" +
-		"data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"call_m1\",\"name\":\"search\"},\"output_index\":1}\n\n" +
+		"data: {\"item\":{\"id\":\"fc_m1\",\"type\":\"function_call\",\"call_id\":\"call_m1\",\"name\":\"search\"},\"output_index\":1}\n\n" +
 		"event: response.function_call_arguments.delta\n" +
-		"data: {\"delta\":\"{}\",\"call_id\":\"call_m1\"}\n\n" +
+		"data: {\"delta\":\"{}\",\"item_id\":\"fc_m1\"}\n\n" +
 		"event: response.completed\n" +
 		"data: {\"response\":{\"usage\":{\"input_tokens\":30,\"output_tokens\":10,\"total_tokens\":40}}}\n\n"
 
