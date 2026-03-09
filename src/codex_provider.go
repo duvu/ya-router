@@ -311,24 +311,36 @@ func (p *CodexProvider) ProxyRequest(
 		return p.proxyClassic(ctx, w, r, body, "/embeddings", token)
 	}
 
-	// Chat: convert to Responses API format.
+	// Chat: choose the transport-specific request builder.
+	//   chatgpt mode → buildChatGPTCodexRequest (strict allowlist, forces stream/store)
+	//   api_key mode  → buildPlatformResponsesRequest (generic drop-list, pass-through)
 	streaming := isStreamingRequest(body)
-	responsesBody, err := chatToResponsesBody(body)
-	if err != nil {
-		log.Printf("[codex] chat→responses conversion failed: %v — falling back to classic", err)
-		return p.proxyClassic(ctx, w, r, body, "/chat/completions", token)
-	}
 
-	var upstreamURL string
+	var (
+		responsesBody []byte
+		includeUsage  bool
+		upstreamURL   string
+	)
 	if chatgpt {
 		upstreamURL = defaultChatGPTBaseURL + "responses"
-		// chatgpt.com/backend-api/codex/responses requires stream=true and store=false.
-		responsesBody = patchBodyForChatGPT(responsesBody)
+		var err error
+		responsesBody, includeUsage, err = buildChatGPTCodexRequest(body)
+		if err != nil {
+			log.Printf("[codex] chatgpt request build failed: %v — falling back to classic", err)
+			return p.proxyClassic(ctx, w, r, body, "/chat/completions", token)
+		}
 	} else {
 		upstreamURL = defaultPlatformBaseURL + "/responses"
+		var err error
+		responsesBody, includeUsage, err = buildPlatformResponsesRequest(body)
+		if err != nil {
+			log.Printf("[codex] platform request build failed: %v — falling back to classic", err)
+			return p.proxyClassic(ctx, w, r, body, "/chat/completions", token)
+		}
 	}
-	log.Printf("[codex] proxying chat → %s (body %d bytes, stream=%v, mode=%s)",
-		upstreamURL, len(responsesBody), streaming, map[bool]string{true: "chatgpt", false: "api_key"}[chatgpt])
+	log.Printf("[codex] proxying chat → %s (body %d bytes, stream=%v, include_usage=%v, mode=%s)",
+		upstreamURL, len(responsesBody), streaming, includeUsage,
+		map[bool]string{true: "chatgpt", false: "api_key"}[chatgpt])
 
 	req, err := http.NewRequestWithContext(ctx, "POST",
 		upstreamURL, bytes.NewBuffer(responsesBody))
@@ -359,7 +371,7 @@ func (p *CodexProvider) ProxyRequest(
 		p.cb.onFailure()
 	}
 
-	return handleResponsesAPIResponse(w, resp, streaming, chatgpt)
+	return handleResponsesAPIResponse(w, resp, streaming, chatgpt, includeUsage)
 }
 
 // proxyClassic sends a request to a classic OpenAI Platform endpoint

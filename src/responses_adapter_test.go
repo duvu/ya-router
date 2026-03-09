@@ -7,7 +7,11 @@ import (
 	"testing"
 )
 
-func TestChatToResponsesBody_Basic(t *testing.T) {
+// ---------------------------------------------------------------------------
+// buildPlatformResponsesRequest
+// ---------------------------------------------------------------------------
+
+func TestBuildPlatformResponsesRequest_Basic(t *testing.T) {
 	input := `{
 		"model": "gpt-5.4",
 		"messages": [
@@ -19,9 +23,9 @@ func TestChatToResponsesBody_Basic(t *testing.T) {
 		"stream": false
 	}`
 
-	out, err := chatToResponsesBody([]byte(input))
+	out, _, err := buildPlatformResponsesRequest([]byte(input))
 	if err != nil {
-		t.Fatalf("chatToResponsesBody: %v", err)
+		t.Fatalf("buildPlatformResponsesRequest: %v", err)
 	}
 
 	var m map[string]json.RawMessage
@@ -29,23 +33,21 @@ func TestChatToResponsesBody_Basic(t *testing.T) {
 		t.Fatalf("unmarshal output: %v", err)
 	}
 
-	// "messages" should be renamed to "input".
 	if _, ok := m["messages"]; ok {
-		t.Error("output contains 'messages' — should be renamed to 'input'")
+		t.Error("output contains 'messages' — should be split into input/instructions")
 	}
 	if _, ok := m["input"]; !ok {
 		t.Error("output missing 'input'")
 	}
-
-	// "max_tokens" should be renamed to "max_output_tokens".
+	if _, ok := m["instructions"]; !ok {
+		t.Error("output missing 'instructions'")
+	}
 	if _, ok := m["max_tokens"]; ok {
 		t.Error("output contains 'max_tokens' — should be renamed to 'max_output_tokens'")
 	}
 	if _, ok := m["max_output_tokens"]; !ok {
 		t.Error("output missing 'max_output_tokens'")
 	}
-
-	// "model", "temperature", "stream" should be preserved.
 	for _, key := range []string{"model", "temperature", "stream"} {
 		if _, ok := m[key]; !ok {
 			t.Errorf("output missing preserved key %q", key)
@@ -53,7 +55,7 @@ func TestChatToResponsesBody_Basic(t *testing.T) {
 	}
 }
 
-func TestChatToResponsesBody_DropsUnsupported(t *testing.T) {
+func TestBuildPlatformResponsesRequest_DropsUnsupported(t *testing.T) {
 	input := `{
 		"model": "gpt-5.4",
 		"messages": [{"role": "user", "content": "Hi"}],
@@ -63,9 +65,9 @@ func TestChatToResponsesBody_DropsUnsupported(t *testing.T) {
 		"presence_penalty": 0.5
 	}`
 
-	out, err := chatToResponsesBody([]byte(input))
+	out, _, err := buildPlatformResponsesRequest([]byte(input))
 	if err != nil {
-		t.Fatalf("chatToResponsesBody: %v", err)
+		t.Fatalf("buildPlatformResponsesRequest: %v", err)
 	}
 
 	var m map[string]json.RawMessage
@@ -77,6 +79,222 @@ func TestChatToResponsesBody_DropsUnsupported(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildPlatformResponsesRequest_MaxCompletionTokens(t *testing.T) {
+	input := `{"model":"gpt-5.4","messages":[{"role":"user","content":"Hi"}],"max_completion_tokens":200}`
+
+	out, _, err := buildPlatformResponsesRequest([]byte(input))
+	if err != nil {
+		t.Fatalf("buildPlatformResponsesRequest: %v", err)
+	}
+
+	var m map[string]json.RawMessage
+	json.Unmarshal(out, &m)
+
+	if _, ok := m["max_completion_tokens"]; ok {
+		t.Error("output contains 'max_completion_tokens' — should be renamed")
+	}
+	if _, ok := m["max_output_tokens"]; !ok {
+		t.Error("output missing 'max_output_tokens'")
+	}
+}
+
+func TestBuildPlatformResponsesRequest_StreamOptions(t *testing.T) {
+	// stream_options should not be forwarded; include_usage extracted.
+	input := `{
+		"model": "gpt-5.4",
+		"messages": [{"role": "user", "content": "Hi"}],
+		"stream": true,
+		"stream_options": {"include_usage": true}
+	}`
+
+	out, includeUsage, err := buildPlatformResponsesRequest([]byte(input))
+	if err != nil {
+		t.Fatalf("buildPlatformResponsesRequest: %v", err)
+	}
+	if !includeUsage {
+		t.Error("includeUsage should be true when stream_options.include_usage=true")
+	}
+
+	var m map[string]json.RawMessage
+	json.Unmarshal(out, &m)
+	if _, ok := m["stream_options"]; ok {
+		t.Error("output must not contain 'stream_options' — it is a client-contract field")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildChatGPTCodexRequest
+// ---------------------------------------------------------------------------
+
+func TestBuildChatGPTCodexRequest_AllowlistOnly(t *testing.T) {
+	// All of these should be dropped by the allowlist.
+	input := `{
+		"model": "gpt-5.4",
+		"messages": [
+			{"role": "system", "content": "Be helpful."},
+			{"role": "user", "content": "Hello"}
+		],
+		"stream": false,
+		"store": true,
+		"max_tokens": 100,
+		"max_output_tokens": 100,
+		"n": 2,
+		"stop": ["\n"],
+		"logprobs": true,
+		"stream_options": {"include_usage": true},
+		"frequency_penalty": 0.5,
+		"presence_penalty": 0.5,
+		"seed": 42,
+		"response_format": {"type": "json_object"},
+		"tools": [],
+		"tool_choice": "auto",
+		"parallel_tool_calls": true,
+		"function_call": "auto",
+		"functions": []
+	}`
+
+	out, includeUsage, err := buildChatGPTCodexRequest([]byte(input))
+	if err != nil {
+		t.Fatalf("buildChatGPTCodexRequest: %v", err)
+	}
+	if !includeUsage {
+		t.Error("includeUsage should be true from stream_options.include_usage")
+	}
+
+	var m map[string]json.RawMessage
+	json.Unmarshal(out, &m)
+
+	// Required fields.
+	for _, k := range []string{"model", "input", "instructions", "stream", "store"} {
+		if _, ok := m[k]; !ok {
+			t.Errorf("output missing required field %q", k)
+		}
+	}
+	// stream must be true, store must be false.
+	var streamVal bool
+	json.Unmarshal(m["stream"], &streamVal)
+	if !streamVal {
+		t.Error("stream must be forced to true in chatgpt mode")
+	}
+	var storeVal bool
+	json.Unmarshal(m["store"], &storeVal)
+	if storeVal {
+		t.Error("store must be forced to false in chatgpt mode")
+	}
+
+	// None of these must appear.
+	forbidden := []string{
+		"max_tokens", "max_output_tokens", "max_completion_tokens",
+		"n", "stop", "logprobs", "top_logprobs", "logit_bias",
+		"stream_options", "frequency_penalty", "presence_penalty",
+		"seed", "response_format", "tools", "tool_choice",
+		"parallel_tool_calls", "function_call", "functions",
+		"messages",
+	}
+	for _, k := range forbidden {
+		if _, ok := m[k]; ok {
+			t.Errorf("output must not contain %q — not in chatgpt.com allowlist", k)
+		}
+	}
+}
+
+func TestBuildChatGPTCodexRequest_SystemMessagesToInstructions(t *testing.T) {
+	input := `{
+		"model": "gpt-5.4",
+		"messages": [
+			{"role": "system", "content": "First instruction."},
+			{"role": "system", "content": "Second instruction."},
+			{"role": "user", "content": "Hello"}
+		]
+	}`
+
+	out, _, err := buildChatGPTCodexRequest([]byte(input))
+	if err != nil {
+		t.Fatalf("buildChatGPTCodexRequest: %v", err)
+	}
+
+	var m map[string]json.RawMessage
+	json.Unmarshal(out, &m)
+
+	var instructions string
+	json.Unmarshal(m["instructions"], &instructions)
+	if instructions != "First instruction.\nSecond instruction." {
+		t.Errorf("instructions = %q, want 'First instruction.\\nSecond instruction.'", instructions)
+	}
+
+	var inputMsgs []map[string]json.RawMessage
+	json.Unmarshal(m["input"], &inputMsgs)
+	if len(inputMsgs) != 1 {
+		t.Errorf("input len = %d, want 1 (only user message)", len(inputMsgs))
+	}
+}
+
+func TestBuildChatGPTCodexRequest_NoSystemMessages(t *testing.T) {
+	// When there are no system messages, instructions must still be present as "".
+	input := `{"model":"gpt-5.4","messages":[{"role":"user","content":"Hi"}]}`
+
+	out, _, err := buildChatGPTCodexRequest([]byte(input))
+	if err != nil {
+		t.Fatalf("buildChatGPTCodexRequest: %v", err)
+	}
+
+	var m map[string]json.RawMessage
+	json.Unmarshal(out, &m)
+
+	instrRaw, ok := m["instructions"]
+	if !ok {
+		t.Fatal("output missing 'instructions' — required even when empty")
+	}
+	var instructions string
+	json.Unmarshal(instrRaw, &instructions)
+	if instructions != "" {
+		t.Errorf("instructions = %q, want empty string", instructions)
+	}
+}
+
+func TestBuildChatGPTCodexRequest_StreamOptionsNoUsage(t *testing.T) {
+	// stream_options absent → includeUsage=false
+	input := `{"model":"gpt-5.4","messages":[{"role":"user","content":"Hi"}],"stream":true}`
+	_, includeUsage, err := buildChatGPTCodexRequest([]byte(input))
+	if err != nil {
+		t.Fatalf("buildChatGPTCodexRequest: %v", err)
+	}
+	if includeUsage {
+		t.Error("includeUsage should be false when stream_options is absent")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// streamOptionsIncludeUsage
+// ---------------------------------------------------------------------------
+
+func TestStreamOptionsIncludeUsage(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"include_usage true", `{"stream_options":{"include_usage":true}}`, true},
+		{"include_usage false", `{"stream_options":{"include_usage":false}}`, false},
+		{"absent", `{"model":"gpt-5.4"}`, false},
+		{"empty stream_options", `{"stream_options":{}}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var raw map[string]json.RawMessage
+			json.Unmarshal([]byte(tt.body), &raw)
+			got := streamOptionsIncludeUsage(raw)
+			if got != tt.want {
+				t.Errorf("streamOptionsIncludeUsage = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// responsesToChatCompletion
+// ---------------------------------------------------------------------------
 
 func TestResponsesToChatCompletion_Basic(t *testing.T) {
 	respBody := `{
@@ -144,7 +362,7 @@ func TestResponsesToChatCompletion_Basic(t *testing.T) {
 		t.Errorf("role = %q, want assistant", cc.Choices[0].Message.Role)
 	}
 	if cc.Choices[0].Message.Content != "Hello! How can I help?" {
-		t.Errorf("content = %q, want 'Hello! How can I help?'", cc.Choices[0].Message.Content)
+		t.Errorf("content = %q", cc.Choices[0].Message.Content)
 	}
 	if cc.Choices[0].FinishReason != "stop" {
 		t.Errorf("finish_reason = %q, want stop", cc.Choices[0].FinishReason)
@@ -191,6 +409,10 @@ func TestResponsesToChatCompletion_Error(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// isStreamingRequest
+// ---------------------------------------------------------------------------
+
 func TestIsStreamingRequest(t *testing.T) {
 	tests := []struct {
 		body string
@@ -210,27 +432,11 @@ func TestIsStreamingRequest(t *testing.T) {
 	}
 }
 
-func TestChatToResponsesBody_MaxCompletionTokens(t *testing.T) {
-	input := `{"model":"gpt-5.4","messages":[{"role":"user","content":"Hi"}],"max_completion_tokens":200}`
-
-	out, err := chatToResponsesBody([]byte(input))
-	if err != nil {
-		t.Fatalf("chatToResponsesBody: %v", err)
-	}
-
-	var m map[string]json.RawMessage
-	json.Unmarshal(out, &m)
-
-	if _, ok := m["max_completion_tokens"]; ok {
-		t.Error("output contains 'max_completion_tokens' — should be renamed")
-	}
-	if _, ok := m["max_output_tokens"]; !ok {
-		t.Error("output missing 'max_output_tokens'")
-	}
-}
+// ---------------------------------------------------------------------------
+// extractAccountIDFromJWT
+// ---------------------------------------------------------------------------
 
 func TestExtractAccountIDFromJWT(t *testing.T) {
-	// Build a fake JWT: header.payload.signature
 	payload := map[string]interface{}{
 		"https://api.openai.com/auth": map[string]string{
 			"chatgpt_account_id": "acct-test-123",

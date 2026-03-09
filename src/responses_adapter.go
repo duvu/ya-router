@@ -1,7 +1,11 @@
 // responses_adapter.go — Converts between OpenAI Chat Completions and
 // Responses API formats.  The Codex device_code token (ChatGPT Plus) is
-// authorised for /v1/responses but NOT /v1/chat/completions, so we proxy
-// through the Responses API and translate on-the-fly.
+// authorised for chatgpt.com/backend-api/codex/responses (ChatGPT mode) or
+// api.openai.com/v1/responses (api_key mode).  Two transport-specific
+// request builders produce the correct body for each backend:
+//
+//   - buildChatGPTCodexRequest  — strict allowlist, forces stream/store
+//   - buildPlatformResponsesRequest — generic conversion, drop-list based
 package main
 
 import (
@@ -17,68 +21,159 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Request conversion:  Chat Completions → Responses API
+// Request conversion helpers
 // ---------------------------------------------------------------------------
 
-// chatToResponsesBody rewrites a Chat Completions JSON body into the
-// equivalent Responses API body.
+// streamOptionsIncludeUsage returns true if stream_options.include_usage is
+// set in the raw field map.  The field is a Chat Completions concept and must
+// never be forwarded to upstream Responses API endpoints.
+func streamOptionsIncludeUsage(raw map[string]json.RawMessage) bool {
+	v, ok := raw["stream_options"]
+	if !ok {
+		return false
+	}
+	var so struct {
+		IncludeUsage bool `json:"include_usage"`
+	}
+	return json.Unmarshal(v, &so) == nil && so.IncludeUsage
+}
+
+// extractMessages splits the Chat Completions "messages" array into:
+//   - instructions: system-role content joined with newlines
+//   - inputJSON:    remaining messages as a JSON array
+func extractMessages(v json.RawMessage) (instructions string, inputJSON json.RawMessage, err error) {
+	var msgs []struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err = json.Unmarshal(v, &msgs); err != nil {
+		return "", v, fmt.Errorf("parse messages: %w", err)
+	}
+	var instrParts []string
+	var inputMsgs []map[string]json.RawMessage
+	for _, m := range msgs {
+		if m.Role == "system" {
+			var text string
+			if json.Unmarshal(m.Content, &text) == nil {
+				instrParts = append(instrParts, text)
+			}
+		} else {
+			roleJSON, _ := json.Marshal(m.Role)
+			inputMsgs = append(inputMsgs, map[string]json.RawMessage{
+				"role":    roleJSON,
+				"content": m.Content,
+			})
+		}
+	}
+	if inputMsgs == nil {
+		inputMsgs = []map[string]json.RawMessage{}
+	}
+	result, _ := json.Marshal(inputMsgs)
+	return strings.Join(instrParts, "\n"), result, nil
+}
+
+// ---------------------------------------------------------------------------
+// Request conversion:  Chat Completions → transport-specific Responses body
+// ---------------------------------------------------------------------------
+
+// chatGPTCodexAllowedKeys is the strict allowlist of fields accepted by
+// chatgpt.com/backend-api/codex/responses.  Anything not in this set is
+// silently dropped before the request leaves the proxy.
+var chatGPTCodexAllowedKeys = map[string]bool{
+	"model":        true,
+	"input":        true,
+	"instructions": true,
+	"stream":       true,
+	"store":        true,
+	"temperature":  true,
+	"top_p":        true,
+	"user":         true,
+}
+
+// buildChatGPTCodexRequest converts an OpenAI Chat Completions body into the
+// request format required by chatgpt.com/backend-api/codex/responses.
 //
-// Key mapping:
+// Differences from the Platform Responses API:
+//   - strict allowlist: only chatGPTCodexAllowedKeys are forwarded
+//   - stream is always forced to true  (endpoint requirement)
+//   - store  is always forced to false (endpoint requirement)
+//   - stream_options is consumed locally; include_usage is returned
+//   - max_tokens/max_output_tokens are dropped (unsupported)
 //
-//	messages (system)    → instructions (joined string)
-//	messages (non-system)→ input (array)
-//	max_tokens           → max_output_tokens
-//	n, stop              → dropped (unsupported in Responses API)
-//	stream               → preserved
-//	temperature          → preserved
-//	top_p                → preserved
-//	model                → preserved
-func chatToResponsesBody(chatBody []byte) ([]byte, error) {
+// Returns the serialised request body and whether the client requested usage
+// in streaming chunks (stream_options.include_usage).
+func buildChatGPTCodexRequest(chatBody []byte) ([]byte, bool, error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(chatBody, &raw); err != nil {
-		return nil, fmt.Errorf("unmarshal chat body: %w", err)
+		return nil, false, fmt.Errorf("unmarshal chat body: %w", err)
 	}
+	includeUsage := streamOptionsIncludeUsage(raw)
+
+	out := make(map[string]json.RawMessage, len(chatGPTCodexAllowedKeys))
+
+	// Extract messages → instructions + input.
+	if v, ok := raw["messages"]; ok {
+		instr, inputJSON, err := extractMessages(v)
+		if err != nil {
+			out["input"] = v // fallback
+		} else {
+			instrJSON, _ := json.Marshal(instr)
+			out["instructions"] = instrJSON
+			out["input"] = inputJSON
+		}
+	}
+	if _, ok := out["instructions"]; !ok {
+		out["instructions"], _ = json.Marshal("")
+	}
+
+	// Safe pass-through fields from the allowlist (excluding messages already handled).
+	for _, k := range []string{"model", "temperature", "top_p", "user"} {
+		if v, ok := raw[k]; ok {
+			out[k] = v
+		}
+	}
+
+	// Endpoint requirements.
+	out["stream"], _ = json.Marshal(true)
+	out["store"], _ = json.Marshal(false)
+
+	b, err := json.Marshal(out)
+	return b, includeUsage, err
+}
+
+// buildPlatformResponsesRequest converts an OpenAI Chat Completions body into
+// the generic Responses API format for api.openai.com/v1/responses.
+//
+//   - messages (system)     → instructions
+//   - messages (non-system) → input
+//   - max_tokens            → max_output_tokens
+//   - stream_options        → consumed locally; include_usage returned
+//   - n, stop, etc.         → dropped
+//   - all other fields      → passed through
+func buildPlatformResponsesRequest(chatBody []byte) ([]byte, bool, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(chatBody, &raw); err != nil {
+		return nil, false, fmt.Errorf("unmarshal chat body: %w", err)
+	}
+	includeUsage := streamOptionsIncludeUsage(raw)
 
 	out := make(map[string]json.RawMessage, len(raw)+2)
 
 	for k, v := range raw {
 		switch k {
 		case "messages":
-			// Split system messages → instructions; the rest → input array.
-			var msgs []struct {
-				Role    string          `json:"role"`
-				Content json.RawMessage `json:"content"`
+			instr, inputJSON, err := extractMessages(v)
+			if err != nil {
+				out["input"] = v // fallback
+			} else {
+				instrJSON, _ := json.Marshal(instr)
+				out["instructions"] = instrJSON
+				out["input"] = inputJSON
 			}
-			if err := json.Unmarshal(v, &msgs); err != nil {
-				// Fallback: pass through as-is.
-				out["input"] = v
-				break
-			}
-			var instrParts []string
-			var inputMsgs []map[string]json.RawMessage
-			for _, m := range msgs {
-				if m.Role == "system" {
-					var text string
-					if json.Unmarshal(m.Content, &text) == nil {
-						instrParts = append(instrParts, text)
-					}
-				} else {
-					roleJSON, _ := json.Marshal(m.Role)
-					inputMsgs = append(inputMsgs, map[string]json.RawMessage{
-						"role":    roleJSON,
-						"content": m.Content,
-					})
-				}
-			}
-			instrJSON, _ := json.Marshal(strings.Join(instrParts, "\n"))
-			out["instructions"] = instrJSON
-			if inputMsgs == nil {
-				inputMsgs = []map[string]json.RawMessage{}
-			}
-			inputJSON, _ := json.Marshal(inputMsgs)
-			out["input"] = inputJSON
 		case "max_tokens", "max_completion_tokens":
 			out["max_output_tokens"] = v
+		case "stream_options":
+			// Consumed locally — never forwarded upstream.
 		case "n", "stop", "logprobs", "top_logprobs", "logit_bias",
 			"frequency_penalty", "presence_penalty", "seed",
 			"response_format", "tools", "tool_choice",
@@ -89,12 +184,12 @@ func chatToResponsesBody(chatBody []byte) ([]byte, error) {
 		}
 	}
 
-	// Ensure instructions is always present (required by chatgpt.com endpoint).
 	if _, ok := out["instructions"]; !ok {
 		out["instructions"], _ = json.Marshal("")
 	}
 
-	return json.Marshal(out)
+	b, err := json.Marshal(out)
+	return b, includeUsage, err
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +291,9 @@ func responsesToChatCompletion(respBody []byte) ([]byte, error) {
 
 // streamResponsesAsChat reads a Responses API SSE stream and writes
 // Chat Completions–compatible SSE chunks to w.
-func streamResponsesAsChat(w http.ResponseWriter, resp *http.Response) error {
+// includeUsage controls whether usage is appended to the final chunk;
+// it reflects stream_options.include_usage from the original client request.
+func streamResponsesAsChat(w http.ResponseWriter, resp *http.Response, includeUsage bool) error {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return fmt.Errorf("ResponseWriter does not support Flusher")
@@ -276,7 +373,9 @@ func streamResponsesAsChat(w http.ResponseWriter, resp *http.Response) error {
 			flusher.Flush()
 
 		case "response.completed":
-			// Extract usage from the completed event.
+			// Extract usage from the completed event; only include it in the
+			// final chunk when the client requested it via
+			// stream_options.include_usage.
 			var ev struct {
 				Response struct {
 					Usage *struct {
@@ -287,7 +386,7 @@ func streamResponsesAsChat(w http.ResponseWriter, resp *http.Response) error {
 				} `json:"response"`
 			}
 			var usage map[string]int
-			if json.Unmarshal([]byte(data), &ev) == nil && ev.Response.Usage != nil {
+			if includeUsage && json.Unmarshal([]byte(data), &ev) == nil && ev.Response.Usage != nil {
 				usage = map[string]int{
 					"prompt_tokens":     ev.Response.Usage.InputTokens,
 					"completion_tokens": ev.Response.Usage.OutputTokens,
@@ -379,25 +478,6 @@ func isStreamingRequest(body []byte) bool {
 	}
 }
 
-// patchBodyForChatGPT adjusts a Responses API body for chatgpt.com/backend-api/codex/responses:
-//   - forces "stream": true  (endpoint requires it)
-//   - forces "store": false  (endpoint requires it)
-//   - removes "max_output_tokens" (unsupported by this endpoint)
-func patchBodyForChatGPT(body []byte) []byte {
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(body, &m); err != nil {
-		return body
-	}
-	m["stream"], _ = json.Marshal(true)
-	m["store"], _ = json.Marshal(false)
-	delete(m, "max_output_tokens")
-	b, err := json.Marshal(m)
-	if err != nil {
-		return body
-	}
-	return b
-}
-
 // aggregateSSEToCompletion reads a Responses API SSE stream and returns
 // the response JSON from the response.completed event, suitable for
 // passing to responsesToChatCompletion.
@@ -438,12 +518,13 @@ func aggregateSSEToCompletion(r io.Reader) ([]byte, error) {
 
 // handleResponsesAPIResponse processes a Responses API HTTP response and
 // writes the translated Chat Completions output to w.
-// clientWantsStream indicates whether the original client request asked
-// for streaming; when forcing stream=true upstream (chatgpt.com mode) but
-// the client wants a blocking response, we aggregate the SSE here.
-// upstreamSSE should be set to true when the upstream was forced to stream
-// (chatgpt.com mode), since that endpoint may not set Content-Type correctly.
-func handleResponsesAPIResponse(w http.ResponseWriter, resp *http.Response, clientWantsStream, upstreamSSE bool) error {
+//
+//   - clientWantsStream: true when the original client requested SSE streaming
+//   - upstreamSSE: true when the upstream was forced to stream (chatgpt.com
+//     mode); the endpoint may not set Content-Type: text/event-stream
+//   - includeUsage: true when the client requested usage via
+//     stream_options.include_usage (streaming only)
+func handleResponsesAPIResponse(w http.ResponseWriter, resp *http.Response, clientWantsStream, upstreamSSE, includeUsage bool) error {
 	ct := resp.Header.Get("Content-Type")
 	isSSE := strings.Contains(ct, "text/event-stream") || upstreamSSE
 
@@ -481,7 +562,7 @@ func handleResponsesAPIResponse(w http.ResponseWriter, resp *http.Response, clie
 			_, writeErr := io.Copy(w, bytes.NewReader(chatBody))
 			return writeErr
 		}
-		return streamResponsesAsChat(w, resp)
+		return streamResponsesAsChat(w, resp, includeUsage)
 	}
 
 	// Non-streaming: read full body, convert, write.
