@@ -414,6 +414,24 @@ func processProxyRequest(
 	log.Printf("[REQ] %s %s model=%q capability=%s body_size=%d from=%s",
 		r.Method, r.URL.Path, requestedModel, cap, len(body), r.RemoteAddr)
 
+	if cap == CapabilityChat {
+		if copilot, err := registry.Get(ProviderCopilot); err == nil {
+			if freeChatProvider, ok := copilot.(FreeChatProxyProvider); ok {
+				log.Printf("[REQ] Chat path ignoring client model=%q and delegating selection to Copilot free-model rotation", requestedModel)
+				proxyErr := freeChatProvider.ProxyFreeChatRequest(ctx, w, r, body, requestedModel)
+				elapsed := time.Since(reqStart)
+				if proxyErr != nil {
+					log.Printf("[REQ] COMPLETED %s %s model=%q provider=%s elapsed=%s ERROR: %v",
+						r.Method, r.URL.Path, requestedModel, copilot.ID(), elapsed, proxyErr)
+				} else {
+					log.Printf("[REQ] COMPLETED %s %s model=%q provider=%s elapsed=%s OK",
+						r.Method, r.URL.Path, requestedModel, copilot.ID(), elapsed)
+				}
+				return proxyErr
+			}
+		}
+	}
+
 	route, err := router.Resolve(ctx, requestedModel, cap)
 	if err != nil {
 		log.Printf("[REQ] %s %s model=%q → routing FAILED: %v", r.Method, r.URL.Path, requestedModel, err)

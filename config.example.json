@@ -7,9 +7,6 @@
     "default_provider": "copilot",
     "show_unavailable_models": false,
     "model_map": {
-      "gpt-5-mini": {
-        "provider": "copilot"
-      },
       "text-embedding-3-large": {
         "provider": "codex"
       }
@@ -21,11 +18,7 @@
       "auth": {
         "mode": "device_code"
       },
-      "allowed_models": [
-        "gpt-4",
-        "gpt-4.1",
-        "gpt-5-mini"
-      ]
+      "allowed_models": []
     },
     "codex": {
       "enabled": false,

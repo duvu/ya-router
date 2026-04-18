@@ -162,9 +162,10 @@ curl -X POST http://localhost:7071/v1/chat/completions \
 
 Routing behavior:
 
-- The service reads `model` from the request body.
-- It resolves the target provider using `routing.model_map`, then provider model catalogs, then `routing.default_provider`.
-- If the chosen provider requires a different upstream model name, the request body is patched before forwarding.
+- For Copilot chat, the service ignores the client-supplied `model`.
+- It builds a dynamic free-model pool from official GitHub Docs plus the live Copilot `/models` catalog.
+- It rotates globally across the eligible Copilot free models and patches the upstream request body itself.
+- If one selected model fails before the response is committed, the same request shifts to the next eligible model automatically.
 
 ### Embeddings
 
@@ -202,9 +203,6 @@ Example:
     "default_provider": "copilot",
     "show_unavailable_models": false,
     "model_map": {
-      "gpt-5-mini": {
-        "provider": "copilot"
-      },
       "text-embedding-3-large": {
         "provider": "codex"
       }
@@ -216,11 +214,7 @@ Example:
       "auth": {
         "mode": "device_code"
       },
-      "allowed_models": [
-        "gpt-4",
-        "gpt-4.1",
-        "gpt-5-mini"
-      ]
+      "allowed_models": []
     },
     "codex": {
       "enabled": false,
@@ -251,22 +245,35 @@ Example:
 
 #### `routing.default_model`
 
-- Used when a client request does not include a `model` field.
-- It is not a global forced override for all requests.
+- Used by the legacy router when a request path still relies on normal model resolution.
+- Copilot chat free-rotation does not use it as the request-time selector.
 
 #### `routing.default_provider`
 
 - Used when the requested model cannot be resolved via explicit mapping or model discovery.
+- Copilot chat free-rotation bypasses this and goes directly to the Copilot provider.
 
 #### `routing.model_map`
 
 - Explicit routing rules.
 - Recommended when the same model name may exist on multiple providers.
+- Still relevant for embeddings and non-Copilot-chat paths.
 
 #### `providers.<provider>.allowed_models`
 
 - Applied inside each provider's model listing logic.
 - Empty list means allow all discovered models for that provider.
+- For Copilot chat rotation, the service uses the live upstream catalog and official GitHub Docs instead of this static list.
+
+### Copilot Free Chat Rotation
+
+- Chat requests to GitHub Copilot ignore the incoming `model` field.
+- Eligible models are the intersection of:
+  - models available on `Copilot Free`
+  - models with `0` premium multiplier on paid plans
+  - models currently returned by Copilot `/models`
+- The docs trust source is cached on disk as a last-known-good snapshot.
+- If the selected model errors before the response is committed, the request shifts immediately to the next eligible model.
 
 #### `providers.copilot.auth`
 
