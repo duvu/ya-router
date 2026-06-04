@@ -1,10 +1,9 @@
 // codex_provider.go — OpenAI Codex backend provider implementation.
 //
 // Two credential modes are supported:
-//   - "chatgpt" / "device_code": uses a device-code bearer token obtained
-//     via OpenAI OAuth.  Requests go to chatgpt.com/backend-api/responses
-//     and require the chatgpt-account-id header (extracted from id_token JWT
-//     during 'auth codex' and stored in config as codex.auth.account_id).
+//   - "chatgpt" / "device_code": uses ChatGPT-backed Codex credentials from
+//     the official Codex auth store (with legacy config fallback). Requests go
+//     to chatgpt.com/backend-api/responses and require chatgpt-account-id.
 //   - "api_key": uses a user-supplied sk-... API key sent to api.openai.com/v1.
 package main
 
@@ -85,7 +84,12 @@ func (p *CodexProvider) authCredentials() (token, accountID string, chatgpt bool
 	defer p.mu.Unlock()
 	auth := p.authState()
 	if isAPIKeyMode(auth.Mode) {
-		return auth.APIKey, "", false
+		key, _, err := resolveCodexAPIKey(auth)
+		if err != nil {
+			log.Printf("[codex] API key resolution failed: %v", err)
+			return "", "", false
+		}
+		return key, "", false
 	}
 	// chatgpt / device_code mode: bearer token from device auth.
 	return auth.AccessToken, auth.AccountID, true
@@ -118,7 +122,7 @@ func (p *CodexProvider) reloadTokenFromDisk() {
 	} else if old.AccountID == "" && new.AccountID != "" {
 		// Same token but account_id was subsequently added to disk (e.g. by
 		// a separate 'auth codex' invocation running against the same config).
-		log.Printf("[codex] updated account_id from on-disk config: %s", new.AccountID)
+		log.Printf("[codex] updated account_id metadata from on-disk config")
 		old.AccountID = new.AccountID
 	}
 }
@@ -154,32 +158,32 @@ func (p *CodexProvider) EnsureAuthenticated(_ context.Context) error {
 
 	// API key mode — nothing to refresh.
 	if isAPIKeyMode(auth.Mode) {
-		if auth.APIKey != "" {
+		if key, _, err := resolveCodexAPIKey(auth); err == nil && key != "" {
 			return nil
 		}
 		return fmt.Errorf("no Codex API key — run 'auth codex --api-key' first")
 	}
 
-	// ChatGPT / device_code mode: load token from store if absent.
+	resolved, err := resolveCodexChatGPTAuth(auth)
+	if err != nil {
+		return fmt.Errorf("load Codex credentials: %w", err)
+	}
+	if resolved != nil {
+		applyResolvedCodexChatGPTAuth(auth, resolved)
+	}
 	if auth.AccessToken == "" {
-		p.reloadFromOfficialStore()
-		if auth.AccessToken == "" {
-			p.reloadTokenFromDisk()
-		}
+		p.reloadTokenFromDisk()
 		if auth.AccessToken == "" {
 			return fmt.Errorf("no Codex token — run 'auth codex' first")
 		}
-	} else if auth.AccountID == "" {
-		// Token already loaded but account_id may be missing (e.g. the token
-		// was persisted before account_id extraction was implemented, or a
-		// concurrent 'auth codex' process wrote a fresh token with account_id
-		// while this server was already running).  Try to pick it up.
+	}
+	if auth.AccountID == "" {
 		p.reloadFromOfficialStore()
 		if auth.AccountID == "" {
 			p.reloadTokenFromDisk()
 		}
 		if auth.AccountID != "" {
-			log.Printf("[codex] picked up account_id from on-disk credentials: %s", auth.AccountID)
+			log.Printf("[codex] picked up account_id metadata from on-disk credentials")
 		}
 	}
 
@@ -212,7 +216,7 @@ func (p *CodexProvider) EnsureAuthenticated(_ context.Context) error {
 	if auth.AccountID == "" && auth.AccessToken != "" {
 		if aid := extractAccountIDFromJWT(auth.AccessToken); aid != "" {
 			auth.AccountID = aid
-			log.Printf("[codex] extracted account_id from access_token JWT: %s", aid)
+			log.Printf("[codex] extracted account_id metadata from access_token JWT")
 			// Persist so we don't repeat this on every request.
 			_ = p.save()
 		}

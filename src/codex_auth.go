@@ -25,6 +25,20 @@ import (
 )
 
 const (
+	codexCredentialSourceEnv           = "OPENAI_API_KEY environment variable"
+	codexCredentialSourceOfficialStore = "official Codex auth store"
+	codexCredentialSourceProxyConfig   = "proxy config fallback"
+)
+
+type resolvedCodexChatGPTAuth struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresAt    int64
+	AccountID    string
+	Source       string
+}
+
+const (
 	codexAuthIssuer    = "https://auth.openai.com"
 	codexOAuthClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
 	codexUserAgent     = "github-copilot-svcs/1.0"
@@ -170,7 +184,7 @@ func codexAuthenticate(auth *CodexAuthState, save func() error) error {
 	if tokens.IDToken != "" {
 		if aid := extractAccountIDFromJWT(tokens.IDToken); aid != "" {
 			auth.AccountID = aid
-			log.Printf("[codex] extracted account_id from id_token: %s", aid)
+			log.Printf("[codex] extracted account_id metadata from id_token")
 		} else {
 			log.Printf("[codex] warning: id_token present but no chatgpt_account_id claim found")
 		}
@@ -344,7 +358,7 @@ func codexRefreshToken(auth *CodexAuthState, save func() error) error {
 		if rr.IDToken != "" {
 			if aid := extractAccountIDFromJWT(rr.IDToken); aid != "" {
 				auth.AccountID = aid
-				log.Printf("[codex] updated account_id from refreshed id_token: %s", aid)
+				log.Printf("[codex] updated account_id metadata from refreshed id_token")
 			}
 		}
 		if rr.ExpiresIn > 0 {
@@ -382,6 +396,7 @@ type officialTokenData struct {
 	IDToken      string  `json:"id_token"`
 	AccessToken  string  `json:"access_token"`
 	RefreshToken string  `json:"refresh_token"`
+	ExpiresAt    int64   `json:"expires_at,omitempty"`
 	AccountID    *string `json:"account_id,omitempty"`
 }
 
@@ -398,6 +413,69 @@ func isChatGPTMode(mode string) bool {
 // isAPIKeyMode returns true for explicit API key mode.
 func isAPIKeyMode(mode string) bool {
 	return mode == "api_key"
+}
+
+func resolveCodexAPIKey(auth *CodexAuthState) (string, string, error) {
+	if key := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); key != "" {
+		return key, codexCredentialSourceEnv, nil
+	}
+	if auth != nil && strings.TrimSpace(auth.APIKey) != "" {
+		return auth.APIKey, codexCredentialSourceProxyConfig, nil
+	}
+	official, err := loadOfficialCodexAuth()
+	if err != nil {
+		return "", "", err
+	}
+	if official != nil && strings.TrimSpace(official.APIKey) != "" {
+		return official.APIKey, codexCredentialSourceOfficialStore, nil
+	}
+	return "", "", nil
+}
+
+func resolveCodexChatGPTAuth(auth *CodexAuthState) (*resolvedCodexChatGPTAuth, error) {
+	official, err := loadOfficialCodexAuth()
+	if err != nil {
+		return nil, err
+	}
+	if official != nil && official.AccessToken != "" {
+		return &resolvedCodexChatGPTAuth{
+			AccessToken:  official.AccessToken,
+			RefreshToken: official.RefreshToken,
+			ExpiresAt:    official.ExpiresAt,
+			AccountID:    official.AccountID,
+			Source:       codexCredentialSourceOfficialStore,
+		}, nil
+	}
+	if auth != nil && auth.AccessToken != "" {
+		return &resolvedCodexChatGPTAuth{
+			AccessToken:  auth.AccessToken,
+			RefreshToken: auth.RefreshToken,
+			ExpiresAt:    auth.ExpiresAt,
+			AccountID:    auth.AccountID,
+			Source:       codexCredentialSourceProxyConfig,
+		}, nil
+	}
+	return nil, nil
+}
+
+func applyResolvedCodexChatGPTAuth(dst *CodexAuthState, resolved *resolvedCodexChatGPTAuth) {
+	if dst == nil || resolved == nil {
+		return
+	}
+	dst.AccessToken = resolved.AccessToken
+	dst.RefreshToken = resolved.RefreshToken
+	dst.ExpiresAt = resolved.ExpiresAt
+	dst.AccountID = resolved.AccountID
+}
+
+func clearPersistedChatGPTSecrets(auth *CodexAuthState) {
+	if auth == nil {
+		return
+	}
+	auth.AccessToken = ""
+	auth.RefreshToken = ""
+	auth.ExpiresAt = 0
+	auth.AccountID = ""
 }
 
 // codexHomePath returns the official Codex home directory, honoring
@@ -459,6 +537,7 @@ func loadOfficialCodexAuth() (*CodexAuthState, error) {
 		Mode:         "chatgpt",
 		AccessToken:  aj.Tokens.AccessToken,
 		RefreshToken: aj.Tokens.RefreshToken,
+		ExpiresAt:    aj.Tokens.ExpiresAt,
 	}
 	// Account ID: prefer explicit field, fall back to JWT claims.
 	if aj.Tokens.AccountID != nil && *aj.Tokens.AccountID != "" {
@@ -467,8 +546,8 @@ func loadOfficialCodexAuth() (*CodexAuthState, error) {
 		state.AccountID = extractAccountIDFromJWT(aj.Tokens.IDToken)
 	}
 
-	log.Printf("[codex] loaded official auth: has_token=true account_id=%q",
-		state.AccountID)
+	log.Printf("[codex] loaded official auth: has_token=true has_account_metadata=%t",
+		state.AccountID != "")
 	return state, nil
 }
 
@@ -532,6 +611,7 @@ func persistToOfficialStore(auth *CodexAuthState) error {
 			IDToken:      idToken,
 			AccessToken:  auth.AccessToken,
 			RefreshToken: auth.RefreshToken,
+			ExpiresAt:    auth.ExpiresAt,
 			AccountID:    accountID,
 		},
 		LastRefresh: &now,

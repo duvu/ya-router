@@ -28,9 +28,9 @@ func TestExtractModelFromBody(t *testing.T) {
 
 func TestPatchBodyModel(t *testing.T) {
 	tests := []struct {
-		name     string
-		body     string
-		model    string
+		name      string
+		body      string
+		model     string
 		wantModel string
 	}{
 		{

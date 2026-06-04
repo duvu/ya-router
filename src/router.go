@@ -35,6 +35,7 @@ func NewModelRouter(registry *ProviderRegistry, routing RoutingConfig) *ModelRou
 //  3. Fall back to routing.default_provider when no match found
 func (r *ModelRouter) Resolve(ctx context.Context, requestedModel string, cap Capability) (*RouteResult, error) {
 	model := requestedModel
+	usedDefaultModel := model == ""
 	if model == "" {
 		log.Printf("[router] no model in request, using default=%q", r.routing.DefaultModel)
 		model = r.routing.DefaultModel
@@ -60,8 +61,12 @@ func (r *ModelRouter) Resolve(ctx context.Context, requestedModel string, cap Ca
 
 	switch len(candidates) {
 	case 0:
+		if !usedDefaultModel {
+			log.Printf("[router] model %q unavailable for capability=%s", model, cap)
+			return nil, fmt.Errorf("model %q is unavailable for capability %q", model, cap)
+		}
 		log.Printf("[router] model %q not in any catalog, falling back to default provider", model)
-		return r.defaultProviderRoute(model)
+		return r.defaultProviderRoute(model, cap)
 	case 1:
 		log.Printf("[router] catalog match: %q → provider=%s", model, candidates[0].Provider.ID())
 		return &candidates[0], nil
@@ -98,7 +103,7 @@ func (r *ModelRouter) discoverFromCatalogs(ctx context.Context, model string, ca
 	return found
 }
 
-func (r *ModelRouter) defaultProviderRoute(model string) (*RouteResult, error) {
+func (r *ModelRouter) defaultProviderRoute(model string, cap Capability) (*RouteResult, error) {
 	defID := ProviderID(r.routing.DefaultProvider)
 	if defID == "" {
 		defID = ProviderCopilot
@@ -106,6 +111,9 @@ func (r *ModelRouter) defaultProviderRoute(model string) (*RouteResult, error) {
 	p, err := r.registry.Get(defID)
 	if err != nil {
 		return nil, fmt.Errorf("model %q not found in any provider and default provider %q is unavailable", model, defID)
+	}
+	if !hasCapability(p, cap) {
+		return nil, fmt.Errorf("default provider %q does not support capability %q", defID, cap)
 	}
 	return &RouteResult{Provider: p, ResolvedModel: model}, nil
 }
