@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -294,6 +296,157 @@ func TestIsChatGPTModeBackwardCompat(t *testing.T) {
 					tt.mode, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestResolveCodexAPIKeyPrefersEnvOverConfig(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "env-key")
+	key, source, err := resolveCodexAPIKey(&CodexAuthState{APIKey: "config-key"})
+	if err != nil {
+		t.Fatalf("resolveCodexAPIKey error = %v", err)
+	}
+	if key != "env-key" {
+		t.Fatalf("key = %q, want env-key", key)
+	}
+	if source != codexCredentialSourceEnv {
+		t.Fatalf("source = %q, want %q", source, codexCredentialSourceEnv)
+	}
+}
+
+func TestResolveCodexChatGPTAuthPrefersOfficialStore(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	oldHome := os.Getenv("CODEX_HOME")
+	tempDir := t.TempDir()
+	if err := os.Setenv("CODEX_HOME", tempDir); err != nil {
+		t.Fatalf("set CODEX_HOME: %v", err)
+	}
+	defer os.Setenv("CODEX_HOME", oldHome)
+
+	path := filepath.Join(tempDir, "auth.json")
+	data := `{"tokens":{"access_token":"official-token","refresh_token":"official-refresh","account_id":"acct-123","expires_at":789}}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("write auth.json: %v", err)
+	}
+
+	resolved, err := resolveCodexChatGPTAuth(&CodexAuthState{AccessToken: "config-token", RefreshToken: "config-refresh", AccountID: "config-acct", ExpiresAt: 123})
+	if err != nil {
+		t.Fatalf("resolveCodexChatGPTAuth error = %v", err)
+	}
+	if resolved == nil {
+		t.Fatal("expected resolved auth")
+	}
+	if resolved.AccessToken != "official-token" || resolved.RefreshToken != "official-refresh" {
+		t.Fatalf("resolved = %+v, want official tokens", resolved)
+	}
+	if resolved.AccountID != "acct-123" {
+		t.Fatalf("accountID = %q, want acct-123", resolved.AccountID)
+	}
+	if resolved.Source != codexCredentialSourceOfficialStore {
+		t.Fatalf("source = %q, want %q", resolved.Source, codexCredentialSourceOfficialStore)
+	}
+	if resolved.ExpiresAt != 789 {
+		t.Fatalf("expiresAt = %d, want 789", resolved.ExpiresAt)
+	}
+}
+
+func TestResolveCodexChatGPTAuthFallsBackToConfig(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	oldHome := os.Getenv("CODEX_HOME")
+	tempDir := t.TempDir()
+	if err := os.Setenv("CODEX_HOME", tempDir); err != nil {
+		t.Fatalf("set CODEX_HOME: %v", err)
+	}
+	defer os.Setenv("CODEX_HOME", oldHome)
+
+	resolved, err := resolveCodexChatGPTAuth(&CodexAuthState{AccessToken: "config-token", RefreshToken: "config-refresh", AccountID: "config-acct", ExpiresAt: 456})
+	if err != nil {
+		t.Fatalf("resolveCodexChatGPTAuth error = %v", err)
+	}
+	if resolved == nil {
+		t.Fatal("expected resolved auth")
+	}
+	if resolved.AccessToken != "config-token" || resolved.RefreshToken != "config-refresh" {
+		t.Fatalf("resolved = %+v, want config tokens", resolved)
+	}
+	if resolved.Source != codexCredentialSourceProxyConfig {
+		t.Fatalf("source = %q, want %q", resolved.Source, codexCredentialSourceProxyConfig)
+	}
+}
+
+func TestModelRouterResolve_AmbiguousModelRequiresRule(t *testing.T) {
+	registry := NewProviderRegistry()
+	registry.Register(&mockProvider{
+		id:     ProviderCopilot,
+		name:   "Copilot",
+		caps:   []Capability{CapabilityChat},
+		health: ProviderHealth{Authenticated: true},
+		models: &ModelList{Object: "list", Data: []Model{{ID: "shared-model", Object: "model"}}},
+	})
+	registry.Register(&mockProvider{
+		id:     ProviderCodex,
+		name:   "Codex",
+		caps:   []Capability{CapabilityChat},
+		health: ProviderHealth{Authenticated: true},
+		models: &ModelList{Object: "list", Data: []Model{{ID: "shared-model", Object: "model"}}},
+	})
+
+	router := NewModelRouter(registry, defaultConfig().Routing)
+	_, err := router.Resolve(context.Background(), "shared-model", CapabilityChat)
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("expected ambiguity error, got %v", err)
+	}
+}
+
+func TestModelRouterResolve_ExplicitModelNeedsMatchingCapability(t *testing.T) {
+	registry := NewProviderRegistry()
+	registry.Register(&mockProvider{
+		id:     ProviderCopilot,
+		name:   "Copilot",
+		caps:   []Capability{CapabilityEmbeddings},
+		health: ProviderHealth{Authenticated: true},
+		models: &ModelList{Object: "list", Data: []Model{{ID: "embed-ok", Object: "model"}}},
+	})
+	registry.Register(&mockProvider{
+		id:     ProviderCodex,
+		name:   "Codex",
+		caps:   []Capability{CapabilityChat},
+		health: ProviderHealth{Authenticated: true},
+		models: &ModelList{Object: "list", Data: []Model{{ID: "chat-only", Object: "model"}}},
+	})
+
+	router := NewModelRouter(registry, defaultConfig().Routing)
+	_, err := router.Resolve(context.Background(), "chat-only", CapabilityEmbeddings)
+	if err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("expected unavailable error, got %v", err)
+	}
+}
+
+func TestModelsEndpointKeepsModelMapVisibleWhenProviderUnavailable(t *testing.T) {
+	registry := NewProviderRegistry()
+	registry.Register(&mockProvider{
+		id:     ProviderCodex,
+		name:   "Codex",
+		caps:   []Capability{CapabilityChat},
+		health: ProviderHealth{Authenticated: false},
+		models: &ModelList{Object: "list", Data: []Model{}},
+	})
+
+	cfg := defaultConfig()
+	cfg.Routing.ModelMap = map[string]ModelMapEntry{
+		"gpt-5.4": {Provider: string(ProviderCodex)},
+	}
+	handler := modelsHandler(registry, cfg)
+
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var ml ModelList
+	if err := json.NewDecoder(rec.Body).Decode(&ml); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if len(ml.Data) != 1 || ml.Data[0].ID != "gpt-5.4" {
+		t.Fatalf("expected model_map fallback entry, got %+v", ml.Data)
 	}
 }
 

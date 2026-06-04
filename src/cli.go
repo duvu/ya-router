@@ -54,9 +54,8 @@ func handleAuthCopilot(mode string) error {
 	return nil
 }
 
-// handleAuthCodex runs the OpenAI OAuth device-code flow for Codex.
-// Tokens are stored both in the project config and in the official
-// Codex auth store (~/.codex/auth.json).
+// handleAuthCodex runs the OpenAI OAuth device-code flow for Codex and persists
+// ChatGPT-backed credentials to the official Codex auth store.
 func handleAuthCodex(_ string) error {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -67,26 +66,22 @@ func handleAuthCodex(_ string) error {
 	cfg.Providers.Codex.Enabled = true
 	cfg.Providers.Codex.Auth.Mode = "chatgpt"
 
-	if err := saveConfig(cfg); err != nil {
-		return fmt.Errorf("failed to persist Codex auth mode: %w", err)
-	}
-
 	fmt.Println("Starting OpenAI Codex authentication (mode: chatgpt device_code)...")
 
-	auth := &cfg.Providers.Codex.Auth
-	// Force re-authentication (clear existing token).
-	auth.AccessToken = ""
-	auth.ExpiresAt = 0
-	if err := codexAuthenticate(auth, func() error { return saveConfig(cfg) }); err != nil {
+	auth := &CodexAuthState{Mode: "chatgpt"}
+	if err := codexAuthenticate(auth, func() error { return nil }); err != nil {
 		return fmt.Errorf("Codex authentication failed: %w", err)
 	}
 
-	// Also persist to official Codex auth store.
 	if err := persistToOfficialStore(auth); err != nil {
 		fmt.Printf("Warning: could not write to official Codex store: %v\n", err)
 	} else {
 		p, _ := officialAuthJSONPath()
 		fmt.Printf("Tokens also saved to %s\n", p)
+	}
+	clearPersistedChatGPTSecrets(&cfg.Providers.Codex.Auth)
+	if err := saveConfig(cfg); err != nil {
+		return fmt.Errorf("failed to persist Codex auth mode: %w", err)
 	}
 
 	fmt.Println("Codex credentials validated successfully!")
@@ -127,17 +122,18 @@ func handleAuthCodexManualToken(token string) error {
 	initializeTimeouts(cfg)
 
 	cfg.Providers.Codex.Enabled = true
-	cfg.Providers.Codex.Auth.Mode = "device_code"
-	cfg.Providers.Codex.Auth.AccessToken = token
-	// No expiry info when setting manually — set far future to avoid
-	// immediate refresh attempts.
-	cfg.Providers.Codex.Auth.ExpiresAt = time.Now().Unix() + 86400 // 24h
+	cfg.Providers.Codex.Auth.Mode = "chatgpt"
+	auth := &CodexAuthState{Mode: "chatgpt", AccessToken: token, ExpiresAt: time.Now().Unix() + 86400}
+	if err := persistToOfficialStore(auth); err != nil {
+		return fmt.Errorf("failed to persist official Codex auth store: %w", err)
+	}
+	clearPersistedChatGPTSecrets(&cfg.Providers.Codex.Auth)
 
 	if err := saveConfig(cfg); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 	fmt.Println("Codex access token saved successfully!")
-	fmt.Println("Note: token expiry set to 24h. Run 'refresh --provider codex' later if needed.")
+	fmt.Println("Note: token expiry is treated as 24h for this manual fallback. Run 'refresh --provider codex' later if needed.")
 	return nil
 }
 
@@ -194,8 +190,12 @@ func printCodexStatus(cfg *Config) {
 	now := time.Now().Unix()
 
 	if isAPIKeyMode(auth.Mode) {
-		if auth.APIKey != "" {
+		key, source, err := resolveCodexAPIKey(auth)
+		if err != nil {
+			fmt.Printf("  Auth: ⚠  Credential lookup failed: %v\n", err)
+		} else if key != "" {
 			fmt.Printf("  Auth: ✓ API key configured\n")
+			fmt.Printf("  Credential source: %s\n", source)
 			fmt.Printf("  Backend: api.openai.com/v1\n")
 		} else {
 			fmt.Printf("  Auth: ✗ No API key — run '%s auth codex --api-key <key>'\n", os.Args[0])
@@ -205,21 +205,18 @@ func printCodexStatus(cfg *Config) {
 		return
 	}
 
-	// ChatGPT mode: check for tokens from official store if needed.
-	token := auth.AccessToken
-	accountID := auth.AccountID
-	source := "proxy config"
-	if token == "" {
-		if official, err := loadOfficialCodexAuth(); err == nil && official != nil {
-			token = official.AccessToken
-			accountID = official.AccountID
-			source = "~/.codex/auth.json"
-		}
+	resolved, err := resolveCodexChatGPTAuth(auth)
+	if err != nil {
+		fmt.Printf("  Auth: ⚠  Credential lookup failed: %v\n", err)
+		fmt.Printf("  Mode: %s\n", auth.Mode)
+		fmt.Printf("  Backend: %s\n", defaultChatGPTBaseURL)
+		fmt.Println()
+		return
 	}
 
-	if token != "" {
-		if auth.ExpiresAt > 0 {
-			remaining := auth.ExpiresAt - now
+	if resolved != nil {
+		if resolved.ExpiresAt > 0 {
+			remaining := resolved.ExpiresAt - now
 			if remaining > 0 {
 				fmt.Printf("  Auth: ✓ Authenticated (expires in %dm %ds)\n",
 					remaining/60, remaining%60)
@@ -234,9 +231,9 @@ func printCodexStatus(cfg *Config) {
 		} else {
 			fmt.Printf("  Auth: ✓ Token available (no expiry info)\n")
 		}
-		fmt.Printf("  Has refresh token: %t\n", auth.RefreshToken != "")
-		fmt.Printf("  Account ID: %s\n", accountID)
-		fmt.Printf("  Credential source: %s\n", source)
+		fmt.Printf("  Refreshable: %t\n", resolved.RefreshToken != "")
+		fmt.Printf("  Has account metadata: %t\n", resolved.AccountID != "")
+		fmt.Printf("  Credential source: %s\n", resolved.Source)
 	} else {
 		fmt.Printf("  Auth: ✗ Not authenticated — run '%s auth codex'\n", os.Args[0])
 	}
@@ -428,19 +425,46 @@ func refreshCopilot(cfg *Config) error {
 
 func refreshCodex(cfg *Config) error {
 	auth := &cfg.Providers.Codex.Auth
-	if auth.AccessToken == "" {
+	if isAPIKeyMode(auth.Mode) {
+		key, _, err := resolveCodexAPIKey(auth)
+		if err != nil {
+			return err
+		}
+		if key == "" {
+			return fmt.Errorf("no Codex API key - run 'auth codex --api-key' first")
+		}
+		fmt.Println("Codex API key mode does not use token refresh.")
+		return nil
+	}
+
+	working := *auth
+	resolved, err := resolveCodexChatGPTAuth(auth)
+	if err != nil {
+		return err
+	}
+	if resolved != nil {
+		applyResolvedCodexChatGPTAuth(&working, resolved)
+	}
+	if working.AccessToken == "" {
 		return fmt.Errorf("no Codex token — run 'auth codex' first")
 	}
-	if auth.RefreshToken == "" {
+	if working.RefreshToken == "" {
 		fmt.Println("Codex: no refresh token available, re-authenticating...")
-		return codexAuthenticate(auth, func() error { return saveConfig(cfg) })
+		return handleAuthCodex("chatgpt")
 	}
 	fmt.Println("Refreshing Codex token...")
-	if err := codexRefreshToken(auth, func() error { return saveConfig(cfg) }); err != nil {
+	if err := codexRefreshToken(&working, func() error { return nil }); err != nil {
 		fmt.Printf("Refresh failed: %v — re-authenticating...\n", err)
-		return codexAuthenticate(auth, func() error { return saveConfig(cfg) })
+		return handleAuthCodex("chatgpt")
 	}
-	remaining := auth.ExpiresAt - time.Now().Unix()
+	if err := persistToOfficialStore(&working); err != nil {
+		return fmt.Errorf("persist refreshed Codex credentials: %w", err)
+	}
+	clearPersistedChatGPTSecrets(auth)
+	if err := saveConfig(cfg); err != nil {
+		return fmt.Errorf("persist Codex config: %w", err)
+	}
+	remaining := working.ExpiresAt - time.Now().Unix()
 	fmt.Printf("✅ Codex token refreshed (expires in %dm %ds)\n", remaining/60, remaining%60)
 	return nil
 }

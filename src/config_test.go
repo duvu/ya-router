@@ -397,4 +397,3 @@ func TestMigrateConfigIntegration(t *testing.T) {
 		t.Errorf("GitHubToken not preserved")
 	}
 }
-
