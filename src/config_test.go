@@ -217,8 +217,8 @@ func TestSaveAndLoadConfig(t *testing.T) {
 	if loaded.Port != 9999 {
 		t.Errorf("Port = %d, want 9999", loaded.Port)
 	}
-	if loaded.Providers.Copilot.Auth.GitHubToken != "test-token" {
-		t.Errorf("GitHubToken = %q, want test-token", loaded.Providers.Copilot.Auth.GitHubToken)
+	if len(loaded.Providers.Copilot.Accounts) == 0 || loaded.Providers.Copilot.Accounts[0].Auth.GitHubToken != "test-token" {
+		t.Errorf("GitHubToken = %q, want test-token (in Accounts[0])", loaded.Providers.Copilot.Auth.GitHubToken)
 	}
 	if loaded.Providers.Codex.Auth.Mode != "device_code" {
 		t.Errorf("Codex mode = %q, want device_code", loaded.Providers.Codex.Auth.Mode)
@@ -258,11 +258,11 @@ func TestLoadConfig_V0Migration(t *testing.T) {
 	if cfg.Port != 8080 {
 		t.Errorf("Port = %d, want 8080", cfg.Port)
 	}
-	if cfg.Providers.Copilot.Auth.GitHubToken != "gh-tok" {
-		t.Errorf("GitHubToken = %q, want gh-tok", cfg.Providers.Copilot.Auth.GitHubToken)
+	if len(cfg.Providers.Copilot.Accounts) == 0 || cfg.Providers.Copilot.Accounts[0].Auth.GitHubToken != "gh-tok" {
+		t.Errorf("GitHubToken = %q, want gh-tok (in Accounts[0])", cfg.Providers.Copilot.Auth.GitHubToken)
 	}
-	if cfg.Providers.Copilot.Auth.CopilotToken != "cp-tok" {
-		t.Errorf("CopilotToken = %q, want cp-tok", cfg.Providers.Copilot.Auth.CopilotToken)
+	if len(cfg.Providers.Copilot.Accounts) == 0 || cfg.Providers.Copilot.Accounts[0].Auth.CopilotToken != "cp-tok" {
+		t.Errorf("CopilotToken = %q, want cp-tok (in Accounts[0])", cfg.Providers.Copilot.Auth.CopilotToken)
 	}
 	if cfg.Routing.DefaultModel != "gpt-4" {
 		t.Errorf("DefaultModel = %q, want gpt-4", cfg.Routing.DefaultModel)
@@ -393,7 +393,7 @@ func TestMigrateConfigIntegration(t *testing.T) {
 	if migrated.Routing.DefaultModel != "gpt-4" {
 		t.Errorf("DefaultModel = %q, want gpt-4 (preserved)", migrated.Routing.DefaultModel)
 	}
-	if migrated.Providers.Copilot.Auth.GitHubToken != "test_github_token" {
-		t.Errorf("GitHubToken not preserved")
+	if len(migrated.Providers.Copilot.Accounts) == 0 || migrated.Providers.Copilot.Accounts[0].Auth.GitHubToken != "test_github_token" {
+		t.Errorf("GitHubToken not preserved in Accounts[0]")
 	}
 }

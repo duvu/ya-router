@@ -9,6 +9,14 @@
     "model_map": {
       "text-embedding-3-large": {
         "provider": "codex"
+      },
+      "gc-gpt-4o": {
+        "provider": "copilot",
+        "upstream_model": "gpt-4o"
+      },
+      "oc-gpt-5.3-codex": {
+        "provider": "codex",
+        "upstream_model": "gpt-5.3-codex"
       }
     }
   },
@@ -18,6 +26,8 @@
       "auth": {
         "mode": "device_code"
       },
+      "accounts": [],
+      "account_cooldown_seconds": 300,
       "allowed_models": []
     },
     "codex": {
@@ -26,6 +36,8 @@
         "mode": "device_code",
         "api_key_env": "OPENAI_API_KEY"
       },
+      "accounts": [],
+      "account_cooldown_seconds": 300,
       "allowed_models": []
     }
   },

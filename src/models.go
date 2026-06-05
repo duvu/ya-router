@@ -6,12 +6,19 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
 // filterAllowedModels returns a copy of modelList containing only models that
 // appear in allowedModels.  An empty (nil or zero-length) allowedModels slice
 // means "allow all".
+//
+// The filter is prefix-tolerant: a model ID with a provider prefix matches an
+// allowed entry that specifies only the bare ID, and vice versa.  For example,
+// an allowed list entry "gpt-4o" will match the model "gc-gpt-4o", and an entry
+// "gc-gpt-4o" will match the model "gc-gpt-4o" exactly.
+//
 // If the allowedModels list is set but no models match, a synthetic entry for
 // each allowed ID is returned so clients can still see the allowed model names.
 func filterAllowedModels(modelList *ModelList, allowedModels []string) *ModelList {
@@ -21,7 +28,7 @@ func filterAllowedModels(modelList *ModelList, allowedModels []string) *ModelLis
 
 	var filtered []Model
 	for _, m := range modelList.Data {
-		if isModelAllowed(m.ID, allowedModels) {
+		if isModelAllowedWithPrefix(m.ID, allowedModels) {
 			filtered = append(filtered, m)
 		}
 	}
@@ -40,10 +47,33 @@ func filterAllowedModels(modelList *ModelList, allowedModels []string) *ModelLis
 	return &ModelList{Object: "list", Data: filtered}
 }
 
+// isModelAllowedWithPrefix reports whether modelID is permitted by the
+// allowedModels list, comparing both the full ID and the bare (prefix-stripped)
+// ID against each allowed entry (also checked bare and prefixed).
+func isModelAllowedWithPrefix(modelID string, allowedModels []string) bool {
+	if len(allowedModels) == 0 {
+		return true
+	}
+	bareID, _, _ := StripModelPrefix(modelID)
+	for _, allowed := range allowedModels {
+		bareAllowed, _, _ := StripModelPrefix(allowed)
+		if strings.EqualFold(modelID, allowed) ||
+			strings.EqualFold(bareID, allowed) ||
+			strings.EqualFold(modelID, bareAllowed) ||
+			strings.EqualFold(bareID, bareAllowed) {
+			return true
+		}
+	}
+	return false
+}
+
 // modelsHandler returns an HTTP handler that merges model lists from all
 // enabled providers and writes the combined list as JSON.
-// Models are always loaded dynamically from provider APIs — no hardcoded
-// fallback is used.
+//
+// Each model ID is prefixed with the provider's namespace prefix (e.g. "gc-"
+// for Copilot, "oc-" for Codex) so clients can target a provider
+// deterministically.  The prefix is stripped by the router before any request
+// is forwarded to the upstream.
 func modelsHandler(registry *ProviderRegistry, cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -52,7 +82,7 @@ func modelsHandler(registry *ProviderRegistry, cfg *Config) http.HandlerFunc {
 		seen := make(map[string]bool)
 		var allModels []Model
 
-		// 1. Collect models from each provider's upstream API.
+		// 1. Collect models from each provider's upstream API and apply prefix.
 		//    Call EnsureAuthenticated first to give providers a chance
 		//    to refresh expired tokens before we check Health.
 		for _, p := range registry.All() {
@@ -69,24 +99,33 @@ func modelsHandler(registry *ProviderRegistry, cfg *Config) http.HandlerFunc {
 				continue
 			}
 			if ml != nil {
+				ownedBy := ProviderOwnedBy(p.ID())
 				for _, m := range ml.Data {
-					if !seen[m.ID] {
-						seen[m.ID] = true
-						allModels = append(allModels, m)
+					prefixedID := AddModelPrefix(p.ID(), m.ID)
+					if !seen[prefixedID] {
+						seen[prefixedID] = true
+						allModels = append(allModels, Model{
+							ID:      prefixedID,
+							Object:  m.Object,
+							Created: m.Created,
+							OwnedBy: ownedBy,
+						})
 					}
 				}
 			}
 		}
 
 		// 2. Ensure every model in routing.model_map is represented.
-		for modelID := range cfg.Routing.ModelMap {
+		//    Derive OwnedBy from the entry's target provider.
+		for modelID, entry := range cfg.Routing.ModelMap {
 			if !seen[modelID] {
 				seen[modelID] = true
+				ownedBy := ProviderOwnedBy(ProviderID(entry.Provider))
 				allModels = append(allModels, Model{
 					ID:      modelID,
 					Object:  "model",
 					Created: time.Now().Unix(),
-					OwnedBy: "openai",
+					OwnedBy: ownedBy,
 				})
 			}
 		}

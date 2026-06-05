@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestModelExtractionAndPatchIntegration tests extractModelFromBody
@@ -35,7 +37,7 @@ func TestModelExtractionAndPatchIntegration(t *testing.T) {
 }
 
 // TestModelsEndpointConsistency tests the /v1/models endpoint returns
-// models from providers and respects allowed_models filtering.
+// models from providers with provider prefixes applied.
 func TestModelsEndpointConsistency(t *testing.T) {
 	registry := NewProviderRegistry()
 	registry.Register(&mockProvider{
@@ -79,8 +81,9 @@ func TestModelsEndpointConsistency(t *testing.T) {
 		ids[m.ID] = true
 	}
 
-	if !ids["gpt-5-mini"] {
-		t.Errorf("gpt-5-mini not in response; got %v", ids)
+	// Models from Copilot are prefixed gc-.
+	if !ids["gc-gpt-5-mini"] {
+		t.Errorf("gc-gpt-5-mini not in response; got %v", ids)
 	}
 }
 
@@ -130,8 +133,9 @@ func TestModelsEndpointAggregatesMultipleProviders(t *testing.T) {
 		ids[m.ID] = true
 	}
 
-	if !ids["gpt-4"] || !ids["o3-mini"] {
-		t.Errorf("expected both gpt-4 and o3-mini, got %v", ids)
+	// Models are now prefixed: Copilot→gc-, Codex→oc-.
+	if !ids["gc-gpt-4"] || !ids["oc-o3-mini"] {
+		t.Errorf("expected both gc-gpt-4 and oc-o3-mini (prefixed), got %v", ids)
 	}
 }
 
@@ -466,5 +470,372 @@ func TestHealthHandler(t *testing.T) {
 
 	if resp["status"] != "ok" {
 		t.Errorf("health status = %q, want ok", resp["status"])
+	}
+}
+
+func TestNormalizeCopilotAccounts_PromotesLegacyAuth(t *testing.T) {
+	cfg := &CopilotProviderConfig{
+		Auth: CopilotAuthState{GitHubToken: "tok123", Mode: "device_code"},
+	}
+	normalizeCopilotAccounts(cfg)
+	if len(cfg.Accounts) != 1 {
+		t.Fatalf("expected 1 account, got %d", len(cfg.Accounts))
+	}
+	if cfg.Accounts[0].Label != "primary" {
+		t.Errorf("label = %q, want primary", cfg.Accounts[0].Label)
+	}
+	if cfg.Accounts[0].Auth.GitHubToken != "tok123" {
+		t.Errorf("GitHub token not promoted to account")
+	}
+	if cfg.Auth.GitHubToken != "" {
+		t.Errorf("legacy Auth should be cleared after promotion")
+	}
+}
+
+func TestNormalizeCopilotAccounts_SkipsWhenAccountsPresent(t *testing.T) {
+	cfg := &CopilotProviderConfig{
+		Auth: CopilotAuthState{GitHubToken: "legacy"},
+		Accounts: []CopilotAccount{
+			{Label: "work", Auth: CopilotAuthState{GitHubToken: "work-tok"}},
+		},
+	}
+	normalizeCopilotAccounts(cfg)
+	if len(cfg.Accounts) != 1 {
+		t.Errorf("expected accounts unchanged, got %d", len(cfg.Accounts))
+	}
+	if cfg.Accounts[0].Label != "work" {
+		t.Errorf("account label changed unexpectedly")
+	}
+}
+
+func TestAdvanceAccount_AdvancesToNextHealthyAccount(t *testing.T) {
+	cfg := buildTestConfigWithAccounts(300, 0, 0)
+	p := &CopilotProvider{cfg: cfg}
+
+	advanced := p.advanceAccount()
+	if !advanced {
+		t.Fatal("expected advance to succeed with 2 accounts")
+	}
+	if p.accountCursor != 1 {
+		t.Errorf("cursor = %d, want 1", p.accountCursor)
+	}
+	if cfg.Providers.Copilot.Accounts[0].LastLimitedAt == 0 {
+		t.Error("account 0 LastLimitedAt should be set after advance")
+	}
+}
+
+func TestAdvanceAccount_ReturnsFalseOnSingleAccount(t *testing.T) {
+	cfg := buildTestConfigWithAccounts(300, 0)
+	p := &CopilotProvider{cfg: cfg}
+	if p.advanceAccount() {
+		t.Error("expected false for single-account pool")
+	}
+}
+
+func TestAdvanceAccount_SkipsCooldownAccounts(t *testing.T) {
+	nowish := time.Now().Unix()
+	cfg := buildTestConfigWithAccounts(300, 0, nowish)
+	accounts := cfg.Providers.Copilot.Accounts
+	accounts[1].LastLimitedAt = nowish
+	cfg.Providers.Copilot.Accounts = accounts
+
+	p := &CopilotProvider{cfg: cfg}
+	advanced := p.advanceAccount()
+	if advanced {
+		t.Error("both accounts in cooldown; expected no advance")
+	}
+}
+
+func TestIsAccountLimitSignal_429(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       http.NoBody,
+	}
+	ok, _ := isAccountLimitSignal(resp)
+	if !ok {
+		t.Error("429 should be an account limit signal")
+	}
+}
+
+func TestIsAccountLimitSignal_403WithRateLimit(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rec.WriteString(`{"error":"rate limit exceeded"}`)
+	resp := rec.Result()
+	resp.StatusCode = http.StatusForbidden
+
+	ok, preview := isAccountLimitSignal(resp)
+	if !ok {
+		t.Error("403 with 'rate limit' body should be account limit signal")
+	}
+	if !strings.Contains(preview, "rate limit") {
+		t.Errorf("expected preview to contain 'rate limit', got %q", preview)
+	}
+}
+
+func TestIsAccountLimitSignal_403WithoutRateLimit(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rec.WriteString(`{"error":"forbidden"}`)
+	resp := rec.Result()
+	resp.StatusCode = http.StatusForbidden
+
+	ok, _ := isAccountLimitSignal(resp)
+	if ok {
+		t.Error("403 without rate-limit body should NOT be an account limit signal")
+	}
+}
+
+func TestFirstHealthyAccount_SkipsCooldown(t *testing.T) {
+	nowish := time.Now().Unix()
+	cfg := buildTestConfigWithAccounts(300, nowish, 0)
+	p := &CopilotProvider{cfg: cfg}
+	idx := p.firstHealthyAccount()
+	if idx != 1 {
+		t.Errorf("expected account 1 (healthy), got %d", idx)
+	}
+}
+
+func buildTestConfigWithAccounts(cooldownSecs int, lastLimitedAts ...int64) *Config {
+	cfg := defaultConfig()
+	cfg.Providers.Copilot.AccountCooldownSeconds = cooldownSecs
+	accounts := make([]CopilotAccount, len(lastLimitedAts))
+	for i, ts := range lastLimitedAts {
+		accounts[i] = CopilotAccount{
+			Label:         fmt.Sprintf("acct-%d", i),
+			Auth:          CopilotAuthState{GitHubToken: fmt.Sprintf("tok-%d", i), Mode: "device_code"},
+			LastLimitedAt: ts,
+		}
+	}
+	cfg.Providers.Copilot.Accounts = accounts
+	return cfg
+}
+
+func TestProxyFreeChatRequest_AccountFailover(t *testing.T) {
+	cfg := buildTestConfigWithAccounts(300, 0, 0)
+
+	p := NewCopilotProvider(cfg)
+	p.freeModelResolver = func(_ context.Context) ([]Model, error) {
+		return []Model{{ID: "gpt-test"}}, nil
+	}
+
+	callCount := 0
+	p.proxyExecutor = func(_ context.Context, _ *http.Request, _ []byte, _ Capability) (*http.Response, string, error) {
+		acc := p.activeAccount()
+		callCount++
+		if acc != nil && acc.Label == "acct-0" {
+			rec := httptest.NewRecorder()
+			rec.WriteHeader(http.StatusTooManyRequests)
+			rec.WriteString(`{"error":"rate limited"}`)
+			return rec.Result(), "", nil
+		}
+		rec := httptest.NewRecorder()
+		rec.WriteHeader(http.StatusOK)
+		rec.WriteString(`{"choices":[]}`)
+		return rec.Result(), "", nil
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
+	err := p.ProxyFreeChatRequest(context.Background(), w, req, []byte(`{}`), "gpt-test")
+	if err != nil {
+		t.Fatalf("expected no error after failover, got: %v", err)
+	}
+	if p.accountCursor != 1 {
+		t.Errorf("expected cursor=1 after failover, got %d", p.accountCursor)
+	}
+	if callCount < 2 {
+		t.Errorf("expected at least 2 proxy calls (one per account), got %d", callCount)
+	}
+}
+
+func TestProxyFreeChatRequest_AllAccountsExhausted(t *testing.T) {
+	nowish := time.Now().Unix()
+	cfg := buildTestConfigWithAccounts(300, 0, nowish)
+
+	p := NewCopilotProvider(cfg)
+	p.freeModelResolver = func(_ context.Context) ([]Model, error) {
+		return []Model{{ID: "gpt-test"}}, nil
+	}
+
+	p.proxyExecutor = func(_ context.Context, _ *http.Request, _ []byte, _ Capability) (*http.Response, string, error) {
+		rec := httptest.NewRecorder()
+		rec.WriteHeader(http.StatusTooManyRequests)
+		rec.WriteString(`{"error":"rate limited"}`)
+		return rec.Result(), "", nil
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
+	err := p.ProxyFreeChatRequest(context.Background(), w, req, []byte(`{}`), "gpt-test")
+	if err != nil {
+		t.Errorf("expected no error (should forward last 429), got: %v", err)
+	}
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected forwarded 429, got %d", w.Code)
+	}
+}
+
+func buildTestCodexConfigWithAccounts(cooldownSecs int, modes []string, lastLimitedAts ...int64) *Config {
+	cfg := defaultConfig()
+	cfg.Providers.Codex.Enabled = true
+	cfg.Providers.Codex.AccountCooldownSeconds = cooldownSecs
+	accounts := make([]CodexAccount, len(lastLimitedAts))
+	for i, ts := range lastLimitedAts {
+		mode := "chatgpt"
+		if i < len(modes) {
+			mode = modes[i]
+		}
+		accounts[i] = CodexAccount{
+			Label:         fmt.Sprintf("codex-acct-%d", i),
+			Auth:          CodexAuthState{Mode: mode, AccessToken: fmt.Sprintf("tok-%d", i)},
+			LastLimitedAt: ts,
+		}
+	}
+	cfg.Providers.Codex.Accounts = accounts
+	return cfg
+}
+
+func TestNormalizeCodexAccounts_PromotesLegacyAuth(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Providers.Codex.Auth = CodexAuthState{Mode: "chatgpt", AccessToken: "legacy-tok"}
+	normalizeCodexAccounts(&cfg.Providers.Codex)
+	if len(cfg.Providers.Codex.Accounts) != 1 {
+		t.Fatalf("expected 1 account after promotion, got %d", len(cfg.Providers.Codex.Accounts))
+	}
+	got := cfg.Providers.Codex.Accounts[0]
+	if got.Label != "primary" {
+		t.Errorf("expected label 'primary', got %q", got.Label)
+	}
+	if got.Auth.AccessToken != "legacy-tok" {
+		t.Errorf("expected promoted token, got %q", got.Auth.AccessToken)
+	}
+	if cfg.Providers.Codex.Auth.Mode != "" {
+		t.Errorf("expected top-level Auth zeroed after promotion, got mode=%q", cfg.Providers.Codex.Auth.Mode)
+	}
+}
+
+func TestNormalizeCodexAccounts_SkipsWhenAccountsPresent(t *testing.T) {
+	cfg := buildTestCodexConfigWithAccounts(300, []string{"chatgpt"}, 0)
+	before := len(cfg.Providers.Codex.Accounts)
+	cfg.Providers.Codex.Auth = CodexAuthState{Mode: "chatgpt", AccessToken: "should-not-promote"}
+	normalizeCodexAccounts(&cfg.Providers.Codex)
+	if len(cfg.Providers.Codex.Accounts) != before {
+		t.Errorf("expected %d accounts (no promotion), got %d", before, len(cfg.Providers.Codex.Accounts))
+	}
+}
+
+func TestAdvanceCodexAccount_AdvancesToNextHealthyAccount(t *testing.T) {
+	cfg := buildTestCodexConfigWithAccounts(300, []string{"chatgpt", "chatgpt"}, 0, 0)
+	p := NewCodexProvider(cfg)
+	p.accountCursor = 0
+	advanced := p.advanceCodexAccount()
+	if !advanced {
+		t.Error("expected advanceCodexAccount to return true")
+	}
+	if p.accountCursor != 1 {
+		t.Errorf("expected cursor=1, got %d", p.accountCursor)
+	}
+	if cfg.Providers.Codex.Accounts[0].LastLimitedAt == 0 {
+		t.Error("expected account 0 to have LastLimitedAt set")
+	}
+}
+
+func TestAdvanceCodexAccount_ReturnsFalseOnSingleAccount(t *testing.T) {
+	cfg := buildTestCodexConfigWithAccounts(300, []string{"chatgpt"}, 0)
+	p := NewCodexProvider(cfg)
+	if p.advanceCodexAccount() {
+		t.Error("expected false for single-account pool")
+	}
+}
+
+func TestIsCodexAccountInCooldown(t *testing.T) {
+	nowish := time.Now().Unix()
+	cfg := defaultConfig()
+	cfg.Providers.Codex.Enabled = true
+	cfg.Providers.Codex.AccountCooldownSeconds = 300
+	p := NewCodexProvider(cfg)
+
+	recent := &CodexAccount{LastLimitedAt: nowish}
+	if !p.isCodexAccountInCooldown(recent) {
+		t.Error("recently limited account should be in cooldown")
+	}
+
+	old := &CodexAccount{LastLimitedAt: nowish - 400}
+	if p.isCodexAccountInCooldown(old) {
+		t.Error("old limited account should NOT be in cooldown")
+	}
+
+	zero := &CodexAccount{}
+	if p.isCodexAccountInCooldown(zero) {
+		t.Error("never-limited account should NOT be in cooldown")
+	}
+}
+
+func TestFirstHealthyCodexAccount_SkipsCooldown(t *testing.T) {
+	nowish := time.Now().Unix()
+	cfg := buildTestCodexConfigWithAccounts(300, []string{"chatgpt", "chatgpt"}, nowish, 0)
+	p := NewCodexProvider(cfg)
+	idx := p.firstHealthyCodexAccount()
+	if idx != 1 {
+		t.Errorf("expected account 1 (healthy), got %d", idx)
+	}
+}
+
+func TestProxyCodexRequest_AccountFailover(t *testing.T) {
+	cfg := buildTestCodexConfigWithAccounts(300, []string{"chatgpt", "chatgpt"}, 0, 0)
+	p := NewCodexProvider(cfg)
+	p.accountCursor = 0
+
+	callCount := 0
+	p.proxyExecutor = func(_ context.Context, _ *http.Request, _ []byte, _ Capability) (*http.Response, string, error) {
+		acc := p.activeAccount()
+		callCount++
+		if acc != nil && acc.Label == "codex-acct-0" {
+			rec := httptest.NewRecorder()
+			rec.WriteHeader(http.StatusTooManyRequests)
+			rec.WriteString(`{"error":"rate limited"}`)
+			return rec.Result(), "", nil
+		}
+		sseBody := "event: response.completed\ndata: {\"response\":{\"id\":\"r1\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+		rec := httptest.NewRecorder()
+		rec.WriteHeader(http.StatusOK)
+		rec.WriteString(sseBody)
+		return rec.Result(), "", nil
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
+	err := p.ProxyRequest(context.Background(), w, req, []byte(`{"model":"oc-gpt-5","messages":[]}`), CapabilityChat)
+	if err != nil {
+		t.Fatalf("expected no error after failover, got: %v", err)
+	}
+	if p.accountCursor != 1 {
+		t.Errorf("expected cursor=1 after failover, got %d", p.accountCursor)
+	}
+	if callCount < 2 {
+		t.Errorf("expected at least 2 proxy calls (one per account), got %d", callCount)
+	}
+}
+
+func TestProxyCodexRequest_AllAccountsExhausted(t *testing.T) {
+	nowish := time.Now().Unix()
+	cfg := buildTestCodexConfigWithAccounts(300, []string{"chatgpt", "chatgpt"}, 0, nowish)
+	p := NewCodexProvider(cfg)
+	p.accountCursor = 0
+
+	p.proxyExecutor = func(_ context.Context, _ *http.Request, _ []byte, _ Capability) (*http.Response, string, error) {
+		rec := httptest.NewRecorder()
+		rec.WriteHeader(http.StatusTooManyRequests)
+		rec.WriteString(`{"error":"rate limited"}`)
+		return rec.Result(), "", nil
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
+	err := p.ProxyRequest(context.Background(), w, req, []byte(`{"model":"oc-gpt-5","messages":[]}`), CapabilityChat)
+	if err != nil {
+		t.Errorf("expected no error (should forward last 429), got: %v", err)
+	}
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected forwarded 429, got %d", w.Code)
 	}
 }

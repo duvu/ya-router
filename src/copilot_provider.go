@@ -19,6 +19,7 @@ import (
 type CopilotProvider struct {
 	cfg               *Config // full config; Copilot auth lives at cfg.Providers.Copilot
 	mu                sync.Mutex
+	accountCursor     int // index into cfg.Providers.Copilot.Accounts; protected by mu
 	cb                *CircuitBreaker
 	mc                *CoalescingCache // ListModels request coalescing
 	cache             *ModelCache      // TTL-based model list cache
@@ -31,13 +32,15 @@ type CopilotProvider struct {
 // NewCopilotProvider constructs a CopilotProvider backed by cfg.
 func NewCopilotProvider(cfg *Config) *CopilotProvider {
 	timeout := time.Duration(cfg.Timeouts.CircuitBreaker) * time.Second
-	return &CopilotProvider{
+	p := &CopilotProvider{
 		cfg:         cfg,
 		cb:          &CircuitBreaker{state: CircuitClosed, timeout: timeout},
 		mc:          NewCoalescingCache(),
 		cache:       NewModelCache(defaultModelCacheTTL),
 		freeCatalog: NewCopilotFreeCatalog(defaultFreeCatalogTTL),
 	}
+	p.accountCursor = p.firstHealthyAccount()
+	return p
 }
 
 func (p *CopilotProvider) ID() ProviderID { return ProviderCopilot }
@@ -46,12 +49,72 @@ func (p *CopilotProvider) Capabilities() []Capability {
 	return []Capability{CapabilityChat, CapabilityEmbeddings}
 }
 
+// activeAccount returns the current pool entry. Returns nil when the pool is empty.
+func (p *CopilotProvider) activeAccount() *CopilotAccount {
+	accounts := p.cfg.Providers.Copilot.Accounts
+	if len(accounts) == 0 {
+		return nil
+	}
+	return &accounts[p.accountCursor]
+}
+
+// authState returns the auth state of the active account, falling back to the
+// legacy single-account Auth field when the pool is empty.
 func (p *CopilotProvider) authState() *CopilotAuthState {
+	if acc := p.activeAccount(); acc != nil {
+		return &acc.Auth
+	}
 	return &p.cfg.Providers.Copilot.Auth
 }
 
 func (p *CopilotProvider) save() error {
 	return saveConfig(p.cfg)
+}
+
+func (p *CopilotProvider) cooldownSeconds() int64 {
+	if s := p.cfg.Providers.Copilot.AccountCooldownSeconds; s > 0 {
+		return int64(s)
+	}
+	return 300
+}
+
+func (p *CopilotProvider) isAccountInCooldown(acc *CopilotAccount) bool {
+	if acc.LastLimitedAt == 0 {
+		return false
+	}
+	return time.Now().Unix()-acc.LastLimitedAt < p.cooldownSeconds()
+}
+
+// firstHealthyAccount returns the index of the first account not in cooldown,
+// or 0 if all are in cooldown.
+func (p *CopilotProvider) firstHealthyAccount() int {
+	accounts := p.cfg.Providers.Copilot.Accounts
+	for i := range accounts {
+		if !p.isAccountInCooldown(&accounts[i]) {
+			return i
+		}
+	}
+	return 0
+}
+
+// advanceAccount marks the current account as rate-limited, then advances the
+// cursor to the next non-cooldown account in the pool.
+// Returns true if a new healthy account was found, false if all are exhausted.
+func (p *CopilotProvider) advanceAccount() bool {
+	accounts := p.cfg.Providers.Copilot.Accounts
+	if len(accounts) <= 1 {
+		return false
+	}
+	accounts[p.accountCursor].LastLimitedAt = time.Now().Unix()
+	size := len(accounts)
+	for i := 1; i < size; i++ {
+		next := (p.accountCursor + i) % size
+		if !p.isAccountInCooldown(&accounts[next]) {
+			p.accountCursor = next
+			return true
+		}
+	}
+	return false
 }
 
 // EnsureAuthenticated ensures the Copilot bearer token is valid.
@@ -80,24 +143,21 @@ func (p *CopilotProvider) EnsureAuthenticated(ctx context.Context) error {
 	return nil
 }
 
-// ListModels returns models from the Copilot API with caching, coalescing, and filtering.
 func (p *CopilotProvider) ListModels(ctx context.Context) (*ModelList, error) {
 	raw, err := p.listRawModels(ctx)
 	if err != nil {
 		return nil, err
 	}
-	filtered := filterAllowedModels(raw, p.cfg.Providers.Copilot.AllowedModels)
-	// Deduplicate by model ID (upstream may return duplicates).
 	seen := make(map[string]bool)
 	var deduped []Model
-	for _, m := range filtered.Data {
+	for _, m := range raw.Data {
 		if !seen[m.ID] {
 			seen[m.ID] = true
 			deduped = append(deduped, m)
 		}
 	}
-	filtered.Data = deduped
-	return filtered, nil
+	raw.Data = deduped
+	return raw, nil
 }
 
 func (p *CopilotProvider) listRawModels(ctx context.Context) (*ModelList, error) {
@@ -247,37 +307,68 @@ func (p *CopilotProvider) ProxyFreeChatRequest(
 	body []byte,
 	requestedModel string,
 ) error {
-	models, err := p.resolveFreeChatModels(ctx)
-	if err != nil {
-		return err
-	}
+	accounts := p.cfg.Providers.Copilot.Accounts
+	maxAccountAttempts := max(1, len(accounts))
 
-	attempts := p.nextFreeChatAttemptOrder(models)
-	for i, model := range attempts {
-		patchedBody := patchBodyModel(body, model.ID)
-		resp, embedModel, execErr := p.executeProxy(ctx, r, patchedBody, CapabilityChat)
-		if execErr != nil {
-			if i == len(attempts)-1 {
-				return execErr
+	for accountAttempt := 0; accountAttempt < maxAccountAttempts; accountAttempt++ {
+		models, err := p.resolveFreeChatModels(ctx)
+		if err != nil {
+			return err
+		}
+
+		attempts := p.nextFreeChatAttemptOrder(models)
+		var lastLimitResp *http.Response
+		modelExhausted := false
+
+		for i, model := range attempts {
+			patchedBody := patchBodyModel(body, model.ID)
+			resp, embedModel, execErr := p.executeProxy(ctx, r, patchedBody, CapabilityChat)
+			if execErr != nil {
+				if i == len(attempts)-1 {
+					return execErr
+				}
+				log.Printf("[copilot-free] model %q transport error, shifting to next model: %v", model.ID, execErr)
+				continue
 			}
-			log.Printf("[copilot-free] model %q transport error, shifting to next model: %v", model.ID, execErr)
-			continue
-		}
 
-		if shift, preview := shouldShiftToNextCopilotModel(resp); shift {
-			if i == len(attempts)-1 {
-				log.Printf("[copilot-free] model %q failed and no more models remain; forwarding final upstream response", model.ID)
-				return p.writeProxyResponse(w, resp, CapabilityChat, embedModel)
+			if isLimit, preview := isAccountLimitSignal(resp); isLimit {
+				log.Printf("[copilot-free] account limit signal from model %q (HTTP %d): %q", model.ID, resp.StatusCode, preview)
+				resp.Body.Close()
+				lastLimitResp = resp
+				modelExhausted = (i == len(attempts)-1)
+				if !modelExhausted {
+					continue
+				}
+				break
 			}
-			log.Printf("[copilot-free] model %q failed with HTTP %d; shifting to next model. body=%q", model.ID, resp.StatusCode, preview)
-			resp.Body.Close()
-			continue
+
+			if shift, preview := shouldShiftToNextCopilotModel(resp); shift {
+				if i == len(attempts)-1 {
+					log.Printf("[copilot-free] model %q failed and no more models remain; forwarding final upstream response", model.ID)
+					return p.writeProxyResponse(w, resp, CapabilityChat, embedModel)
+				}
+				log.Printf("[copilot-free] model %q failed with HTTP %d; shifting to next model. body=%q", model.ID, resp.StatusCode, preview)
+				resp.Body.Close()
+				continue
+			}
+
+			if requestedModel != model.ID {
+				log.Printf("[copilot-free] ignoring client model %q; selected %q", requestedModel, model.ID)
+			}
+			return p.writeProxyResponse(w, resp, CapabilityChat, embedModel)
 		}
 
-		if requestedModel != model.ID {
-			log.Printf("[copilot-free] ignoring client model %q; selected %q", requestedModel, model.ID)
+		if lastLimitResp != nil && modelExhausted {
+			p.mu.Lock()
+			advanced := p.advanceAccount()
+			p.mu.Unlock()
+			if advanced {
+				log.Printf("[copilot-free] all models rate-limited on current account; switching to next account")
+				continue
+			}
+			log.Printf("[copilot-free] all accounts exhausted or in cooldown; forwarding rate-limit response")
+			return p.writeProxyResponse(w, lastLimitResp, CapabilityChat, "")
 		}
-		return p.writeProxyResponse(w, resp, CapabilityChat, embedModel)
 	}
 
 	return fmt.Errorf("copilot free-model failover exhausted")
@@ -352,6 +443,24 @@ func shouldShiftToNextCopilotModel(resp *http.Response) (bool, string) {
 		}
 	}
 
+	return false, ""
+}
+
+func isAccountLimitSignal(resp *http.Response) (bool, string) {
+	if resp == nil {
+		return false, ""
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return true, readAndResetResponseBody(resp)
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		preview := strings.ToLower(readAndResetResponseBody(resp))
+		if strings.Contains(preview, "rate limit") ||
+			strings.Contains(preview, "exceeded") ||
+			strings.Contains(preview, "quota") {
+			return true, preview
+		}
+	}
 	return false, ""
 }
 
