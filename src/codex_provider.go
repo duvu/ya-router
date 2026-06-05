@@ -25,10 +25,14 @@ const (
 
 // CodexProvider implements Provider for the OpenAI Codex / API backend.
 type CodexProvider struct {
-	cfg   *Config
-	mu    sync.Mutex
-	cb    *CircuitBreaker
-	cache *ModelCache
+	cfg           *Config
+	mu            sync.Mutex
+	cb            *CircuitBreaker
+	cache         *ModelCache
+	accountCursor int
+	// proxyExecutor is nil in production. Tests may set it to intercept outbound
+	// requests and return a synthetic response, bypassing real HTTP calls.
+	proxyExecutor func(ctx context.Context, r *http.Request, body []byte, cap Capability) (*http.Response, string, error)
 }
 
 // setChatGPTHeaders sets authentication headers for chatgpt.com/backend-api/.
@@ -54,7 +58,7 @@ func setPlatformHeaders(req *http.Request, token string) {
 
 // NewCodexProvider constructs a CodexProvider from cfg.
 func NewCodexProvider(cfg *Config) *CodexProvider {
-	return &CodexProvider{
+	p := &CodexProvider{
 		cfg: cfg,
 		cb: &CircuitBreaker{
 			state:   CircuitClosed,
@@ -62,6 +66,8 @@ func NewCodexProvider(cfg *Config) *CodexProvider {
 		},
 		cache: NewModelCache(defaultModelCacheTTL),
 	}
+	p.accountCursor = p.firstHealthyCodexAccount()
+	return p
 }
 
 func (p *CodexProvider) ID() ProviderID { return ProviderCodex }
@@ -70,8 +76,63 @@ func (p *CodexProvider) Capabilities() []Capability {
 	return []Capability{CapabilityChat, CapabilityEmbeddings}
 }
 
+func (p *CodexProvider) activeAccount() *CodexAccount {
+	accounts := p.cfg.Providers.Codex.Accounts
+	if len(accounts) == 0 {
+		return nil
+	}
+	if p.accountCursor >= len(accounts) {
+		p.accountCursor = 0
+	}
+	return &p.cfg.Providers.Codex.Accounts[p.accountCursor]
+}
+
 func (p *CodexProvider) authState() *CodexAuthState {
+	if acc := p.activeAccount(); acc != nil {
+		return &acc.Auth
+	}
 	return &p.cfg.Providers.Codex.Auth
+}
+
+func (p *CodexProvider) codexCooldownSeconds() int64 {
+	if s := p.cfg.Providers.Codex.AccountCooldownSeconds; s > 0 {
+		return int64(s)
+	}
+	return 300
+}
+
+func (p *CodexProvider) isCodexAccountInCooldown(acc *CodexAccount) bool {
+	if acc.LastLimitedAt == 0 {
+		return false
+	}
+	return time.Now().Unix()-acc.LastLimitedAt < p.codexCooldownSeconds()
+}
+
+func (p *CodexProvider) firstHealthyCodexAccount() int {
+	accounts := p.cfg.Providers.Codex.Accounts
+	for i := range accounts {
+		if !p.isCodexAccountInCooldown(&accounts[i]) {
+			return i
+		}
+	}
+	return 0
+}
+
+func (p *CodexProvider) advanceCodexAccount() bool {
+	accounts := p.cfg.Providers.Codex.Accounts
+	if len(accounts) <= 1 {
+		return false
+	}
+	accounts[p.accountCursor].LastLimitedAt = time.Now().Unix()
+	next := (p.accountCursor + 1) % len(accounts)
+	for i := 0; i < len(accounts); i++ {
+		idx := (next + i) % len(accounts)
+		if !p.isCodexAccountInCooldown(&accounts[idx]) {
+			p.accountCursor = idx
+			return true
+		}
+	}
+	return false
 }
 
 func (p *CodexProvider) save() error {
@@ -244,7 +305,6 @@ var codexKnownModels = []Model{
 	{ID: "gpt-5-codex-mini", Object: "model", OwnedBy: "openai"},
 }
 
-// ListModels returns the OpenAI model list filtered by AllowedModels.
 func (p *CodexProvider) ListModels(ctx context.Context) (*ModelList, error) {
 	if err := p.EnsureAuthenticated(ctx); err != nil {
 		return nil, err
@@ -283,9 +343,6 @@ func (p *CodexProvider) knownModelList() *ModelList {
 		}
 	}
 	ml := &ModelList{Object: "list", Data: models}
-	if len(p.cfg.Providers.Codex.AllowedModels) > 0 {
-		return filterAllowedModels(ml, p.cfg.Providers.Codex.AllowedModels)
-	}
 	return ml
 }
 
@@ -308,74 +365,110 @@ func (p *CodexProvider) ProxyRequest(
 		return fmt.Errorf("codex circuit breaker is open")
 	}
 
-	token, accountID, chatgpt := p.authCredentials()
-
-	// Embeddings — classic Platform API endpoint (both modes).
-	if cap == CapabilityEmbeddings {
-		return p.proxyClassic(ctx, w, r, body, "/embeddings", token)
+	p.mu.Lock()
+	accounts := p.cfg.Providers.Codex.Accounts
+	maxAttempts := 1
+	if len(accounts) > 1 {
+		maxAttempts = len(accounts)
 	}
+	p.mu.Unlock()
 
-	// Chat: choose the transport-specific request builder.
-	//   chatgpt mode → buildChatGPTCodexRequest (strict allowlist, forces stream/store)
-	//   api_key mode  → buildPlatformResponsesRequest (generic drop-list, pass-through)
-	streaming := isStreamingRequest(body)
+	var lastResp *http.Response
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		token, accountID, chatgpt := p.authCredentials()
 
-	var (
-		responsesBody []byte
-		includeUsage  bool
-		upstreamURL   string
-	)
-	if chatgpt {
-		upstreamURL = defaultChatGPTBaseURL + "responses"
-		var err error
-		responsesBody, includeUsage, err = buildChatGPTCodexRequest(body)
-		if err != nil {
-			log.Printf("[codex] chatgpt request build failed: %v — falling back to classic", err)
-			return p.proxyClassic(ctx, w, r, body, "/chat/completions", token)
+		// Embeddings — classic Platform API endpoint (both modes).
+		if cap == CapabilityEmbeddings {
+			return p.proxyClassic(ctx, w, r, body, "/embeddings", token)
 		}
-	} else {
-		upstreamURL = defaultPlatformBaseURL + "/responses"
-		var err error
-		responsesBody, includeUsage, err = buildPlatformResponsesRequest(body)
-		if err != nil {
-			log.Printf("[codex] platform request build failed: %v — falling back to classic", err)
-			return p.proxyClassic(ctx, w, r, body, "/chat/completions", token)
+
+		// Chat: choose the transport-specific request builder.
+		streaming := isStreamingRequest(body)
+
+		var (
+			responsesBody []byte
+			includeUsage  bool
+			upstreamURL   string
+		)
+		if chatgpt {
+			upstreamURL = defaultChatGPTBaseURL + "responses"
+			var err error
+			responsesBody, includeUsage, err = buildChatGPTCodexRequest(body)
+			if err != nil {
+				log.Printf("[codex] chatgpt request build failed: %v — falling back to classic", err)
+				return p.proxyClassic(ctx, w, r, body, "/chat/completions", token)
+			}
+		} else {
+			upstreamURL = defaultPlatformBaseURL + "/responses"
+			var err error
+			responsesBody, includeUsage, err = buildPlatformResponsesRequest(body)
+			if err != nil {
+				log.Printf("[codex] platform request build failed: %v — falling back to classic", err)
+				return p.proxyClassic(ctx, w, r, body, "/chat/completions", token)
+			}
 		}
-	}
-	log.Printf("[codex] proxying chat → %s (body %d bytes, stream=%v, include_usage=%v, mode=%s)",
-		upstreamURL, len(responsesBody), streaming, includeUsage,
-		map[bool]string{true: "chatgpt", false: "api_key"}[chatgpt])
+		log.Printf("[codex] proxying chat → %s (body %d bytes, stream=%v, include_usage=%v, mode=%s, attempt=%d/%d)",
+			upstreamURL, len(responsesBody), streaming, includeUsage,
+			map[bool]string{true: "chatgpt", false: "api_key"}[chatgpt], attempt+1, maxAttempts)
 
-	req, err := http.NewRequestWithContext(ctx, "POST",
-		upstreamURL, bytes.NewBuffer(responsesBody))
-	if err != nil {
-		return err
-	}
-	if chatgpt {
-		setChatGPTHeaders(req, token, accountID)
-	} else {
-		setPlatformHeaders(req, token)
+		req, err := http.NewRequestWithContext(ctx, "POST",
+			upstreamURL, bytes.NewBuffer(responsesBody))
+		if err != nil {
+			return err
+		}
+		if chatgpt {
+			setChatGPTHeaders(req, token, accountID)
+		} else {
+			setPlatformHeaders(req, token)
+		}
+
+		var resp *http.Response
+		if p.proxyExecutor != nil {
+			resp, _, err = p.proxyExecutor(ctx, req, responsesBody, cap)
+		} else {
+			resp, err = makeRequestWithRetry(sharedHTTPClient, req, responsesBody)
+		}
+		if err != nil {
+			log.Printf("[codex] upstream error: %v", err)
+			p.cb.onFailure()
+			return err
+		}
+
+		log.Printf("[codex] upstream responded HTTP %d (Content-Type: %s)",
+			resp.StatusCode, resp.Header.Get("Content-Type"))
+
+		isLimit, limitReason := isAccountLimitSignal(resp)
+		if isLimit && maxAttempts > 1 {
+			log.Printf("[codex] account limit signal (%s) — advancing to next account", limitReason)
+			resp.Body.Close()
+			lastResp = resp
+			p.mu.Lock()
+			advanced := p.advanceCodexAccount()
+			p.mu.Unlock()
+			if !advanced {
+				log.Printf("[codex] all accounts exhausted")
+				break
+			}
+			continue
+		}
+
+		if resp.StatusCode < 500 {
+			p.cb.onSuccess()
+		} else {
+			log.Printf("[codex] upstream 5xx error — circuit breaker failure")
+			p.cb.onFailure()
+		}
+
+		return handleResponsesAPIResponse(w, resp, streaming, chatgpt, includeUsage)
 	}
 
-	resp, err := makeRequestWithRetry(sharedHTTPClient, req, responsesBody)
-	if err != nil {
-		log.Printf("[codex] upstream error: %v", err)
-		p.cb.onFailure()
-		return err
+	// All accounts exhausted — forward last rate-limit response.
+	if lastResp != nil {
+		log.Printf("[codex] all accounts exhausted, forwarding last %d response", lastResp.StatusCode)
+		w.WriteHeader(lastResp.StatusCode)
+		return nil
 	}
-	defer resp.Body.Close()
-
-	log.Printf("[codex] upstream responded HTTP %d (Content-Type: %s)",
-		resp.StatusCode, resp.Header.Get("Content-Type"))
-
-	if resp.StatusCode < 500 {
-		p.cb.onSuccess()
-	} else {
-		log.Printf("[codex] upstream 5xx error — circuit breaker failure")
-		p.cb.onFailure()
-	}
-
-	return handleResponsesAPIResponse(w, resp, streaming, chatgpt, includeUsage)
+	return fmt.Errorf("codex: all accounts exhausted with no upstream response")
 }
 
 // proxyClassic sends a request to a classic OpenAI Platform endpoint

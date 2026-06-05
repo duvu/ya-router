@@ -422,7 +422,7 @@ func TestModelsHandler_MultipleProviders(t *testing.T) {
 	for _, m := range ml.Data {
 		ids[m.ID] = true
 	}
-	if !ids["gpt-4"] || !ids["o1-preview"] {
+	if !ids["gc-gpt-4"] || !ids["oc-o1-preview"] {
 		t.Errorf("missing expected models, got IDs: %v", ids)
 	}
 }

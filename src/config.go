@@ -35,11 +35,30 @@ type CopilotAuthState struct {
 	RefreshIn    int64  `json:"refresh_in,omitempty"`
 }
 
-// CopilotProviderConfig holds config for the GitHub Copilot provider.
-type CopilotProviderConfig struct {
-	Enabled       bool             `json:"enabled"`
+// CopilotAccount is one entry in the Copilot account pool.
+// Label uniquely identifies the account for CLI operations.
+// LastLimitedAt is the Unix timestamp when this account was last rate-limited;
+// used to enforce the per-account cooldown window.
+type CopilotAccount struct {
+	Label         string           `json:"label"`
 	Auth          CopilotAuthState `json:"auth"`
-	AllowedModels []string         `json:"allowed_models"`
+	LastLimitedAt int64            `json:"last_limited_at,omitempty"`
+}
+
+// CopilotProviderConfig holds config for the GitHub Copilot provider.
+//
+// Accounts is the multi-account pool. If Accounts is empty but Auth is
+// non-zero, the service promotes Auth to Accounts[0] (label "primary")
+// automatically for backward compatibility.
+//
+// AccountCooldownSeconds is how long (in seconds) a rate-limited account
+// is skipped before being considered healthy again. Default 300.
+type CopilotProviderConfig struct {
+	Enabled                bool             `json:"enabled"`
+	Auth                   CopilotAuthState `json:"auth"`
+	Accounts               []CopilotAccount `json:"accounts,omitempty"`
+	AccountCooldownSeconds int              `json:"account_cooldown_seconds,omitempty"`
+	AllowedModels          []string         `json:"allowed_models"`
 }
 
 // CodexAuthState holds auth configuration and persisted token state
@@ -58,12 +77,31 @@ type CodexAuthState struct {
 	AccountID    string `json:"account_id,omitempty"`
 }
 
+// CodexAccount is one entry in the Codex account pool.
+// Label uniquely identifies the account for CLI operations.
+// LastLimitedAt is the Unix timestamp when this account was last rate-limited;
+// used to enforce the per-account cooldown window.
+type CodexAccount struct {
+	Label         string         `json:"label"`
+	Auth          CodexAuthState `json:"auth"`
+	LastLimitedAt int64          `json:"last_limited_at,omitempty"`
+}
+
 // CodexProviderConfig holds config for the OpenAI Codex provider.
+//
+// Accounts is the multi-account pool. If Accounts is empty but Auth.Mode is
+// non-empty, the service promotes Auth to Accounts[0] (label "primary")
+// automatically for backward compatibility.
+//
+// AccountCooldownSeconds is how long (in seconds) a rate-limited account
+// is skipped before being considered healthy again. Default 300.
 type CodexProviderConfig struct {
-	Enabled        bool           `json:"enabled"`
-	Auth           CodexAuthState `json:"auth"`
-	AllowedModels  []string       `json:"allowed_models"`
-	ChatGPTBaseURL string         `json:"chatgpt_base_url,omitempty"`
+	Enabled                bool           `json:"enabled"`
+	Auth                   CodexAuthState `json:"auth"`
+	Accounts               []CodexAccount `json:"accounts,omitempty"`
+	AccountCooldownSeconds int            `json:"account_cooldown_seconds,omitempty"`
+	AllowedModels          []string       `json:"allowed_models"`
+	ChatGPTBaseURL         string         `json:"chatgpt_base_url,omitempty"`
 }
 
 // ProvidersConfig groups all provider configurations.
@@ -219,6 +257,8 @@ func migrateV0ToV1(v0 *legacyV0Config) *Config {
 	setLegacyTimeouts(&cfg.Timeouts, t.HTTPClient, t.ServerRead, t.ServerWrite,
 		t.ServerIdle, t.ProxyContext, t.CircuitBreaker, t.KeepAlive,
 		t.TLSHandshake, t.DialTimeout, t.IdleConnTimeout)
+	normalizeCopilotAccounts(&cfg.Providers.Copilot)
+	normalizeCodexAccounts(&cfg.Providers.Codex)
 	return cfg
 }
 
@@ -289,7 +329,32 @@ func applyConfigDefaults(cfg *Config) {
 	if cfg.Providers.Codex.Auth.Mode == "" {
 		cfg.Providers.Codex.Auth.Mode = "device_code"
 	}
+	if cfg.Providers.Copilot.AccountCooldownSeconds == 0 {
+		cfg.Providers.Copilot.AccountCooldownSeconds = 300
+	}
+	normalizeCopilotAccounts(&cfg.Providers.Copilot)
+	if cfg.Providers.Codex.AccountCooldownSeconds == 0 {
+		cfg.Providers.Codex.AccountCooldownSeconds = 300
+	}
+	normalizeCodexAccounts(&cfg.Providers.Codex)
 	setDefaultTimeouts(cfg)
+}
+
+// normalizeCopilotAccounts promotes the legacy top-level Auth field into the
+// Accounts pool when Accounts is empty and Auth has a GitHub token.
+// This ensures single-account configs remain valid without operator changes.
+func normalizeCopilotAccounts(c *CopilotProviderConfig) {
+	if len(c.Accounts) == 0 && c.Auth.GitHubToken != "" {
+		c.Accounts = []CopilotAccount{{Label: "primary", Auth: c.Auth}}
+		c.Auth = CopilotAuthState{}
+	}
+}
+
+func normalizeCodexAccounts(c *CodexProviderConfig) {
+	if len(c.Accounts) == 0 && (c.Auth.AccessToken != "" || c.Auth.APIKey != "") {
+		c.Accounts = []CodexAccount{{Label: "primary", Auth: c.Auth}}
+		c.Auth = CodexAuthState{}
+	}
 }
 
 // setDefaultTimeouts fills zero-valued timeout fields with sensible defaults.
