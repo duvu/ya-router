@@ -1,8 +1,7 @@
-name: GitHub Copilot Services CI/CD
+name: GitHub Copilot Services Manual Deploy
 
 on:
-  push:
-    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -29,7 +28,6 @@ jobs:
     name: GitHub Copilot Services - Build, Publish, and Deploy
     runs-on: ubuntu-latest
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     env:
       DEPLOYMENT_REPO: x51vn/deployment
       DEPLOYMENT_REPO_PAT: ""
