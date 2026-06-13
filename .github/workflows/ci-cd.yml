@@ -7,7 +7,7 @@ on:
 jobs:
   build:
     name: GitHub Copilot Services - Build and Test
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -27,7 +27,7 @@ jobs:
 
   deploy:
     name: GitHub Copilot Services - Build, Publish, and Deploy
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     env:
