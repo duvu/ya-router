@@ -1,0 +1,15 @@
+#!/bin/sh
+
+set -eu
+
+CONFIG_DIR="/home/appuser/.local/share/github-copilot-svcs"
+
+mkdir -p "$CONFIG_DIR"
+
+if [ "$(id -u)" = 0 ]; then
+  chown -R appuser:appuser "$CONFIG_DIR"
+  chmod 0775 "$CONFIG_DIR"
+  exec su-exec appuser /app/github-copilot-svcs "$@"
+fi
+
+exec /app/github-copilot-svcs "$@"
