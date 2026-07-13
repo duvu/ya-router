@@ -11,6 +11,9 @@ on:
 permissions:
   contents: write
 
+actions:
+  read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -54,9 +57,27 @@ jobs:
         run: go vet ./src/...
 
       - name: Test with race detector
+        id: race_tests
         if: steps.format.outputs.changed != 'true'
-        run: go test -race -count=1 ./src/...
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -race -count=1 ./src/... 2>&1 | tee race-test.log
+
+      - name: Upload race-test diagnostics
+        if: always() && steps.format.outputs.changed != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: race-test-log
+          path: race-test.log
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Fail on race-test regression
+        if: steps.race_tests.outcome == 'failure'
+        run: exit 1
 
       - name: Build
-        if: steps.format.outputs.changed != 'true'
+        if: steps.format.outputs.changed != 'true' && steps.race_tests.outcome == 'success'
         run: go build -trimpath -o /tmp/ya-router ./src
