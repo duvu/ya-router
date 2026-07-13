@@ -14,9 +14,9 @@
         "provider": "copilot",
         "upstream_model": "gpt-4o"
       },
-      "oc-gpt-5.3-codex": {
+      "oc-gpt-5.4": {
         "provider": "codex",
-        "upstream_model": "gpt-5.3-codex"
+        "upstream_model": "gpt-5.4"
       }
     }
   },
@@ -33,12 +33,12 @@
     "codex": {
       "enabled": false,
       "auth": {
-        "mode": "device_code",
-        "api_key_env": "OPENAI_API_KEY"
+        "mode": "chatgpt"
       },
       "accounts": [],
       "account_cooldown_seconds": 300,
-      "allowed_models": []
+      "allowed_models": [],
+      "chatgpt_base_url": "https://chatgpt.com/backend-api/codex/"
     }
   },
   "timeouts": {

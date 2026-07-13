@@ -204,21 +204,23 @@ func (cc *CoalescingCache) CoalesceRequest(key string, fn func() interface{}) in
 }
 
 // isRetriableError returns true for transient HTTP/network errors.
-// 429 is NOT retried here — "quota exceeded" is permanent for the session;
-// "slow_down" (Retry-After) should be handled at a higher layer if needed.
+// Account quota errors are handled by provider-specific account failover.
 func isRetriableError(statusCode int, err error) bool {
 	if err != nil {
 		return true
 	}
-	return statusCode >= 500 || statusCode == 408
+	return statusCode >= 500 || statusCode == http.StatusRequestTimeout
 }
 
-// makeRequestWithRetry executes req with exponential back-off retry.
-// body is used to re-create the request body on each attempt.
+// makeRequestWithRetry executes a request with bounded retries. Unsafe methods
+// are retried only when the caller supplies an Idempotency-Key, preventing a
+// duplicate model generation after an uncertain delivery.
 func makeRequestWithRetry(client *http.Client, req *http.Request, body []byte) (*http.Response, error) {
 	var lastResp *http.Response
 	var lastErr error
 	ctx := req.Context()
+	safeMethod := req.Method == http.MethodGet || req.Method == http.MethodHead
+	retryAllowed := safeMethod || req.Header.Get("Idempotency-Key") != ""
 
 	for attempt := 1; attempt <= maxChatRetries; attempt++ {
 		retryReq, err := http.NewRequestWithContext(ctx, req.Method, req.URL.String(), bytes.NewBuffer(body))
@@ -231,83 +233,93 @@ func makeRequestWithRetry(client *http.Client, req *http.Request, body []byte) (
 			}
 		}
 		log.Printf("Upstream attempt %d/%d → %s %s", attempt, maxChatRetries, retryReq.Method, retryReq.URL.String())
-		start := time.Now()
-
+		started := time.Now()
 		resp, err := client.Do(retryReq)
-		elapsed := time.Since(start)
+		elapsed := time.Since(started)
 		if err != nil {
-			log.Printf("Upstream attempt %d/%d FAILED after %s: %v", attempt, maxChatRetries, elapsed, err)
 			lastErr = err
-			if attempt == maxChatRetries {
+			log.Printf("Upstream attempt %d/%d failed after %s: %v", attempt, maxChatRetries, elapsed, err)
+			if !retryAllowed || attempt == maxChatRetries {
 				return nil, err
 			}
 			backoff := time.Duration(baseChatRetryDelay*attempt*attempt) * time.Second
-			log.Printf("Retrying in %s...", backoff)
-			time.Sleep(backoff)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
 			continue
 		}
 
 		lastResp = resp
 		log.Printf("Upstream attempt %d/%d → HTTP %d (%s, Content-Type: %s)",
 			attempt, maxChatRetries, resp.StatusCode, elapsed, resp.Header.Get("Content-Type"))
-		if !isRetriableError(resp.StatusCode, nil) {
-			return resp, nil
-		}
-		log.Printf("Upstream returned retriable status %d, attempt %d/%d", resp.StatusCode, attempt, maxChatRetries)
-		if attempt == maxChatRetries {
+		if !isRetriableError(resp.StatusCode, nil) || !retryAllowed || attempt == maxChatRetries {
 			return resp, nil
 		}
 		resp.Body.Close()
 		backoff := time.Duration(baseChatRetryDelay*attempt*attempt) * time.Second
-		log.Printf("Retrying in %s...", backoff)
-		time.Sleep(backoff)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
 	}
 	return lastResp, lastErr
 }
 
-// responseWrapper tracks whether headers have been sent to avoid duplicate writes.
+// responseWrapper tracks committed status and response size.
 type responseWrapper struct {
 	http.ResponseWriter
-	headersSent bool
+	headersSent  bool
+	statusCode   int
+	bytesWritten int64
 }
 
 func (rw *responseWrapper) WriteHeader(statusCode int) {
 	if !rw.headersSent {
 		rw.headersSent = true
+		rw.statusCode = statusCode
 		rw.ResponseWriter.WriteHeader(statusCode)
 	}
 }
 
 func (rw *responseWrapper) Write(data []byte) (int, error) {
 	if !rw.headersSent {
-		rw.headersSent = true
+		rw.WriteHeader(http.StatusOK)
 	}
-	return rw.ResponseWriter.Write(data)
+	n, err := rw.ResponseWriter.Write(data)
+	rw.bytesWritten += int64(n)
+	return n, err
 }
 
-// Flush implements http.Flusher so that streaming SSE responses work
-// correctly through the responseWrapper middleware.
+func (rw *responseWrapper) StatusCode() int {
+	if rw.statusCode == 0 && rw.headersSent {
+		return http.StatusOK
+	}
+	return rw.statusCode
+}
+
+// Flush implements http.Flusher so SSE responses work through middleware.
 func (rw *responseWrapper) Flush() {
 	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
 }
 
-// streamResponse copies the upstream response to w, flushing for SSE streams.
+// streamResponse copies the upstream response to w, flushing SSE streams.
 func streamResponse(w http.ResponseWriter, resp *http.Response) error {
 	copyHeaders(w, resp.Header)
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "*")
 	w.WriteHeader(resp.StatusCode)
 
-	if resp.Header.Get("Content-Type") == "text/event-stream" {
+	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
 		if flusher, ok := w.(http.Flusher); ok {
-			buf := make([]byte, 1024)
+			buf := make([]byte, 32*1024)
 			for {
 				n, err := resp.Body.Read(buf)
 				if n > 0 {
-					if _, werr := w.Write(buf[:n]); werr != nil {
-						return werr
+					if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+						return writeErr
 					}
 					flusher.Flush()
 				}
@@ -347,6 +359,8 @@ func capabilityFromPath(path string) (Capability, error) {
 	switch {
 	case strings.Contains(path, "/chat/completions"):
 		return CapabilityChat, nil
+	case strings.Contains(path, "/responses"):
+		return CapabilityResponses, nil
 	case strings.Contains(path, "/embeddings"):
 		return CapabilityEmbeddings, nil
 	default:
@@ -368,7 +382,7 @@ func proxyHandler(registry *ProviderRegistry, router *ModelRouter, cfg *Config) 
 			defer func() {
 				if rec := recover(); rec != nil {
 					log.Printf("Worker panic: %v", rec)
-					done <- fmt.Errorf("internal server error")
+					done <- newProviderError("", ProviderErrorTransport, http.StatusInternalServerError, false, "internal server error")
 				}
 			}()
 			done <- processProxyRequest(registry, router, cfg, rw, r, ctx)
@@ -377,17 +391,17 @@ func proxyHandler(registry *ProviderRegistry, router *ModelRouter, cfg *Config) 
 		select {
 		case err := <-done:
 			if err != nil && !rw.headersSent {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				writeOpenAIError(rw, providerErrorStatus(err), err)
 			}
 		case <-ctx.Done():
 			if !rw.headersSent {
-				http.Error(w, "Request timeout", http.StatusRequestTimeout)
+				writeOpenAIError(rw, http.StatusGatewayTimeout, ctx.Err())
 			}
 		}
 	}
 }
 
-// processProxyRequest resolves the route and delegates to the provider.
+// processProxyRequest resolves a route before applying provider-specific fast paths.
 func processProxyRequest(
 	registry *ProviderRegistry,
 	router *ModelRouter,
@@ -396,46 +410,27 @@ func processProxyRequest(
 	r *http.Request,
 	ctx context.Context,
 ) error {
+	_ = cfg
 	reqStart := time.Now()
-	cap, err := capabilityFromPath(r.URL.Path)
+	capability, err := capabilityFromPath(r.URL.Path)
 	if err != nil {
-		log.Printf("[REQ] %s %s → unsupported path", r.Method, r.URL.Path)
-		return err
+		return newProviderError("", ProviderErrorInvalidRequest, http.StatusNotFound, false, "%v", err)
 	}
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.Printf("[REQ] %s %s → body read error: %v", r.Method, r.URL.Path, err)
-		return fmt.Errorf("reading request body: %w", err)
+		return newProviderError("", ProviderErrorInvalidRequest, http.StatusBadRequest, false, "reading request body: %v", err)
 	}
 	defer r.Body.Close()
 
 	requestedModel := extractModelFromBody(body)
 	log.Printf("[REQ] %s %s model=%q capability=%s body_size=%d from=%s",
-		r.Method, r.URL.Path, requestedModel, cap, len(body), r.RemoteAddr)
+		r.Method, r.URL.Path, requestedModel, capability, len(body), r.RemoteAddr)
 
-	if cap == CapabilityChat {
-		if copilot, err := registry.Get(ProviderCopilot); err == nil {
-			if freeChatProvider, ok := copilot.(FreeChatProxyProvider); ok {
-				log.Printf("[REQ] Chat path ignoring client model=%q and delegating selection to Copilot free-model rotation", requestedModel)
-				proxyErr := freeChatProvider.ProxyFreeChatRequest(ctx, w, r, body, requestedModel)
-				elapsed := time.Since(reqStart)
-				if proxyErr != nil {
-					log.Printf("[REQ] COMPLETED %s %s model=%q provider=%s elapsed=%s ERROR: %v",
-						r.Method, r.URL.Path, requestedModel, copilot.ID(), elapsed, proxyErr)
-				} else {
-					log.Printf("[REQ] COMPLETED %s %s model=%q provider=%s elapsed=%s OK",
-						r.Method, r.URL.Path, requestedModel, copilot.ID(), elapsed)
-				}
-				return proxyErr
-			}
-		}
-	}
-
-	route, err := router.Resolve(ctx, requestedModel, cap)
+	route, err := router.Resolve(ctx, requestedModel, capability)
 	if err != nil {
-		log.Printf("[REQ] %s %s model=%q → routing FAILED: %v", r.Method, r.URL.Path, requestedModel, err)
-		return fmt.Errorf("routing: %w", err)
+		log.Printf("[REQ] %s %s model=%q → routing failed: %v", r.Method, r.URL.Path, requestedModel, err)
+		return newProviderError("", ProviderErrorInvalidRequest, http.StatusBadRequest, false, "routing: %v", err)
 	}
 
 	if route.ResolvedModel != requestedModel {
@@ -443,17 +438,28 @@ func processProxyRequest(
 		body = patchBodyModel(body, route.ResolvedModel)
 	}
 
-	log.Printf("[REQ] Routing %s %s model=%q → provider=%s upstream_model=%q",
+	log.Printf("[REQ] routing %s %s model=%q → provider=%s upstream_model=%q",
 		r.Method, r.URL.Path, requestedModel, route.Provider.ID(), route.ResolvedModel)
 
-	proxyErr := route.Provider.ProxyRequest(ctx, w, r, body, cap)
-	elapsed := time.Since(reqStart)
-	if proxyErr != nil {
-		log.Printf("[REQ] COMPLETED %s %s model=%q provider=%s elapsed=%s ERROR: %v",
-			r.Method, r.URL.Path, requestedModel, route.Provider.ID(), elapsed, proxyErr)
+	var proxyErr error
+	if capability == CapabilityChat && route.Provider.ID() == ProviderCopilot {
+		if freeChatProvider, ok := route.Provider.(FreeChatProxyProvider); ok {
+			proxyErr = freeChatProvider.ProxyFreeChatRequest(ctx, w, r, body, requestedModel)
+		} else {
+			proxyErr = route.Provider.ProxyRequest(ctx, w, r, body, capability)
+		}
 	} else {
-		log.Printf("[REQ] COMPLETED %s %s model=%q provider=%s elapsed=%s OK",
-			r.Method, r.URL.Path, requestedModel, route.Provider.ID(), elapsed)
+		proxyErr = route.Provider.ProxyRequest(ctx, w, r, body, capability)
+	}
+
+	elapsed := time.Since(reqStart)
+	status := responseStatus(w)
+	if proxyErr != nil {
+		log.Printf("[REQ] completed %s %s model=%q provider=%s status=%d elapsed=%s error=%v",
+			r.Method, r.URL.Path, requestedModel, route.Provider.ID(), status, elapsed, proxyErr)
+	} else {
+		log.Printf("[REQ] completed %s %s model=%q provider=%s status=%d elapsed=%s",
+			r.Method, r.URL.Path, requestedModel, route.Provider.ID(), status, elapsed)
 	}
 	return proxyErr
 }

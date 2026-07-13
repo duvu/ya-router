@@ -1,38 +1,41 @@
-BINARY=github-copilot-svcs
+BINARY ?= ya-router
 VERSION ?= dev
 
 all: build
 
 build:
-	go build -ldflags="-s -w -X main.version=$(VERSION)" -o $(BINARY) ./src
+	go build -trimpath -ldflags="-s -w -X main.version=$(VERSION)" -o $(BINARY) ./src
 
 run: build
 	./$(BINARY) run
 
-auth:
+auth: build
 	./$(BINARY) auth
 
-models:
+models: build
 	./$(BINARY) models
 
-config:
+config: build
 	./$(BINARY) config
 
 clean:
 	rm -f $(BINARY)
 
-.PHONY: fmt vet tidy test help
 fmt:
-	go fmt ./src/...
+	gofmt -w ./src
+
+fmt-check:
+	@test -z "$$(gofmt -l ./src)" || (gofmt -l ./src && exit 1)
 
 vet:
 	go vet ./src/...
 
-tidy:
-	go mod tidy
-
 test:
-	go test ./src/...
+	go test -race -count=1 ./src/...
+
+check: fmt-check vet test build
 
 help:
-	@echo "Targets: build run auth models config clean fmt vet tidy test"
+	@echo "Targets: build run auth models config clean fmt fmt-check vet test check"
+
+.PHONY: all build run auth models config clean fmt fmt-check vet test check help
