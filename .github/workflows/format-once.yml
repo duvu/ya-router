@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   format:
+    # This workflow is temporary and is removed after the formatting commit.
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
