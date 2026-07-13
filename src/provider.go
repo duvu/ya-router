@@ -21,6 +21,7 @@ type Capability string
 
 const (
 	CapabilityChat       Capability = "chat"
+	CapabilityResponses  Capability = "responses"
 	CapabilityEmbeddings Capability = "embeddings"
 )
 
@@ -55,7 +56,7 @@ type Provider interface {
 	ListModels(ctx context.Context) (*ModelList, error)
 
 	// ProxyRequest executes a proxied request for the given capability
-	// and writes the full response to w.  body is the request payload
+	// and writes the full response to w. body is the request payload
 	// with the model field already resolved by the router.
 	ProxyRequest(
 		ctx context.Context,
@@ -70,7 +71,7 @@ type Provider interface {
 }
 
 // FreeChatProxyProvider is an optional interface for providers that want to
-// own chat-model selection themselves instead of relying on router.Resolve.
+// own chat-model selection themselves after the router has selected them.
 type FreeChatProxyProvider interface {
 	ProxyFreeChatRequest(
 		ctx context.Context,
