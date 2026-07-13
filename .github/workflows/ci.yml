@@ -10,9 +10,7 @@ on:
 
 permissions:
   contents: write
-
-actions:
-  read
+  actions: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
