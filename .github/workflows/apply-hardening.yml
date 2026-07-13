@@ -1,0 +1,58 @@
+name: Apply hardening patch
+
+on:
+  push:
+    branches:
+      - agent/harden-ya-router-findings
+    paths:
+      - scripts/apply_hardening.py
+      - .github/workflows/apply-hardening.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/harden-ya-router-findings
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+          cache: false
+
+      - name: Apply hardening change
+        run: python3 scripts/apply_hardening.py
+
+      - name: Format
+        run: gofmt -w src
+
+      - name: Vet
+        run: go vet ./src/...
+
+      - name: Test
+        run: go test -race ./src/...
+
+      - name: Build
+        run: go build -trimpath -o /tmp/ya-router ./src
+
+      - name: Commit validated changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src scripts/apply_hardening.py
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "fix: harden routing auth and transport"
+          git push origin HEAD:agent/harden-ya-router-findings
