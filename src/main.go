@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
@@ -9,6 +10,19 @@ import (
 )
 
 var version = "dev"
+
+func readSecretFromStdin(label string) (string, error) {
+	fmt.Fprintf(os.Stderr, "%s: ", label)
+	value, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && strings.TrimSpace(value) == "" {
+		return "", err
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("empty credential")
+	}
+	return value, nil
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -23,28 +37,47 @@ func main() {
 	case "auth":
 		authCmd := flag.NewFlagSet("auth", flag.ExitOnError)
 		modeFlag := authCmd.String("mode", "device_code", "Auth mode: device_code (default)")
-		tokenFlag := authCmd.String("token", "", "Manually set an access token (codex only)")
-		apiKeyFlag := authCmd.String("api-key", "", "OpenAI Platform API key (codex only)")
-		accountFlag := authCmd.String("account", "", "Account label to authenticate (copilot multi-account)")
+		apiKeyStdin := authCmd.Bool("api-key-stdin", false, "Read an OpenAI Platform API key from stdin")
+		tokenStdin := authCmd.Bool("token-stdin", false, "Read a ChatGPT access token from stdin (fallback only)")
+		accountFlag := authCmd.String("account", "", "Account label for the provider account pool")
 		args := os.Args[2:]
 		provider := "copilot"
 		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 			provider = args[0]
 			args = args[1:]
 		}
-		authCmd.Parse(args) //nolint:errcheck
+		if err := authCmd.Parse(args); err != nil {
+			fmt.Printf("Authentication arguments failed: %v\n", err)
+			os.Exit(1)
+		}
+		if *apiKeyStdin && *tokenStdin {
+			fmt.Println("Authentication failed: choose only one of --api-key-stdin or --token-stdin")
+			os.Exit(1)
+		}
+
 		var err error
 		switch provider {
 		case "codex":
-			if *apiKeyFlag != "" {
-				err = handleAuthCodexAPIKey(*apiKeyFlag, *accountFlag)
-			} else if *tokenFlag != "" {
-				err = handleAuthCodexManualToken(*tokenFlag, *accountFlag)
-			} else {
+			switch {
+			case *apiKeyStdin:
+				var secret string
+				secret, err = readSecretFromStdin("OpenAI API key")
+				if err == nil {
+					err = handleAuthCodexAPIKey(secret, *accountFlag)
+				}
+			case *tokenStdin:
+				var secret string
+				secret, err = readSecretFromStdin("ChatGPT access token")
+				if err == nil {
+					err = handleAuthCodexManualToken(secret, *accountFlag)
+				}
+			default:
 				err = handleAuthCodex(*accountFlag)
 			}
-		default:
+		case "copilot":
 			err = handleAuthCopilot(*modeFlag, *accountFlag)
+		default:
+			err = fmt.Errorf("unknown provider %q", provider)
 		}
 		if err != nil {
 			fmt.Printf("Authentication failed: %v\n", err)
@@ -53,9 +86,11 @@ func main() {
 
 	case "run", "start":
 		runCmd := flag.NewFlagSet("run", flag.ExitOnError)
-		configMigrate := runCmd.String("config-migrate", "merge",
-			"Config migration mode: none, merge, override")
-		runCmd.Parse(os.Args[2:]) //nolint:errcheck
+		configMigrate := runCmd.String("config-migrate", "merge", "Config migration mode: none, merge, override")
+		if err := runCmd.Parse(os.Args[2:]); err != nil {
+			fmt.Printf("Run arguments failed: %v\n", err)
+			os.Exit(1)
+		}
 		mode := ConfigMigrationMode(*configMigrate)
 		if mode != ConfigMigrationNone && mode != ConfigMigrationMerge && mode != ConfigMigrationOverride {
 			fmt.Printf("Invalid config-migrate mode: %s\n", mode)
@@ -67,10 +102,13 @@ func main() {
 		}
 
 	case "migrate-config":
-		mc := flag.NewFlagSet("migrate-config", flag.ExitOnError)
-		modeStr := mc.String("mode", "merge", "Migration mode: merge, override")
-		mc.Parse(os.Args[2:]) //nolint:errcheck
-		mode := ConfigMigrationMode(*modeStr)
+		command := flag.NewFlagSet("migrate-config", flag.ExitOnError)
+		modeValue := command.String("mode", "merge", "Migration mode: merge, override")
+		if err := command.Parse(os.Args[2:]); err != nil {
+			fmt.Printf("Migration arguments failed: %v\n", err)
+			os.Exit(1)
+		}
+		mode := ConfigMigrationMode(*modeValue)
 		if mode != ConfigMigrationMerge && mode != ConfigMigrationOverride {
 			fmt.Printf("Invalid mode: %s\n", mode)
 			os.Exit(1)
@@ -81,9 +119,12 @@ func main() {
 		}
 
 	case "models":
-		pf := flag.NewFlagSet("models", flag.ExitOnError)
-		providerFlag := pf.String("provider", "", "Filter to a specific provider")
-		pf.Parse(os.Args[2:]) //nolint:errcheck
+		command := flag.NewFlagSet("models", flag.ExitOnError)
+		providerFlag := command.String("provider", "", "Filter to a specific provider")
+		if err := command.Parse(os.Args[2:]); err != nil {
+			fmt.Printf("Models arguments failed: %v\n", err)
+			os.Exit(1)
+		}
 		if err := handleModels(*providerFlag); err != nil {
 			fmt.Printf("Models failed: %v\n", err)
 			os.Exit(1)
@@ -102,16 +143,19 @@ func main() {
 		}
 
 	case "refresh":
-		rf := flag.NewFlagSet("refresh", flag.ExitOnError)
-		providerFlag := rf.String("provider", "", "Filter to a specific provider")
-		rf.Parse(os.Args[2:]) //nolint:errcheck
+		command := flag.NewFlagSet("refresh", flag.ExitOnError)
+		providerFlag := command.String("provider", "", "Filter to a specific provider")
+		if err := command.Parse(os.Args[2:]); err != nil {
+			fmt.Printf("Refresh arguments failed: %v\n", err)
+			os.Exit(1)
+		}
 		if err := handleRefresh(*providerFlag); err != nil {
 			fmt.Printf("Refresh failed: %v\n", err)
 			os.Exit(1)
 		}
 
 	case "version":
-		fmt.Printf("github-copilot-svcs %s\n", version)
+		fmt.Printf("ya-router %s\n", version)
 
 	default:
 		fmt.Printf("Unknown command: %s\n", os.Args[1])
