@@ -30,15 +30,19 @@ jobs:
           cache: false
 
       - name: Verify formatting
+        shell: bash
         run: |
-          gofmt -w src
-          git diff --exit-code
+          unformatted="$(gofmt -l ./src)"
+          if [ -n "$unformatted" ]; then
+            printf 'Files require gofmt:\n%s\n' "$unformatted"
+            exit 1
+          fi
 
       - name: Vet
         run: go vet ./src/...
 
       - name: Test with race detector
-        run: go test -race ./src/...
+        run: go test -race -count=1 ./src/...
 
       - name: Build
         run: go build -trimpath -o /tmp/ya-router ./src
