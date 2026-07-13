@@ -1,54 +1,102 @@
 # AGENTS.md
 
-Compact orientation for OpenCode sessions in this repo. Read `README.md` for user-facing detail; this file only captures things an agent would otherwise miss.
+Compact orientation for development agents working in this repository.
 
 ## What this is
 
-Single-binary Go service (`github-copilot-svcs`) that exposes OpenAI-compatible endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/embeddings`, `/health`) and proxies to GitHub Copilot and/or OpenAI Codex. CLI dispatcher in `src/main.go` (subcommands: `run`, `auth`, `status`, `config`, `models`, `refresh`, `migrate-config`, `version`).
+`ya-router` is a single-binary Go service exposing:
 
-## Layout (non-obvious bits)
+- `GET /v1/models`
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `POST /v1/embeddings`
+- `/health`, `/health/ready`, and `/health/providers`
 
-- All Go sources live **flat** in `src/` as `package main` — no `internal/`, no `cmd/`. Build target is `./src`, **not** `./...`.
-- `go.mod` declares `go 1.21`, but Dockerfile and CI use `go 1.22`. There is **no `go.sum`** (zero external deps); do not introduce one casually.
-- `config/config.json` in the repo root is the **bind-mount target for docker-compose**, not the runtime config for local `go run`. The local runtime config lives at `~/.local/share/github-copilot-svcs/config.json` (see `config.example.json`).
-- `openspec/` + `.opencode/skills/openspec-*` drive a spec-driven change workflow. For non-trivial features prefer the `openspec-propose` / `openspec-apply-change` / `openspec-archive-change` skills over ad-hoc edits. Slash commands: `/opsx-propose`, `/opsx-apply`, `/opsx-archive`, `/opsx-explore`.
-- `docs/` holds dated PRDs and request cards that document past decisions; consult them before re-deciding routing/auth/transport behaviour.
+It routes to GitHub Copilot, ChatGPT-backed Codex, or OpenAI Platform API-key mode.
 
-## Build, test, verify (exact commands)
+## Layout
+
+- Production Go sources live flat in `src/` as `package main`.
+- Build target is `./src`, not `./...`.
+- `openspec/` records non-trivial changes and validation evidence.
+- Dated documents under `docs/` are historical decision records; current runtime code and accepted OpenSpec requirements take precedence when old request cards conflict.
+- The Rust port is not the production runtime. It must consume the hardened routing/auth contracts before cutover.
+
+## Exact validation
 
 ```bash
-make build                        # go build -ldflags=... -o github-copilot-svcs ./src
-make fmt                          # go fmt ./src/...
-make vet                          # go vet ./src/...
-make test                         # go test ./src/...
-go test ./src/... -run TestName   # single test
+make fmt-check
+make vet
+make test
+make build
+# or
+make check
 ```
 
-Order before declaring done: `make fmt && make vet && make test && make build`.
+Before claiming container readiness:
 
-CI (`.github/workflows/ci-cd.yml`) runs on **self-hosted runners** and uses `go test ./src/... || true` — tests do **not** block deploy. Do not rely on CI to catch regressions; run tests locally.
+```bash
+docker build -t ya-router:check .
+```
 
-## Runtime / auth gotchas
+CI runs formatting verification, `go vet`, `go test -race -count=1 ./src/...`, and `go build`. Test failures are blocking.
 
-- `auth codex` defaults to `chatgpt_device_auth` and shells out to the external `codex` CLI (`codex login --device-auth`). It reads `~/.codex/auth.json` — treat as secret, never log or echo.
-- Copilot chat **ignores the client `model` field** and rotates across an eligible free-tier pool derived from GitHub Docs ∪ live Copilot `/models`, with on-error failover. `routing.default_model` and `providers.copilot.allowed_models` do **not** drive this path. Embeddings and non-Copilot-chat paths still use normal routing (`routing.model_map`, `default_provider`).
-- Config migration runs on every `run` (default `--config-migrate merge`). Preserve `ConfigMigrationMode` semantics (`none|merge|override`) when touching `config.go`.
-- pprof is gated on `enable_pprof` in config; off by default.
+## Routing invariants
 
-## Deploy pipeline (be careful)
+1. `routing.model_map` is evaluated first.
+2. `gc-` and `oc-` prefixes are authoritative.
+3. Provider catalogs are checked next.
+4. Copilot free-model rotation is available only for unqualified chat requests after explicit routing has been evaluated.
+5. A prefixed request never falls through to another provider.
+6. Cross-provider billing fallback is forbidden unless an explicit future specification allows it.
 
-`main` push triggers: build → push image to `docker.x51.vn/dev/github-copilot-svcs:{date-runnumber, latest}` → patch `x51vn/deployment` repo's `server2/docker-compose.yml` via `sed` → ssh deploy. A merge to `main` ships to production. Never commit/push without explicit user request.
+Do not reintroduce a pre-router Copilot fast path.
 
-## Style conventions
+## Codex auth and transport invariants
 
-- Match existing flat `package main` layout; do not introduce subpackages without a discussed reason.
-- Errors propagate up to `main.go` which prints `"<verb> failed: %v"` and `os.Exit(1)`. Follow that pattern for new subcommands.
-- Tests sit alongside sources (`*_test.go` in `src/`). Use table-driven tests as in `transform_test.go`, `proxy_test.go`.
-- Vietnamese operator-facing doc (`docs/HUONG_DAN_SU_DUNG.md`) is intentional; keep it in sync with English README when changing user-visible CLI/config.
+- `api_key` mode uses `api.openai.com` only.
+- `chatgpt`, `device_code`, and `chatgpt_device_auth` modes use the ChatGPT Codex backend only.
+- ChatGPT OAuth tokens must never be sent to Platform chat, Responses, or embeddings endpoints.
+- ChatGPT mode supports chat and native Responses; embeddings require API-key mode.
+- The official Codex auth store is read-only import data. Never write, truncate, migrate, or normalize `~/.codex/auth.json`.
+- Account-pool entries own their credentials. A global official-store token must not override a selected account.
+- A ChatGPT `401` permits one refresh and one retry only.
+- OAuth refresh retries only transient network failures, `429`, and `5xx`.
+- Never log access tokens, refresh tokens, ID tokens, API keys, device codes, or raw account IDs.
 
-## Don't
+`auth codex` performs the native device flow. It does not shell out to the Codex CLI. The OAuth client ID may be overridden through `YA_ROUTER_CODEX_OAUTH_CLIENT_ID`.
 
-- Don't add deps without confirming — repo is currently stdlib-only.
-- Don't use `go build ./...` or `go test ./...`; always scope to `./src/...`.
-- Don't edit `config/config.json` to change defaults — it's volume content. Defaults live in `config.go` and `config.example.json`.
-- Don't bypass the openspec workflow for substantial changes when the user is using it.
+## Server security invariants
+
+- Default listen address is `127.0.0.1`.
+- Non-loopback binding requires `YA_ROUTER_API_KEY`.
+- CORS is disabled unless `YA_ROUTER_CORS_ALLOWED_ORIGINS` is configured.
+- `/health*` endpoints expose only redacted metadata.
+- Secret CLI input uses stdin or environment variables; do not add secret-bearing argv flags.
+
+## Protocol invariants
+
+- Chat Completions `response_format` must be translated to Responses `text.format`.
+- Unsupported fields fail explicitly; they are not silently dropped.
+- Native `/v1/responses` requests bypass Chat Completions response translation.
+- SSE error, failed, or incomplete events return an error and must not be logged as successful completion.
+- Unknown native Responses events are passed through unchanged on the native endpoint.
+- Unsafe POST retry requires an `Idempotency-Key` after uncertain delivery.
+
+## Compatibility
+
+- The current config path remains `~/.local/share/github-copilot-svcs/config.json` for migration safety.
+- The build and container binary are named `ya-router`.
+- Existing single-account auth and config-version migration remain supported.
+- Do not delete legacy fields until a versioned migration and rollback path exist.
+
+## Deployment
+
+The manual release workflow validates before publishing or deploying. It reads credentials from GitHub Secrets and requires a pinned `known_hosts` payload. Do not restore `StrictHostKeyChecking=no`, host-environment secret scraping, or non-blocking tests.
+
+## Style
+
+- Keep provider-specific auth, request construction, and retry policy inside provider implementations.
+- Use typed `ProviderError` values for operational failures.
+- Keep tests alongside sources and use table-driven tests where practical.
+- Do not add dependencies casually; the Go runtime is currently stdlib-only.
