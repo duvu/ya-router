@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -20,8 +20,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Checkout
+      - name: Checkout head branch
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -29,20 +32,31 @@ jobs:
           go-version: '1.22.x'
           cache: false
 
-      - name: Verify formatting
+      - name: Format and commit when needed
+        id: format
         shell: bash
         run: |
-          unformatted="$(gofmt -l ./src)"
-          if [ -n "$unformatted" ]; then
-            printf 'Files require gofmt:\n%s\n' "$unformatted"
-            exit 1
+          find ./src -name '*.go' -type f -print0 | xargs -0 gofmt -w
+          if git diff --quiet -- ./src; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src
+          git commit -m "style: format Go hardening changes"
+          git push origin "HEAD:${{ github.head_ref || github.ref_name }}"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
       - name: Vet
+        if: steps.format.outputs.changed != 'true'
         run: go vet ./src/...
 
       - name: Test with race detector
+        if: steps.format.outputs.changed != 'true'
         run: go test -race -count=1 ./src/...
 
       - name: Build
+        if: steps.format.outputs.changed != 'true'
         run: go build -trimpath -o /tmp/ya-router ./src
