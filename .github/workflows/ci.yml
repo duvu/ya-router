@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'agent/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+          cache: false
+
+      - name: Verify formatting
+        run: |
+          gofmt -w src
+          git diff --exit-code
+
+      - name: Vet
+        run: go vet ./src/...
+
+      - name: Test with race detector
+        run: go test -race ./src/...
+
+      - name: Build
+        run: go build -trimpath -o /tmp/ya-router ./src
