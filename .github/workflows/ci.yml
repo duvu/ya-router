@@ -33,10 +33,40 @@ jobs:
           go-version: '1.22.x'
           cache: false
 
-      - name: Format and commit when needed
+      - name: Apply contract migration and format
         id: format
         shell: bash
         run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/integration_test.go")
+          text = path.read_text()
+          if '\t"errors"\n' not in text:
+              text = text.replace('\t"encoding/json"\n', '\t"encoding/json"\n\t"errors"\n', 1)
+
+          old = '''\terr := p.ProxyRequest(context.Background(), w, req, []byte(`{"model":"oc-gpt-5","messages":[]}`), CapabilityChat)
+          \tif err != nil {
+          \t\tt.Errorf("expected no error (should forward last 429), got: %v", err)
+          \t}
+          \tif w.Code != http.StatusTooManyRequests {
+          \t\tt.Errorf("expected forwarded 429, got %d", w.Code)
+          \t}
+          '''
+          new = '''\terr := p.ProxyRequest(context.Background(), w, req, []byte(`{"model":"oc-gpt-5","messages":[]}`), CapabilityChat)
+          \tvar providerErr *ProviderError
+          \tif err == nil || !errors.As(err, &providerErr) || providerErr.Kind != ProviderErrorRateLimit {
+          \t\tt.Errorf("expected typed rate-limit error, got: %v", err)
+          \t}
+          \tif w.Code != http.StatusTooManyRequests {
+          \t\tt.Errorf("expected forwarded 429, got %d", w.Code)
+          \t}
+          '''
+          if old in text:
+              text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
+
           find ./src -name '*.go' -type f -print0 | xargs -0 gofmt -w
           if git diff --quiet -- ./src; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -46,7 +76,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src
-          git commit -m "style: format Go hardening changes"
+          git commit -m "test: assert typed Codex rate-limit failures"
           git push origin "HEAD:${{ github.head_ref || github.ref_name }}"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
