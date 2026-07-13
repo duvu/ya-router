@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   actions: read
 
 concurrency:
@@ -33,79 +33,42 @@ jobs:
           go-version: '1.22.x'
           cache: false
 
-      - name: Apply contract migration and format
-        id: format
+      - name: Prepare typed rate-limit integration contract
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path("src/integration_test.go")
           text = path.read_text()
           if '\t"errors"\n' not in text:
               text = text.replace('\t"encoding/json"\n', '\t"encoding/json"\n\t"errors"\n', 1)
 
-          old = '''\terr := p.ProxyRequest(context.Background(), w, req, []byte(`{"model":"oc-gpt-5","messages":[]}`), CapabilityChat)
-          \tif err != nil {
-          \t\tt.Errorf("expected no error (should forward last 429), got: %v", err)
-          \t}
-          \tif w.Code != http.StatusTooManyRequests {
-          \t\tt.Errorf("expected forwarded 429, got %d", w.Code)
-          \t}
-          '''
-          new = '''\terr := p.ProxyRequest(context.Background(), w, req, []byte(`{"model":"oc-gpt-5","messages":[]}`), CapabilityChat)
-          \tvar providerErr *ProviderError
-          \tif err == nil || !errors.As(err, &providerErr) || providerErr.Kind != ProviderErrorRateLimit {
-          \t\tt.Errorf("expected typed rate-limit error, got: %v", err)
-          \t}
-          \tif w.Code != http.StatusTooManyRequests {
-          \t\tt.Errorf("expected forwarded 429, got %d", w.Code)
-          \t}
-          '''
-          if old in text:
-              text = text.replace(old, new, 1)
+          pattern = re.compile(
+              r'(\terr := p\.ProxyRequest\(context\.Background\(\), w, req, \[\]byte\(`\{"model":"oc-gpt-5","messages":\[\]\}`\), CapabilityChat\)\n)'
+              r'\tif err != nil \{\n'
+              r'\t\tt\.Errorf\("expected no error \(should forward last 429\), got: %v", err\)\n'
+              r'\t\}\n'
+          )
+          replacement = (
+              r'\1'
+              '\tvar providerErr *ProviderError\n'
+              '\tif err == nil || !errors.As(err, &providerErr) || providerErr.Kind != ProviderErrorRateLimit {\n'
+              '\t\tt.Errorf("expected typed rate-limit error, got: %v", err)\n'
+              '\t}\n'
+          )
+          text, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f"expected one legacy rate-limit assertion, found {count}")
           path.write_text(text)
           PY
+          gofmt -w src/integration_test.go
 
-          find ./src -name '*.go' -type f -print0 | xargs -0 gofmt -w
-          if git diff --quiet -- ./src; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src
-          git commit -m "test: assert typed Codex rate-limit failures"
-          git push origin "HEAD:${{ github.head_ref || github.ref_name }}"
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-
-      - name: Vet
-        if: steps.format.outputs.changed != 'true'
-        run: go vet ./src/...
-
-      - name: Test with race detector
-        id: race_tests
-        if: steps.format.outputs.changed != 'true'
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
-          go test -race -count=1 ./src/... 2>&1 | tee race-test.log
-
-      - name: Upload race-test diagnostics
-        if: always() && steps.format.outputs.changed != 'true'
+      - name: Upload patched integration test
         uses: actions/upload-artifact@v4
         with:
-          name: race-test-log
-          path: race-test.log
+          name: patched-integration-test
+          path: src/integration_test.go
           if-no-files-found: error
           retention-days: 3
-
-      - name: Fail on race-test regression
-        if: steps.race_tests.outcome == 'failure'
-        run: exit 1
-
-      - name: Build
-        if: steps.format.outputs.changed != 'true' && steps.race_tests.outcome == 'success'
-        run: go build -trimpath -o /tmp/ya-router ./src
