@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -832,8 +833,9 @@ func TestProxyCodexRequest_AllAccountsExhausted(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
 	err := p.ProxyRequest(context.Background(), w, req, []byte(`{"model":"oc-gpt-5","messages":[]}`), CapabilityChat)
-	if err != nil {
-		t.Errorf("expected no error (should forward last 429), got: %v", err)
+	var providerErr *ProviderError
+	if err == nil || !errors.As(err, &providerErr) || providerErr.Kind != ProviderErrorRateLimit {
+		t.Errorf("expected typed rate-limit error, got: %v", err)
 	}
 	if w.Code != http.StatusTooManyRequests {
 		t.Errorf("expected forwarded 429, got %d", w.Code)
