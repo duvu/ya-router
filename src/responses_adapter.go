@@ -579,7 +579,7 @@ func streamResponsesAsChat(w http.ResponseWriter, response *http.Response, inclu
 			}
 			delta := map[string]interface{}{
 				"tool_calls": []map[string]interface{}{{
-					"index": index,
+					"index":    index,
 					"function": map[string]string{"arguments": event.Delta},
 				}},
 			}

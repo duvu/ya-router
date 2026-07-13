@@ -14,16 +14,16 @@ import (
 )
 
 type hardeningProvider struct {
-	id        ProviderID
-	caps      []Capability
-	models    []Model
+	id         ProviderID
+	caps       []Capability
+	models     []Model
 	proxyCalls int
 	freeCalls  int
 }
 
-func (p *hardeningProvider) ID() ProviderID                       { return p.id }
-func (p *hardeningProvider) Name() string                         { return string(p.id) }
-func (p *hardeningProvider) Capabilities() []Capability           { return p.caps }
+func (p *hardeningProvider) ID() ProviderID                            { return p.id }
+func (p *hardeningProvider) Name() string                              { return string(p.id) }
+func (p *hardeningProvider) Capabilities() []Capability                { return p.caps }
 func (p *hardeningProvider) EnsureAuthenticated(context.Context) error { return nil }
 func (p *hardeningProvider) ListModels(context.Context) (*ModelList, error) {
 	return &ModelList{Object: "list", Data: p.models}, nil
@@ -217,7 +217,7 @@ func TestOfficialCodexStoreIsNeverMutated(t *testing.T) {
 
 func TestExtractJWTExpiryAndAccountMetadata(t *testing.T) {
 	payload, _ := json.Marshal(map[string]interface{}{
-		"exp": 1234567890,
+		"exp":                         1234567890,
 		"https://api.openai.com/auth": map[string]string{"chatgpt_account_id": "acct-1"},
 	})
 	token := "x." + base64.RawURLEncoding.EncodeToString(payload) + ".y"
