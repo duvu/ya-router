@@ -21,11 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Checkout head branch
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
-          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -33,42 +30,39 @@ jobs:
           go-version: '1.22.x'
           cache: false
 
-      - name: Prepare typed rate-limit integration contract
+      - name: Verify formatting
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
+          unformatted="$(gofmt -l ./src)"
+          if [ -n "$unformatted" ]; then
+            printf 'Files require gofmt:\n%s\n' "$unformatted"
+            exit 1
+          fi
 
-          path = Path("src/integration_test.go")
-          text = path.read_text()
-          if '\t"errors"\n' not in text:
-              text = text.replace('\t"encoding/json"\n', '\t"encoding/json"\n\t"errors"\n', 1)
+      - name: Vet
+        run: go vet ./src/...
 
-          pattern = re.compile(
-              r'(\terr := p\.ProxyRequest\(context\.Background\(\), w, req, \[\]byte\(`\{"model":"oc-gpt-5","messages":\[\]\}`\), CapabilityChat\)\n)'
-              r'\tif err != nil \{\n'
-              r'\t\tt\.Errorf\("expected no error \(should forward last 429\), got: %v", err\)\n'
-              r'\t\}\n'
-          )
-          replacement = (
-              r'\1'
-              '\tvar providerErr *ProviderError\n'
-              '\tif err == nil || !errors.As(err, &providerErr) || providerErr.Kind != ProviderErrorRateLimit {\n'
-              '\t\tt.Errorf("expected typed rate-limit error, got: %v", err)\n'
-              '\t}\n'
-          )
-          text, count = pattern.subn(replacement, text, count=1)
-          if count != 1:
-              raise SystemExit(f"expected one legacy rate-limit assertion, found {count}")
-          path.write_text(text)
-          PY
-          gofmt -w src/integration_test.go
+      - name: Test with race detector
+        id: race_tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -race -count=1 ./src/... 2>&1 | tee race-test.log
 
-      - name: Upload patched integration test
+      - name: Upload failing race-test diagnostics
+        if: steps.race_tests.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
-          name: patched-integration-test
-          path: src/integration_test.go
+          name: race-test-log
+          path: race-test.log
           if-no-files-found: error
           retention-days: 3
+
+      - name: Fail on race-test regression
+        if: steps.race_tests.outcome == 'failure'
+        run: exit 1
+
+      - name: Build
+        if: steps.race_tests.outcome == 'success'
+        run: go build -trimpath -o /tmp/ya-router ./src
