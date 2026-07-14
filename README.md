@@ -154,7 +154,7 @@ curl http://127.0.0.1:7071/v1/models
 curl http://127.0.0.1:7071/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "oc-gpt-5.4",
+    "model": "codex/gpt-5.4",
     "messages": [{"role": "user", "content": "Say hello"}]
   }'
 ```
@@ -165,7 +165,7 @@ curl http://127.0.0.1:7071/v1/chat/completions \
 curl http://127.0.0.1:7071/v1/responses \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "oc-gpt-5.4",
+    "model": "codex/gpt-5.4",
     "input": "Return one short sentence.",
     "stream": false
   }'
@@ -177,7 +177,7 @@ Chat Completions `response_format` is translated to Responses `text.format` inst
 
 ```json
 {
-  "model": "oc-gpt-5.4",
+  "model": "codex/gpt-5.4",
   "messages": [{"role": "user", "content": "Return status"}],
   "response_format": {
     "type": "json_schema",
@@ -205,18 +205,17 @@ Provider prefixes make routing deterministic:
 
 | Prefix | Provider | Example |
 |---|---|---|
-| `gc-` | GitHub Copilot | `gc-gpt-4o` |
-| `oc-` | OpenAI Codex | `oc-gpt-5.4` |
+| `github/` | GitHub Copilot | `github/gpt-4o` |
+| `codex/` | OpenAI Codex | `codex/gpt-5.4` |
 
 Resolution order:
 
 1. exact `routing.model_map` entry;
 2. explicit provider prefix;
 3. provider catalog discovery;
-4. Copilot free-model pool for an unqualified chat request;
-5. default provider only when the request omitted a model.
+4. configured default provider only when the request omitted a model.
 
-An `oc-*` request cannot enter the Copilot free-model path, and a `gc-*` request cannot enter Codex. Ambiguous bare model names fail with a message asking for a prefix or explicit mapping.
+An `codex/*` request cannot enter Copilot, and a `github/*` request cannot enter Codex. Unknown explicit bare model names fail. The default provider is used only when the request omitted a model. Ambiguous bare model names fail with a message asking for a prefix or explicit mapping.
 
 Example config:
 
@@ -248,7 +247,7 @@ Authenticate named accounts independently:
 
 Each Codex account uses its own access token, refresh token, account metadata, and cooldown state. The global official Codex store does not override account-pool entries.
 
-On an account-specific rate-limit response, the router advances to the next eligible account. Attempts are bounded by the account count. When all accounts are exhausted, the client receives the original HTTP rate-limit status and a typed `rate_limited` provider error.
+For Codex runtime requests, an account-specific rate-limit response advances to the next eligible Codex account. Attempts are bounded by the Codex account count. When all Codex accounts are exhausted, the client receives the original HTTP rate-limit status and a typed `rate_limited` provider error. Copilot requests don't advance to another account or implicitly select a different Copilot model.
 
 ## Retry and failure semantics
 
@@ -267,6 +266,14 @@ For compatibility with existing installations, the Go runtime currently reads:
 ```
 
 The file remains the authoritative ya-router config until a versioned directory migration is introduced. Container startup preserves and secures that directory rather than silently moving credentials.
+
+Inside Docker, the runtime also resolves `YA_ROUTER_CONFIG_PATH` (set by `entrypoint.sh`/compose env) to:
+
+```text
+/home/appuser/.local/share/github-copilot-svcs/config.json
+```
+
+If you run CLI commands against a container directly, this keeps `root` and `appuser` operations on the same credential file.
 
 ## Docker
 

@@ -10,11 +10,11 @@
       "text-embedding-3-large": {
         "provider": "codex"
       },
-      "gc-gpt-4o": {
+      "github/gpt-4o": {
         "provider": "copilot",
         "upstream_model": "gpt-4o"
       },
-      "oc-gpt-5.4": {
+      "codex/gpt-5.4": {
         "provider": "codex",
         "upstream_model": "gpt-5.4"
       }

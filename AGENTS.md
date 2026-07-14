@@ -44,11 +44,12 @@ CI runs formatting verification, `go vet`, `go test -race -count=1 ./src/...`, a
 ## Routing invariants
 
 1. `routing.model_map` is evaluated first.
-2. `gc-` and `oc-` prefixes are authoritative.
+2. `github/` and `codex/` prefixes are authoritative.
 3. Provider catalogs are checked next.
-4. Copilot free-model rotation is available only for unqualified chat requests after explicit routing has been evaluated.
-5. A prefixed request never falls through to another provider.
-6. Cross-provider billing fallback is forbidden unless an explicit future specification allows it.
+4. The configured default provider is used only when the request omitted a model.
+5. Explicit unknown models fail and do not implicitly rotate to or select a Copilot model.
+6. A prefixed request never falls through to another provider.
+7. Cross-provider billing fallback is forbidden unless an explicit future specification allows it.
 
 Do not reintroduce a pre-router Copilot fast path.
 
