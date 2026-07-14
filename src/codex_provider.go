@@ -272,6 +272,7 @@ func (p *CodexProvider) forceRefreshActiveAccount() error {
 // codexKnownModels is a compatibility manifest. Model-map entries are merged
 // so operators can add rollout models without rebuilding the binary.
 var codexKnownModels = []Model{
+	{ID: "gpt-5.4-mini", Object: "model", OwnedBy: "openai"},
 	{ID: "gpt-5.3-codex", Object: "model", OwnedBy: "openai"},
 	{ID: "gpt-5.4", Object: "model", OwnedBy: "openai"},
 	{ID: "gpt-5.2-codex", Object: "model", OwnedBy: "openai"},
@@ -296,6 +297,10 @@ func (p *CodexProvider) ListModels(ctx context.Context) (*ModelList, error) {
 
 func (p *CodexProvider) fetchModels(_ context.Context) (*ModelList, error) {
 	return p.knownModelList(), nil
+}
+
+func (p *CodexProvider) InvalidateModelCache() {
+	p.cache.Invalidate()
 }
 
 func (p *CodexProvider) knownModelList() *ModelList {

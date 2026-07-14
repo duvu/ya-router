@@ -121,11 +121,12 @@ func main() {
 	case "models":
 		command := flag.NewFlagSet("models", flag.ExitOnError)
 		providerFlag := command.String("provider", "", "Filter to a specific provider")
+		refreshFlag := command.Bool("refresh", false, "Ignore model cache and re-fetch model list")
 		if err := command.Parse(os.Args[2:]); err != nil {
 			fmt.Printf("Models arguments failed: %v\n", err)
 			os.Exit(1)
 		}
-		if err := handleModels(*providerFlag); err != nil {
+		if err := handleModels(*providerFlag, *refreshFlag); err != nil {
 			fmt.Printf("Models failed: %v\n", err)
 			os.Exit(1)
 		}

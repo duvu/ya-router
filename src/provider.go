@@ -69,15 +69,3 @@ type Provider interface {
 	// Health returns the provider's current health snapshot.
 	Health(ctx context.Context) ProviderHealth
 }
-
-// FreeChatProxyProvider is an optional interface for providers that want to
-// own chat-model selection themselves after the router has selected them.
-type FreeChatProxyProvider interface {
-	ProxyFreeChatRequest(
-		ctx context.Context,
-		w http.ResponseWriter,
-		r *http.Request,
-		body []byte,
-		requestedModel string,
-	) error
-}

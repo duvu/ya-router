@@ -18,7 +18,6 @@ type hardeningProvider struct {
 	caps       []Capability
 	models     []Model
 	proxyCalls int
-	freeCalls  int
 }
 
 func (p *hardeningProvider) ID() ProviderID                            { return p.id }
@@ -33,16 +32,11 @@ func (p *hardeningProvider) ProxyRequest(_ context.Context, w http.ResponseWrite
 	w.WriteHeader(http.StatusOK)
 	return nil
 }
-func (p *hardeningProvider) ProxyFreeChatRequest(_ context.Context, w http.ResponseWriter, _ *http.Request, _ []byte, _ string) error {
-	p.freeCalls++
-	w.WriteHeader(http.StatusOK)
-	return nil
-}
 func (p *hardeningProvider) Health(context.Context) ProviderHealth {
 	return ProviderHealth{Authenticated: true}
 }
 
-func TestProcessProxyRequestHonorsProviderPrefixBeforeCopilotFastPath(t *testing.T) {
+func TestProcessProxyRequestHonorsProviderPrefix(t *testing.T) {
 	registry := NewProviderRegistry()
 	copilot := &hardeningProvider{
 		id: ProviderCopilot, caps: []Capability{CapabilityChat},
@@ -55,13 +49,13 @@ func TestProcessProxyRequestHonorsProviderPrefixBeforeCopilotFastPath(t *testing
 	registry.Register(copilot)
 	registry.Register(codex)
 	router := NewModelRouter(registry, defaultConfig().Routing)
-	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"oc-gpt-test","messages":[]}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"codex/gpt-test","messages":[]}`))
 	response := httptest.NewRecorder()
 	if err := processProxyRequest(registry, router, defaultConfig(), response, request, context.Background()); err != nil {
 		t.Fatalf("processProxyRequest: %v", err)
 	}
-	if codex.proxyCalls != 1 || copilot.freeCalls != 0 {
-		t.Fatalf("codex proxy calls=%d; copilot free calls=%d", codex.proxyCalls, copilot.freeCalls)
+	if codex.proxyCalls != 1 || copilot.proxyCalls != 0 {
+		t.Fatalf("codex proxy calls=%d; copilot proxy calls=%d", codex.proxyCalls, copilot.proxyCalls)
 	}
 }
 

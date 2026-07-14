@@ -39,6 +39,58 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestGetConfigPath_UsesConfigPathEnv(t *testing.T) {
+	old := configPathOverride
+	configPathOverride = ""
+	defer func() { configPathOverride = old }()
+
+	targetDir := filepath.Join(t.TempDir(), "override")
+	target := filepath.Join(targetDir, "config.json")
+	t.Setenv("YA_ROUTER_CONFIG_PATH", target)
+	t.Setenv("YA_ROUTER_CONFIG_DIR", "/dev/null/should-not-be-used")
+
+	got, err := getConfigPath()
+	if err != nil {
+		t.Fatalf("getConfigPath: %v", err)
+	}
+	if got != target {
+		t.Fatalf("config path = %q, want %q", got, target)
+	}
+	info, err := os.Stat(targetDir)
+	if err != nil {
+		t.Fatalf("config dir not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("config dir is not a directory: %s", targetDir)
+	}
+}
+
+func TestGetConfigPath_UsesConfigDirEnv(t *testing.T) {
+	old := configPathOverride
+	configPathOverride = ""
+	defer func() { configPathOverride = old }()
+
+	targetDir := filepath.Join(t.TempDir(), "config-dir")
+	t.Setenv("YA_ROUTER_CONFIG_DIR", targetDir)
+	t.Setenv("YA_ROUTER_CONFIG_PATH", "")
+
+	got, err := getConfigPath()
+	if err != nil {
+		t.Fatalf("getConfigPath: %v", err)
+	}
+	want := filepath.Join(targetDir, configFileName)
+	if got != want {
+		t.Fatalf("config path = %q, want %q", got, want)
+	}
+	info, err := os.Stat(targetDir)
+	if err != nil {
+		t.Fatalf("config dir not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("config dir is not a directory: %s", targetDir)
+	}
+}
+
 func TestApplyConfigDefaults_FillsZeros(t *testing.T) {
 	cfg := &Config{}
 	applyConfigDefaults(cfg)

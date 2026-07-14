@@ -93,3 +93,13 @@ func (c *ModelCache) Age() time.Duration {
 	}
 	return time.Since(c.fetched)
 }
+
+func cloneModelList(ml *ModelList) *ModelList {
+	if ml == nil {
+		return nil
+	}
+	return &ModelList{
+		Object: ml.Object,
+		Data:   append([]Model(nil), ml.Data...),
+	}
+}

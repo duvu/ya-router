@@ -82,9 +82,8 @@ func TestModelsEndpointConsistency(t *testing.T) {
 		ids[m.ID] = true
 	}
 
-	// Models from Copilot are prefixed gc-.
-	if !ids["gc-gpt-5-mini"] {
-		t.Errorf("gc-gpt-5-mini not in response; got %v", ids)
+	if !ids["github/gpt-5-mini"] {
+		t.Errorf("github/gpt-5-mini not in response; got %v", ids)
 	}
 }
 
@@ -134,9 +133,8 @@ func TestModelsEndpointAggregatesMultipleProviders(t *testing.T) {
 		ids[m.ID] = true
 	}
 
-	// Models are now prefixed: Copilot→gc-, Codex→oc-.
-	if !ids["gc-gpt-4"] || !ids["oc-o3-mini"] {
-		t.Errorf("expected both gc-gpt-4 and oc-o3-mini (prefixed), got %v", ids)
+	if !ids["github/gpt-4"] || !ids["codex/o3-mini"] {
+		t.Errorf("expected both github/gpt-4 and codex/o3-mini (prefixed), got %v", ids)
 	}
 }
 
@@ -509,44 +507,6 @@ func TestNormalizeCopilotAccounts_SkipsWhenAccountsPresent(t *testing.T) {
 	}
 }
 
-func TestAdvanceAccount_AdvancesToNextHealthyAccount(t *testing.T) {
-	cfg := buildTestConfigWithAccounts(300, 0, 0)
-	p := &CopilotProvider{cfg: cfg}
-
-	advanced := p.advanceAccount()
-	if !advanced {
-		t.Fatal("expected advance to succeed with 2 accounts")
-	}
-	if p.accountCursor != 1 {
-		t.Errorf("cursor = %d, want 1", p.accountCursor)
-	}
-	if cfg.Providers.Copilot.Accounts[0].LastLimitedAt == 0 {
-		t.Error("account 0 LastLimitedAt should be set after advance")
-	}
-}
-
-func TestAdvanceAccount_ReturnsFalseOnSingleAccount(t *testing.T) {
-	cfg := buildTestConfigWithAccounts(300, 0)
-	p := &CopilotProvider{cfg: cfg}
-	if p.advanceAccount() {
-		t.Error("expected false for single-account pool")
-	}
-}
-
-func TestAdvanceAccount_SkipsCooldownAccounts(t *testing.T) {
-	nowish := time.Now().Unix()
-	cfg := buildTestConfigWithAccounts(300, 0, nowish)
-	accounts := cfg.Providers.Copilot.Accounts
-	accounts[1].LastLimitedAt = nowish
-	cfg.Providers.Copilot.Accounts = accounts
-
-	p := &CopilotProvider{cfg: cfg}
-	advanced := p.advanceAccount()
-	if advanced {
-		t.Error("both accounts in cooldown; expected no advance")
-	}
-}
-
 func TestIsAccountLimitSignal_429(t *testing.T) {
 	resp := &http.Response{
 		StatusCode: http.StatusTooManyRequests,
@@ -608,71 +568,6 @@ func buildTestConfigWithAccounts(cooldownSecs int, lastLimitedAts ...int64) *Con
 	}
 	cfg.Providers.Copilot.Accounts = accounts
 	return cfg
-}
-
-func TestProxyFreeChatRequest_AccountFailover(t *testing.T) {
-	cfg := buildTestConfigWithAccounts(300, 0, 0)
-
-	p := NewCopilotProvider(cfg)
-	p.freeModelResolver = func(_ context.Context) ([]Model, error) {
-		return []Model{{ID: "gpt-test"}}, nil
-	}
-
-	callCount := 0
-	p.proxyExecutor = func(_ context.Context, _ *http.Request, _ []byte, _ Capability) (*http.Response, string, error) {
-		acc := p.activeAccount()
-		callCount++
-		if acc != nil && acc.Label == "acct-0" {
-			rec := httptest.NewRecorder()
-			rec.WriteHeader(http.StatusTooManyRequests)
-			rec.WriteString(`{"error":"rate limited"}`)
-			return rec.Result(), "", nil
-		}
-		rec := httptest.NewRecorder()
-		rec.WriteHeader(http.StatusOK)
-		rec.WriteString(`{"choices":[]}`)
-		return rec.Result(), "", nil
-	}
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
-	err := p.ProxyFreeChatRequest(context.Background(), w, req, []byte(`{}`), "gpt-test")
-	if err != nil {
-		t.Fatalf("expected no error after failover, got: %v", err)
-	}
-	if p.accountCursor != 1 {
-		t.Errorf("expected cursor=1 after failover, got %d", p.accountCursor)
-	}
-	if callCount < 2 {
-		t.Errorf("expected at least 2 proxy calls (one per account), got %d", callCount)
-	}
-}
-
-func TestProxyFreeChatRequest_AllAccountsExhausted(t *testing.T) {
-	nowish := time.Now().Unix()
-	cfg := buildTestConfigWithAccounts(300, 0, nowish)
-
-	p := NewCopilotProvider(cfg)
-	p.freeModelResolver = func(_ context.Context) ([]Model, error) {
-		return []Model{{ID: "gpt-test"}}, nil
-	}
-
-	p.proxyExecutor = func(_ context.Context, _ *http.Request, _ []byte, _ Capability) (*http.Response, string, error) {
-		rec := httptest.NewRecorder()
-		rec.WriteHeader(http.StatusTooManyRequests)
-		rec.WriteString(`{"error":"rate limited"}`)
-		return rec.Result(), "", nil
-	}
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
-	err := p.ProxyFreeChatRequest(context.Background(), w, req, []byte(`{}`), "gpt-test")
-	if err != nil {
-		t.Errorf("expected no error (should forward last 429), got: %v", err)
-	}
-	if w.Code != http.StatusTooManyRequests {
-		t.Errorf("expected forwarded 429, got %d", w.Code)
-	}
 }
 
 func buildTestCodexConfigWithAccounts(cooldownSecs int, modes []string, lastLimitedAts ...int64) *Config {
@@ -805,7 +700,7 @@ func TestProxyCodexRequest_AccountFailover(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
-	err := p.ProxyRequest(context.Background(), w, req, []byte(`{"model":"oc-gpt-5","messages":[]}`), CapabilityChat)
+	err := p.ProxyRequest(context.Background(), w, req, []byte(`{"model":"codex/gpt-5","messages":[]}`), CapabilityChat)
 	if err != nil {
 		t.Fatalf("expected no error after failover, got: %v", err)
 	}
@@ -832,7 +727,7 @@ func TestProxyCodexRequest_AllAccountsExhausted(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
-	err := p.ProxyRequest(context.Background(), w, req, []byte(`{"model":"oc-gpt-5","messages":[]}`), CapabilityChat)
+	err := p.ProxyRequest(context.Background(), w, req, []byte(`{"model":"codex/gpt-5","messages":[]}`), CapabilityChat)
 	var providerErr *ProviderError
 	if err == nil || !errors.As(err, &providerErr) || providerErr.Kind != ProviderErrorRateLimit {
 		t.Errorf("expected typed rate-limit error, got: %v", err)

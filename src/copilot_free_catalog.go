@@ -501,14 +501,3 @@ func sortUniqueStrings(items []string) []string {
 	slices.Sort(items)
 	return items
 }
-
-func cloneModelList(ml *ModelList) *ModelList {
-	if ml == nil {
-		return nil
-	}
-	clone := &ModelList{
-		Object: ml.Object,
-		Data:   append([]Model(nil), ml.Data...),
-	}
-	return clone
-}

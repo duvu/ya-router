@@ -29,10 +29,9 @@ func NewModelRouter(registry *ProviderRegistry, routing RoutingConfig) *ModelRou
 
 // Resolve order:
 //  1. explicit model_map
-//  2. explicit gc-/oc- provider prefix
+//  2. explicit provider prefix
 //  3. provider catalog discovery
-//  4. Copilot free-pool fallback for an unqualified chat model
-//  5. default provider when the request omitted model
+//  4. default provider when the request omitted model
 func (r *ModelRouter) Resolve(ctx context.Context, requestedModel string, capability Capability) (*RouteResult, error) {
 	model := requestedModel
 	usedDefaultModel := model == ""
@@ -70,16 +69,6 @@ func (r *ModelRouter) Resolve(ctx context.Context, requestedModel string, capabi
 	candidates := r.discoverFromCatalogs(ctx, model, capability)
 	switch len(candidates) {
 	case 0:
-		// Copilot free chat owns model selection, but only after explicit maps,
-		// prefixes, and discoverable providers have been evaluated.
-		if capability == CapabilityChat {
-			if provider, err := r.registry.Get(ProviderCopilot); err == nil && hasCapability(provider, capability) {
-				if _, ok := provider.(FreeChatProxyProvider); ok {
-					log.Printf("[router] unqualified model %q → Copilot free-model pool", model)
-					return &RouteResult{Provider: provider, ResolvedModel: model}, nil
-				}
-			}
-		}
 		if !usedDefaultModel {
 			return nil, fmt.Errorf("model %q is unavailable for capability %q", model, capability)
 		}
@@ -93,7 +82,7 @@ func (r *ModelRouter) Resolve(ctx context.Context, requestedModel string, capabi
 			providers[i] = string(candidates[i].Provider.ID())
 		}
 		return nil, fmt.Errorf(
-			"model %q is ambiguous: found in %d providers %v; use a provider-prefixed model ID (for example gc-%s or oc-%s) or add routing.model_map",
+			"model %q is ambiguous: found in %d providers %v; use a provider-prefixed model ID (for example github/%s or codex/%s) or add routing.model_map",
 			model, len(candidates), providers, model, model,
 		)
 	}
