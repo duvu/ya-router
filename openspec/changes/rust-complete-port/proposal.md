@@ -8,7 +8,7 @@ The user has also requested a consistency redesign: the current `rust/` workspac
 
 - **Replace stdlib sync TCP server in `rust/src/server.rs` with tokio + axum async HTTP runtime** — enables real concurrent request handling and SSE streaming.
 - **Add reqwest-based async HTTP client and SSE proxy transport in `rust/src/proxy.rs`** — implements upstream proxying for both streaming and non-streaming chat responses.
-- **Implement Rust Copilot provider runtime** in `rust/src/providers/copilot.rs` — GitHub device-flow auth, token refresh, free-model rotation for chat, embeddings support.
+- **Implement Rust Copilot provider runtime** in `rust/src/providers/copilot.rs` — GitHub device-flow auth, token refresh, deterministic model routing/selection for chat, and embeddings support.
 - **Implement Rust Codex provider runtime** in `rust/src/providers/codex.rs` — api_key path (env/config/official store), ChatGPT/device-code path (official Codex auth store with config fallback), transport selection by auth mode.
 - **Implement Rust request/response transform layer** in `rust/src/transforms.rs` — mirrors Go `src/transform.go` normalization.
 - **Implement Rust parity test harness** — shared test vectors covering HTTP, routing, config migration, and CLI behavior against Go reference.
@@ -28,7 +28,7 @@ The user has also requested a consistency redesign: the current `rust/` workspac
 - `go-retirement`: Removal of Go `src/` after gates pass, promotion of Rust as the sole runtime.
 
 ### Modified Capabilities
-- `rust-runtime-port`: Async runtime requirement replaces sync stdlib TCP requirement; auth behavior changes from "not implemented" to fully implemented.
+- `rust-runtime-port`: Async runtime requirement replaces sync stdlib TCP requirement; auth behavior changes from "not implemented" to fully implemented, including deterministic model dispatch.
 - `rust-port-validation`: Benchmark workloads and success thresholds become concrete and blocking; parity tests become executable, not just planned.
 
 ## Impact

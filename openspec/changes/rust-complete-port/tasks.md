@@ -16,9 +16,9 @@
 - [ ] 3.1 Define `Provider` trait in `rust/src/providers/mod.rs` with async methods: `ensure_authenticated`, `chat_completions`, `embeddings`, `list_models`
 - [ ] 3.2 Implement `CopilotProvider` struct with GitHub device-flow auth using `reqwest` (POST to GitHub OAuth device endpoint)
 - [ ] 3.3 Implement Copilot token refresh: store refresh token, detect expiry, refresh before request
-- [ ] 3.4 Implement Copilot chat: ignore client model, apply free-model rotation from `allowed_models`, call upstream via `proxy.rs`
+- [ ] 3.4 Implement Copilot chat: forward to configured provider for the resolved upstream model and call upstream via `proxy.rs`
 - [ ] 3.5 Implement Copilot embeddings: route to upstream embeddings endpoint
-- [ ] 3.6 Add unit tests for Copilot model rotation and auth state transitions
+- [ ] 3.6 Add unit tests for Copilot routing input validation and auth state transitions
 
 ## 4. Codex provider
 
@@ -41,8 +41,8 @@
 
 - [ ] 6.1 Update `rust/src/routing.rs` `resolve_model` to accept provider registry (`HashMap<String, Arc<dyn Provider>>`) and validate provider is reachable
 - [ ] 6.2 Wire router + providers into axum handlers: resolve route, call provider method, stream/buffer response
-- [ ] 6.3 Implement `/v1/models` handler to call `list_models` on all enabled providers and merge results (deduplicating by ID, always including `model_map` entries)
-- [ ] 6.4 Add integration test: `/v1/models` returns merged list with provider-unavailable fallback to model_map entries
+- [ ] 6.3 Implement `/v1/models` handler to call `list_models` on all enabled providers and merge results (deduplicating by ID, with model_map visibility)
+- [ ] 6.4 Add integration test: `/v1/models` returns merged list with model_map entries visible when provider discovery fails
 
 ## 7. CLI auth commands wired to provider runtime
 
