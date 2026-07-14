@@ -97,9 +97,6 @@ func (p *CopilotProvider) firstHealthyAccount() int {
 	return 0
 }
 
-// advanceAccount marks the current account as rate-limited, then advances the
-// cursor to the next non-cooldown account in the pool.
-// Returns true if a new healthy account was found, false if all are exhausted.
 func (p *CopilotProvider) advanceAccount() bool {
 	accounts := p.cfg.Providers.Copilot.Accounts
 	if len(accounts) <= 1 {
@@ -158,6 +155,10 @@ func (p *CopilotProvider) ListModels(ctx context.Context) (*ModelList, error) {
 	}
 	raw.Data = deduped
 	return raw, nil
+}
+
+func (p *CopilotProvider) InvalidateModelCache() {
+	p.cache.Invalidate()
 }
 
 func (p *CopilotProvider) listRawModels(ctx context.Context) (*ModelList, error) {

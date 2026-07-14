@@ -11,8 +11,8 @@
   - always keeps `routing.model_map` entries visible even when provider discovery fails
 - `POST /v1/chat/completions`
   - OpenAI-compatible surface
-  - Copilot chat is a special path: client `model` is ignored and Copilot free-model rotation owns upstream model choice
-  - non-Copilot chat resolves through the router by model + capability
+  - `POST /v1/chat/completions` is resolved by routing rules and model capabilities
+  - Copilot and Codex chat requests both follow `routing.model_map`, explicit prefixes, catalog discovery, then configured default behavior
 - `POST /v1/embeddings`
   - OpenAI-compatible surface
   - resolved through the router by model + capability
@@ -46,11 +46,11 @@ Error style is command-specific and exits non-zero from `main.go`, e.g. `Server 
 - Capabilities are `chat` and `embeddings`
 - Router behavior in `src/router.go`
   - first checks `routing.model_map`
+  - then explicit provider prefix
   - then provider model discovery
   - explicit model miss for a requested capability is an error
   - only omitted-model requests may fall back to `routing.default_provider`
-- `/v1/chat/completions` has a Copilot fast path in `src/proxy.go`
-  - if Copilot is registered and implements free-chat proxying, Copilot handles chat before router resolution
+  - no pre-router Copilot fast path is used; all chat resolution follows the shared router order above
 
 ## Provider-Specific Behavior
 
@@ -59,7 +59,7 @@ Error style is command-specific and exits non-zero from `main.go`, e.g. `Server 
 - Device-flow auth in `src/auth.go`
 - Provider runtime in `src/copilot_provider.go`
 - Supports chat and embeddings
-- Chat uses free-model rotation and can shift to the next eligible model before the response is committed
+- Chat uses resolved upstream model from routing/model-map flow; it does not select a model itself
 - Embeddings normalize request bodies before upstream proxying
 
 ### Codex
@@ -82,15 +82,14 @@ Error style is command-specific and exits non-zero from `main.go`, e.g. `Server 
 
 ## Existing Parity-Relevant Tests
 
-- `src/integration_test.go`
-  - merged `/v1/models` behavior
-  - router resolution behavior
-  - config default auth expectations
-  - Codex auth-source precedence helpers
-- `src/proxy_test.go`
-  - Copilot chat fast path
-  - Copilot free-model rotation and shift-on-failure behavior
-  - request retry/coalescing behavior
+  - `src/integration_test.go`
+    - merged `/v1/models` behavior
+    - router resolution behavior
+    - config default auth expectations
+    - Codex auth-source precedence helpers
+  - `src/proxy_test.go`
+    - deterministic routing behavior around `openai/oc-*` and unknown explicit models
+    - request retry/coalescing behavior
 
 ## Safest Initial Rust Slice
 

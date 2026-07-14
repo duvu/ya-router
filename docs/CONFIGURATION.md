@@ -90,8 +90,7 @@ Enables `/debug/pprof/`. The endpoints are still covered by the inbound access p
 2. Bare `model_map` key after removing `gc-` or `oc-`.
 3. Explicit provider prefix.
 4. Provider catalog discovery.
-5. Copilot free-model pool for an unqualified chat request.
-6. Default provider only when the request omitted the model.
+5. Configured default provider only when the request omitted the model.
 
 Explicit prefixes are authoritative:
 
@@ -100,7 +99,7 @@ Explicit prefixes are authoritative:
 | `gc-` | GitHub Copilot |
 | `oc-` | OpenAI Codex |
 
-The prefix is removed before forwarding upstream. A model present in multiple providers requires a prefix or `model_map` rule.
+The prefix is removed before forwarding upstream. A model present in multiple providers requires a prefix or `model_map` rule. Unknown explicit bare model names fail. The default provider is used only when the request omitted the model.
 
 ### `show_unavailable_models`
 
@@ -129,7 +128,7 @@ Authenticate:
 ./ya-router auth copilot --account work
 ```
 
-Copilot chat owns free-model rotation only after the router has determined that Copilot is the provider. It cannot intercept `oc-*` requests or explicit Codex mappings.
+Copilot chat only receives requests selected by `model_map`, a `gc-` prefix, or provider catalog discovery. It cannot intercept `oc-*` requests, explicit Codex mappings, or unknown bare model names.
 
 ## Codex provider
 

@@ -8,11 +8,11 @@ The Rust service SHALL define a `Provider` trait with async methods: `ensure_aut
 - **THEN** the router SHALL hold `Arc<dyn Provider + Send + Sync>` instances, not concrete types
 
 ### Requirement: Copilot provider implements full auth and runtime
-The Rust Copilot provider SHALL implement GitHub device-flow authentication, token refresh, free-model-rotation for chat requests, and embeddings proxying.
+The Rust Copilot provider SHALL implement GitHub device-flow authentication, token refresh, deterministic model dispatch, and embeddings proxying.
 
-#### Scenario: Copilot chat uses free-model rotation
+#### Scenario: Copilot chat dispatches requested model
 - **WHEN** a chat completions request is routed to Copilot
-- **THEN** the provider SHALL ignore the requested model field and select a model from the configured allowed models pool
+- **THEN** the provider SHALL use the resolved upstream model from routing and forward requests to that specific model.
 
 #### Scenario: Copilot token refresh on expiry
 - **WHEN** the Copilot access token is expired or missing

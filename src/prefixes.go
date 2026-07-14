@@ -1,11 +1,7 @@
 // prefixes.go — provider-namespaced model ID prefix helpers.
 //
 // All models returned from /v1/models carry a provider-specific prefix so
-// clients can target a provider deterministically:
-//
-//	gc-<id>   →  GitHub Copilot
-//	oc-<id>   →  OpenAI Codex
-//
+// clients can target a provider deterministically.
 // The prefix is a proxy-internal naming convention only; it is stripped before
 // requests are forwarded to the upstream provider API.
 package main
@@ -14,9 +10,9 @@ import "strings"
 
 const (
 	// CopilotModelPrefix is the namespace prefix for GitHub Copilot models.
-	CopilotModelPrefix = "gc-"
+	CopilotModelPrefix = "github/"
 	// CodexModelPrefix is the namespace prefix for OpenAI Codex models.
-	CodexModelPrefix = "oc-"
+	CodexModelPrefix = "codex/"
 )
 
 // ProviderPrefix returns the model ID prefix for the given provider.

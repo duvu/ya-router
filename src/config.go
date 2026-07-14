@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 )
 
 const currentConfigVersion = 1
@@ -171,6 +172,8 @@ const (
 const (
 	configDirName  = ".local/share/github-copilot-svcs"
 	configFileName = "config.json"
+	configPathEnv  = "YA_ROUTER_CONFIG_PATH"
+	configDirEnv   = "YA_ROUTER_CONFIG_DIR"
 )
 
 // configPathOverride lets tests redirect config I/O to a temp path.
@@ -179,6 +182,19 @@ var configPathOverride string
 func getConfigPath() (string, error) {
 	if configPathOverride != "" {
 		return configPathOverride, nil
+	}
+	if customPath := strings.TrimSpace(os.Getenv(configPathEnv)); customPath != "" {
+		if err := os.MkdirAll(filepath.Dir(customPath), 0o700); err != nil {
+			return "", err
+		}
+		return customPath, nil
+	}
+	if customDir := strings.TrimSpace(os.Getenv(configDirEnv)); customDir != "" {
+		dir := filepath.Join(customDir, configFileName)
+		if err := os.MkdirAll(customDir, 0o700); err != nil {
+			return "", err
+		}
+		return dir, nil
 	}
 	usr, err := user.Current()
 	if err != nil {

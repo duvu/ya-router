@@ -8,7 +8,7 @@ The "consistency redesign" means: normalize binary naming, promote `rust/` to th
 
 **Goals:**
 - Replace the sync stdlib TCP server with tokio + axum for real concurrent and SSE-capable HTTP handling.
-- Implement full Copilot provider: GitHub device-flow auth, token refresh, free-model-rotation chat, embeddings.
+- Implement full Copilot provider: GitHub device-flow auth, token refresh, explicit-model chat dispatch, and embeddings.
 - Implement full Codex provider: api_key path (env/config/official store) and ChatGPT/device-code path (official Codex auth store, config fallback), transport selection by mode.
 - Implement SSE proxy transport: stream upstream SSE events through to the HTTP client without buffering.
 - Build a parity test harness that exercises identical inputs against Go and Rust side-by-side.

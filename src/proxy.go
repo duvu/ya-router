@@ -401,7 +401,7 @@ func proxyHandler(registry *ProviderRegistry, router *ModelRouter, cfg *Config) 
 	}
 }
 
-// processProxyRequest resolves a route before applying provider-specific fast paths.
+// processProxyRequest resolves a route and delegates to the selected provider.
 func processProxyRequest(
 	registry *ProviderRegistry,
 	router *ModelRouter,
@@ -441,16 +441,7 @@ func processProxyRequest(
 	log.Printf("[REQ] routing %s %s model=%q → provider=%s upstream_model=%q",
 		r.Method, r.URL.Path, requestedModel, route.Provider.ID(), route.ResolvedModel)
 
-	var proxyErr error
-	if capability == CapabilityChat && route.Provider.ID() == ProviderCopilot {
-		if freeChatProvider, ok := route.Provider.(FreeChatProxyProvider); ok {
-			proxyErr = freeChatProvider.ProxyFreeChatRequest(ctx, w, r, body, requestedModel)
-		} else {
-			proxyErr = route.Provider.ProxyRequest(ctx, w, r, body, capability)
-		}
-	} else {
-		proxyErr = route.Provider.ProxyRequest(ctx, w, r, body, capability)
-	}
+	proxyErr := route.Provider.ProxyRequest(ctx, w, r, body, capability)
 
 	elapsed := time.Since(reqStart)
 	status := responseStatus(w)

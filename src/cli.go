@@ -24,7 +24,7 @@ func printUsage() {
 	fmt.Printf("    --token <token>     Legacy manual token input; prefer device auth\n")
 	fmt.Printf("  status                Show authentication status for all providers\n")
 	fmt.Printf("  config                Show current configuration\n")
-	fmt.Printf("  models [--provider P] List models\n")
+	fmt.Printf("  models [--provider P] [--refresh] List models\n")
 	fmt.Printf("  refresh [--provider P] Force token refresh\n")
 	fmt.Printf("  migrate-config        Migrate configuration file\n")
 	fmt.Printf("  version               Show version information\n")
@@ -448,7 +448,7 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 	return nil
 }
 
-func handleModels(providerFilter string) error {
+func handleModels(providerFilter string, forceRefresh bool) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -466,6 +466,9 @@ func handleModels(providerFilter string) error {
 		if providerFilter != "" && string(provider.ID()) != providerFilter {
 			continue
 		}
+		if forceRefresh {
+			invalidateProviderModelCache(provider)
+		}
 		models, err := provider.ListModels(ctx)
 		if err != nil {
 			fmt.Printf("[%s] error: %v\n", provider.Name(), err)
@@ -477,6 +480,15 @@ func handleModels(providerFilter string) error {
 		}
 	}
 	return nil
+}
+
+func invalidateProviderModelCache(p Provider) {
+	type cacheAware interface {
+		InvalidateModelCache()
+	}
+	if cache, ok := p.(cacheAware); ok {
+		cache.InvalidateModelCache()
+	}
 }
 
 func handleRefresh(providerFilter string) error {

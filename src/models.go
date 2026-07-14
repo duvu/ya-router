@@ -47,6 +47,22 @@ func filterAllowedModels(modelList *ModelList, allowedModels []string) *ModelLis
 	return &ModelList{Object: "list", Data: filtered}
 }
 
+func shouldRefreshModels(r *http.Request) bool {
+	val := strings.TrimSpace(r.URL.Query().Get("refresh"))
+	return val == "1" || strings.EqualFold(val, "true") || strings.EqualFold(val, "yes") || strings.EqualFold(val, "on")
+}
+
+func invalidateProvidersModelCache(registry *ProviderRegistry) {
+	type cacheAware interface {
+		InvalidateModelCache()
+	}
+	for _, p := range registry.All() {
+		if cache, ok := p.(cacheAware); ok {
+			cache.InvalidateModelCache()
+		}
+	}
+}
+
 // isModelAllowedWithPrefix reports whether modelID is permitted by the
 // allowedModels list, comparing both the full ID and the bare (prefix-stripped)
 // ID against each allowed entry (also checked bare and prefixed).
@@ -78,6 +94,10 @@ func modelsHandler(registry *ProviderRegistry, cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
+
+		if shouldRefreshModels(r) {
+			invalidateProvidersModelCache(registry)
+		}
 
 		seen := make(map[string]bool)
 		var allModels []Model
