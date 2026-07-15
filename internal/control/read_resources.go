@@ -11,6 +11,7 @@ import (
 	"time"
 
 	configschema "github.com/duvu/ya-router/internal/config"
+	operationpkg "github.com/duvu/ya-router/internal/operation"
 	providerpkg "github.com/duvu/ya-router/internal/provider"
 )
 
@@ -73,13 +74,7 @@ type ConfigResource struct {
 	Effective       *configschema.Config `json:"effective"`
 }
 
-type OperationResource struct {
-	ID        string    `json:"id"`
-	Kind      string    `json:"kind"`
-	State     string    `json:"state"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
+type OperationResource = operationpkg.Record
 
 type EventPage struct {
 	Data      []providerpkg.LifecycleEvent `json:"data"`
