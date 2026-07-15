@@ -109,6 +109,15 @@ func (recorder *statusRecorder) Write(payload []byte) (int, error) {
 	return recorder.ResponseWriter.Write(payload)
 }
 
+func (recorder *statusRecorder) Flush() {
+	if recorder.status == 0 {
+		recorder.WriteHeader(http.StatusOK)
+	}
+	if flusher, ok := recorder.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 func auditMiddleware(sink AuditSink, now func() time.Time, next http.Handler) http.Handler {
 	if now == nil {
 		now = time.Now
