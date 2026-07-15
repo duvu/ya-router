@@ -10,15 +10,17 @@ import (
 
 	configschema "github.com/duvu/ya-router/internal/config"
 	controlpkg "github.com/duvu/ya-router/internal/control"
+	operationpkg "github.com/duvu/ya-router/internal/operation"
 	providerpkg "github.com/duvu/ya-router/internal/provider"
 	routingpkg "github.com/duvu/ya-router/internal/routing"
 	runtimepkg "github.com/duvu/ya-router/internal/runtime"
 )
 
 type controlReadModel struct {
-	runtime   *runtimepkg.Manager
-	providers *providerpkg.Manager
-	catalogs  *controlCatalogStore
+	runtime    *runtimepkg.Manager
+	providers  *providerpkg.Manager
+	operations *operationpkg.Manager
+	catalogs   *controlCatalogStore
 }
 
 type controlCatalogStore struct {
@@ -34,10 +36,11 @@ type controlCatalogRecord struct {
 	lastError     string
 }
 
-func newControlReadModel(runtimeManager *runtimepkg.Manager, providerManager *providerpkg.Manager) *controlReadModel {
+func newControlReadModel(runtimeManager *runtimepkg.Manager, providerManager *providerpkg.Manager, operationManager *operationpkg.Manager) *controlReadModel {
 	return &controlReadModel{
-		runtime:   runtimeManager,
-		providers: providerManager,
+		runtime:    runtimeManager,
+		providers:  providerManager,
+		operations: operationManager,
 		catalogs: &controlCatalogStore{
 			records: make(map[providerpkg.ID]controlCatalogRecord),
 			now:     time.Now,
@@ -158,10 +161,19 @@ func (model *controlReadModel) Configuration(_ context.Context) (controlpkg.Conf
 	}, nil
 }
 
-func (model *controlReadModel) Operations(context.Context) ([]controlpkg.OperationResource, error) {
-	// YA-TUI-06 installs the durable operation store. Returning a stable empty
-	// collection now lets N/N-1 clients use the read contract immediately.
-	return []controlpkg.OperationResource{}, nil
+func (model *controlReadModel) Operations(ctx context.Context) ([]controlpkg.OperationResource, error) {
+	if model == nil || model.operations == nil {
+		return nil, fmt.Errorf("operation manager is unavailable")
+	}
+	identity, _ := controlpkg.IdentityFromContext(ctx)
+	all := model.operations.List()
+	resources := make([]controlpkg.OperationResource, 0, len(all))
+	for _, record := range all {
+		if identity.Role == controlpkg.RoleAdmin || identity.Subject == record.Owner {
+			resources = append(resources, record)
+		}
+	}
+	return resources, nil
 }
 
 func (model *controlReadModel) Events(after uint64) []providerpkg.LifecycleEvent {

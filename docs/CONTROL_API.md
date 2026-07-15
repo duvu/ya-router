@@ -160,3 +160,37 @@ replaying retained history and de-duplicates by monotonic sequence, preventing
 an event gap between replay and live delivery. Clients that cannot maintain an
 SSE connection can poll `/events?after=<last sequence>` and persist
 `next_after`.
+
+## Persistent operations and authentication sessions
+
+Long-running control work is represented by durable operation records stored in
+`operations.json` beside the revisioned configuration by default. Override the
+path with `YA_ROUTER_OPERATIONS_PATH` when deployment packaging requires a
+separate state volume.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /control/v1/operations` | Create a bounded provider-neutral operation reservation |
+| `GET /control/v1/operations/{id}` | Reconnect to an owned operation; administrators may inspect all operations |
+| `DELETE /control/v1/operations/{id}` | Cancel an owned cancelable operation |
+| `GET /control/v1/operations/events?after=N` | Poll persisted operation lifecycle events |
+| `GET /control/v1/operations/events/stream` | Resume operation events using `Last-Event-ID` |
+| `POST /control/v1/auth-sessions` | Create a provider-neutral auth session for a supported provider and method |
+| `GET /control/v1/auth-sessions/{id}` | Reconnect to an auth session |
+| `DELETE /control/v1/auth-sessions/{id}` | Cancel an auth session |
+
+Creation requires `Idempotency-Key`. The key is hashed with the authenticated
+owner and persisted with a canonical request digest. Repeating the same request,
+even after daemon restart, returns the original operation; reusing the key with
+a different request returns `409`.
+
+Operation workers use daemon-owned contexts, so loss of the initiating HTTP or
+SSE connection does not cancel work. On restart, non-terminal work is never
+silently resumed: unsafe work becomes `failed` with `operation_interrupted`,
+while expiry-oriented auth sessions become `expired`. Failures use typed generic
+messages and never persist raw upstream error text.
+
+The auth-session creation contract accepts only provider, daemon-owned account
+ID, method, and expiry. API keys, recovery tokens, device codes, and other secret
+fields are rejected here; provider adapters and write-only secret handling are
+implemented by the next authentication milestone.
