@@ -20,7 +20,7 @@ It routes to GitHub Copilot, ChatGPT-backed Codex, or OpenAI Platform API-key mo
 - Build target is `./src`, not `./...`.
 - `openspec/` records non-trivial changes and validation evidence.
 - Dated documents under `docs/` are historical decision records; current runtime code and accepted OpenSpec requirements take precedence when old request cards conflict.
-- The Rust port is not the production runtime. It must consume the hardened routing/auth contracts before cutover.
+- No Rust workspace currently exists. Any future Rust port starts as an additive implementation, keeps Go deployable until parity gates pass, and must consume every hardened routing, auth, security, and protocol contract before cutover.
 
 ## Exact validation
 
