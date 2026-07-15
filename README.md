@@ -59,6 +59,16 @@ go build ./src
 
 The output binary is `./ya-router`.
 
+## Target managed-service architecture
+
+The current production runtime remains the single Go `ya-router` binary. The proposed planning direction is to evolve it incrementally into a daemon-owned control plane and an OS client without changing the `/v1/*` data contract during migration:
+
+- [Managed service and TUI architecture](docs/architecture/managed-service-and-tui.md)
+- [Managed service and TUI delivery roadmap](docs/roadmaps/managed-service-and-tui-roadmap.md)
+- [OpenSpec change](openspec/changes/add-managed-service-and-tui/proposal.md)
+
+These documents are a target architecture and ordered implementation plan, not a claim that the split binaries or control API already exist.
+
 ## Quick start
 
 ### GitHub Copilot

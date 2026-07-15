@@ -19,6 +19,7 @@ It routes to GitHub Copilot, ChatGPT-backed Codex, OpenAI Platform API-key mode,
 - Production Go sources live flat in `src/` as `package main`.
 - Build target is `./src`, not `./...`.
 - `openspec/` records non-trivial changes and validation evidence.
+- `docs/architecture/managed-service-and-tui.md` and `docs/roadmaps/managed-service-and-tui-roadmap.md` define the target daemon/control-plane/TUI direction; they do not override current runtime behavior until their ordered issues are implemented and accepted.
 - Dated documents under `docs/` are historical decision records; current runtime code and accepted OpenSpec requirements take precedence when old request cards conflict.
 - No Rust workspace currently exists. Any future Rust port starts as an additive implementation, keeps Go deployable until parity gates pass, and must consume every hardened routing, auth, security, and protocol contract before cutover.
 
