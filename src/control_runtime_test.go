@@ -23,6 +23,7 @@ func clearControlEnvironment(t *testing.T) {
 		controlViewerSubjectsEnv,
 		controlOperatorSubjectsEnv,
 		controlAdminSubjectsEnv,
+		operationStatePathEnv,
 		inboundAPIKeyEnv,
 	} {
 		t.Setenv(name, "")

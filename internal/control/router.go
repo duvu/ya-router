@@ -25,14 +25,15 @@ type APIOptions struct {
 type route struct {
 	method                  string
 	path                    string
+	prefix                  bool
 	requiredRole            Role
 	idempotent              bool
 	allowUnsupportedVersion bool
 	handler                 http.Handler
 }
 
-// API is the isolated versioned management router. Routes are exact-match and
-// never fall through to data-plane handlers.
+// API is the isolated versioned management router. Exact routes win over
+// prefix routes and control traffic never falls through to data-plane handlers.
 type API struct {
 	options APIOptions
 	routes  []route
@@ -62,12 +63,25 @@ func NewAPI(options APIOptions) *API {
 	return api
 }
 
-// Handle registers a future control resource while preserving common RBAC,
+// Handle registers an exact resource route while preserving common RBAC,
 // version, request-ID, audit, and idempotency behavior.
 func (api *API) Handle(method, path string, requiredRole Role, idempotent bool, handler http.Handler) {
 	api.routes = append(api.routes, route{
 		method:       strings.ToUpper(strings.TrimSpace(method)),
 		path:         path,
+		requiredRole: requiredRole,
+		idempotent:   idempotent,
+		handler:      handler,
+	})
+}
+
+// HandlePrefix registers a resource-detail prefix such as
+// /control/v1/operations/. Exact routes always take precedence.
+func (api *API) HandlePrefix(method, path string, requiredRole Role, idempotent bool, handler http.Handler) {
+	api.routes = append(api.routes, route{
+		method:       strings.ToUpper(strings.TrimSpace(method)),
+		path:         path,
+		prefix:       true,
 		requiredRole: requiredRole,
 		idempotent:   idempotent,
 		handler:      handler,
@@ -108,41 +122,58 @@ func (api *API) authenticationMiddleware(authenticator Authenticator, next http.
 }
 
 func (api *API) serveAuthenticated(writer http.ResponseWriter, request *http.Request) {
-	var pathMatched bool
-	for _, candidate := range api.routes {
-		if request.URL.Path != candidate.path {
+	candidate, pathMatched := api.matchRoute(request.Method, request.URL.Path)
+	if candidate == nil {
+		if pathMatched {
+			writeError(writer, request, http.StatusMethodNotAllowed, "method_not_allowed", "The HTTP method is not supported for this control resource.", false, nil)
+			return
+		}
+		writeError(writer, request, http.StatusNotFound, "control_resource_not_found", "The control resource was not found.", false, nil)
+		return
+	}
+	compatibility := negotiateClientVersion(request.Header.Get(ClientVersionHeader))
+	request = request.WithContext(withCompatibility(request.Context(), compatibility))
+	if !compatibility.Compatible && !candidate.allowUnsupportedVersion {
+		writeError(writer, request, http.StatusUpgradeRequired, "unsupported_client_version", "The client version is outside the supported compatibility window.", false, map[string]any{
+			"minimum": compatibility.Minimum,
+			"maximum": compatibility.Maximum,
+		})
+		return
+	}
+	identity, _ := IdentityFromContext(request.Context())
+	if !identity.Role.permits(candidate.requiredRole) {
+		writeError(writer, request, http.StatusForbidden, "control_forbidden", "The authenticated identity does not have the required role.", false, map[string]any{
+			"required_role": candidate.requiredRole,
+		})
+		return
+	}
+	handler := candidate.handler
+	if candidate.idempotent {
+		handler = idempotencyMiddleware(api.options.Idempotency, handler)
+	}
+	handler.ServeHTTP(writer, request)
+}
+
+func (api *API) matchRoute(method, path string) (*route, bool) {
+	method = strings.ToUpper(method)
+	var best *route
+	pathMatched := false
+	for index := range api.routes {
+		candidate := &api.routes[index]
+		matched := path == candidate.path
+		if candidate.prefix {
+			matched = strings.HasPrefix(path, candidate.path) && len(path) > len(candidate.path)
+		}
+		if !matched {
 			continue
 		}
 		pathMatched = true
-		if request.Method != candidate.method {
+		if method != candidate.method {
 			continue
 		}
-		compatibility := negotiateClientVersion(request.Header.Get(ClientVersionHeader))
-		request = request.WithContext(withCompatibility(request.Context(), compatibility))
-		if !compatibility.Compatible && !candidate.allowUnsupportedVersion {
-			writeError(writer, request, http.StatusUpgradeRequired, "unsupported_client_version", "The client version is outside the supported compatibility window.", false, map[string]any{
-				"minimum": compatibility.Minimum,
-				"maximum": compatibility.Maximum,
-			})
-			return
+		if best == nil || (!candidate.prefix && best.prefix) || (candidate.prefix == best.prefix && len(candidate.path) > len(best.path)) {
+			best = candidate
 		}
-		identity, _ := IdentityFromContext(request.Context())
-		if !identity.Role.permits(candidate.requiredRole) {
-			writeError(writer, request, http.StatusForbidden, "control_forbidden", "The authenticated identity does not have the required role.", false, map[string]any{
-				"required_role": candidate.requiredRole,
-			})
-			return
-		}
-		handler := candidate.handler
-		if candidate.idempotent {
-			handler = idempotencyMiddleware(api.options.Idempotency, handler)
-		}
-		handler.ServeHTTP(writer, request)
-		return
 	}
-	if pathMatched {
-		writeError(writer, request, http.StatusMethodNotAllowed, "method_not_allowed", "The HTTP method is not supported for this control resource.", false, nil)
-		return
-	}
-	writeError(writer, request, http.StatusNotFound, "control_resource_not_found", "The control resource was not found.", false, nil)
+	return best, pathMatched
 }

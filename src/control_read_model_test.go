@@ -28,7 +28,7 @@ func TestControlReadModelListsEveryCompiledProvider(t *testing.T) {
 		_ = runtimeManager.Close(context.Background())
 	}()
 
-	resources, err := newControlReadModel(runtimeManager, providerManager).Providers(context.Background())
+	resources, err := newControlReadModel(runtimeManager, providerManager, nil).Providers(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
