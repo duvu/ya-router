@@ -26,6 +26,7 @@ jobs:
         with:
           name: ya-tui-05-overlay-parts
           path: .tmp/ya-tui-05-overlay.part*
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
 
