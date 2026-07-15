@@ -14,6 +14,8 @@ import (
 	"time"
 
 	controlpkg "github.com/duvu/ya-router/internal/control"
+	providerpkg "github.com/duvu/ya-router/internal/provider"
+	runtimepkg "github.com/duvu/ya-router/internal/runtime"
 )
 
 const (
@@ -38,7 +40,7 @@ type managedControlRuntime struct {
 	remoteAddress string
 }
 
-func newManagedControlRuntime(config *Config) (*managedControlRuntime, error) {
+func newManagedControlRuntime(config *Config, runtimeManager *runtimepkg.Manager, providerManager *providerpkg.Manager) (*managedControlRuntime, error) {
 	listenerConfig, tokens, subjectRoles, err := configuredControlListener(config)
 	if err != nil {
 		return nil, err
@@ -54,10 +56,13 @@ func newManagedControlRuntime(config *Config) (*managedControlRuntime, error) {
 		ServiceVersion: version,
 		DeploymentMode: deploymentMode,
 		Features: []string{
+			"catalog_last_known_good",
 			"control_meta",
+			"control_read_models",
 			"idempotency",
 			"local_unix_socket",
 			"request_id",
+			"resumable_sse",
 			"role_based_access",
 			"typed_errors",
 			"remote_tls",
@@ -76,6 +81,7 @@ func newManagedControlRuntime(config *Config) (*managedControlRuntime, error) {
 			}
 		},
 	})
+	controlpkg.RegisterReadRoutes(api, newControlReadModel(runtimeManager, providerManager))
 	localIdentity := controlpkg.Identity{Subject: "local:unix-socket", Role: controlpkg.RoleAdmin, Source: "unix_socket"}
 	localHandler := api.Handler(controlpkg.FixedAuthenticator(localIdentity))
 

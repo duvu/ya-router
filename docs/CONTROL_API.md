@@ -136,3 +136,27 @@ waiters blocked.
 
 The machine-readable contract is
 [`docs/api/control-v1.openapi.yaml`](api/control-v1.openapi.yaml).
+
+## Read-only resources
+
+The viewer role can inspect the complete redacted daemon read model:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /control/v1/providers` | All compiled-in provider descriptors, including disabled providers, effective capabilities, generation, and sanitized health |
+| `GET /control/v1/accounts` | Daemon-owned account IDs, labels, priority, and credential-source metadata without tokens or upstream account IDs |
+| `GET /control/v1/models` | Per-provider prefixed model catalogs with availability, freshness, and last-known-good refresh state |
+| `GET /control/v1/config` | Redacted desired/effective configuration, revision, digests, and restart-required paths |
+| `GET /control/v1/operations` | Stable polling collection; populated by the async-operation implementation |
+| `GET /control/v1/events?after=N` | Bounded lifecycle-event polling fallback |
+| `GET /control/v1/events/stream` | Resumable Server-Sent Events stream |
+
+Use `refresh=true` on the model resource to force an upstream refresh. A failed
+refresh records the generic `catalog_refresh_failed` state but does not discard
+the last successful catalog. Model IDs are always provider-prefixed.
+
+SSE clients resume by sending `Last-Event-ID`. The server subscribes before
+replaying retained history and de-duplicates by monotonic sequence, preventing
+an event gap between replay and live delivery. Clients that cannot maintain an
+SSE connection can poll `/events?after=<last sequence>` and persist
+`next_after`.

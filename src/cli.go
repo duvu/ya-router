@@ -497,7 +497,7 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 		WriteTimeout: time.Duration(cfg.Timeouts.ServerWrite) * time.Second,
 		IdleTimeout:  time.Duration(cfg.Timeouts.ServerIdle) * time.Second,
 	}
-	controlRuntime, err := newManagedControlRuntime(cfg)
+	controlRuntime, err := newManagedControlRuntime(cfg, runtimeManager, providerManager)
 	if err != nil {
 		return fmt.Errorf("configure control service: %w", err)
 	}
