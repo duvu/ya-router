@@ -21,6 +21,7 @@ type managedTestProvider struct {
 	closed    atomic.Bool
 	closedCh  chan struct{}
 	closeOnce sync.Once
+	closeGate <-chan struct{}
 }
 
 func newManagedTestProvider(model string) *managedTestProvider {
@@ -49,11 +50,37 @@ func (registered *managedTestProvider) Health(context.Context) provider.Health {
 	return provider.Health{Authenticated: !registered.closed.Load()}
 }
 func (registered *managedTestProvider) Close(context.Context) error {
+	if registered.closeGate != nil {
+		<-registered.closeGate
+	}
 	registered.closeOnce.Do(func() {
 		registered.closed.Store(true)
 		close(registered.closedCh)
 	})
 	return nil
+}
+
+func managedBlockingFactory(closeGate <-chan struct{}) provider.Factory {
+	return provider.FactoryFuncs{
+		ProviderDescriptor: provider.Descriptor{
+			ID:            provider.Copilot,
+			Name:          "Blocking managed test",
+			Capabilities:  []provider.Capability{provider.CapabilityChat},
+			AuthMethods:   []provider.AuthMethod{provider.AuthDeviceCode},
+			SchemaVersion: 1,
+		},
+		ValidateConfigFunc: func(config any) error {
+			if _, ok := config.(string); !ok {
+				return errors.New("string config is required")
+			}
+			return nil
+		},
+		BuildFunc: func(_ context.Context, config any) (provider.Provider, error) {
+			registered := newManagedTestProvider(config.(string))
+			registered.closeGate = closeGate
+			return registered, nil
+		},
+	}
 }
 
 func managedTestFactory() provider.Factory {
@@ -189,6 +216,131 @@ func TestDrainIsBoundedObservableAndClosesAfterLeaseRelease(t *testing.T) {
 	if registered.model != "new" || registered.closed.Load() {
 		t.Fatalf("replacement provider = %#v", registered)
 	}
+}
+
+func TestNoOpReconcileReusesEffectiveProvider(t *testing.T) {
+	_, providerManager := newManagedTestManagers(t, time.Second)
+	desired := []provider.DesiredProvider{{
+		ID:      provider.Copilot,
+		Enabled: true,
+		Config:  "stable",
+		Accounts: []provider.AccountState{{
+			ID: "primary", Label: "Primary", Enabled: true,
+		}},
+	}}
+	if _, err := providerManager.Reconcile(context.Background(), desired); err != nil {
+		t.Fatal(err)
+	}
+	active := providerManager.ActiveProviders()[0]
+	eventsBefore := len(providerManager.Events().History(0))
+	desired[0].Accounts[0].Label = "Renamed"
+	report, err := providerManager.Reconcile(context.Background(), desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Completed || report.TimedOut {
+		t.Fatalf("no-op drain report = %#v", report)
+	}
+	if got := providerManager.ActiveProviders()[0]; got != active {
+		t.Fatal("no-op reconcile rebuilt an unchanged provider")
+	}
+	if got := len(providerManager.Events().History(0)); got != eventsBefore {
+		t.Fatalf("no-op reconcile published lifecycle events: before=%d after=%d", eventsBefore, got)
+	}
+	if got := providerManager.List()[0].Accounts[0].Label; got != "Renamed" {
+		t.Fatalf("desired account label = %q, want Renamed", got)
+	}
+}
+
+func TestHealthRefreshDoesNotWaitForProviderDrain(t *testing.T) {
+	runtimeManager, providerManager := newManagedTestManagers(t, time.Second)
+	if _, err := providerManager.Reconcile(context.Background(), []provider.DesiredProvider{{ID: provider.Copilot, Enabled: true, Config: "old"}}); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := runtimeManager.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	replaceDone := make(chan error, 1)
+	go func() {
+		_, replaceErr := providerManager.Replace(context.Background(), provider.Copilot, "new")
+		replaceDone <- replaceErr
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		started := false
+		for _, event := range providerManager.Events().History(0) {
+			if event.Type == provider.EventDrainStarted {
+				started = true
+				break
+			}
+		}
+		if started {
+			break
+		}
+		if time.Now().After(deadline) {
+			lease.Release()
+			t.Fatal("replacement did not begin draining")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	healthDone := make(chan struct{})
+	go func() {
+		providerManager.RefreshHealth(context.Background())
+		close(healthDone)
+	}()
+	select {
+	case <-healthDone:
+	case <-time.After(100 * time.Millisecond):
+		lease.Release()
+		t.Fatal("health refresh waited for the provider drain")
+	}
+	lease.Release()
+	select {
+	case err := <-replaceDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replacement did not finish after lease release")
+	}
+}
+
+func TestProviderCloseTimeoutIsEnforced(t *testing.T) {
+	closeGate := make(chan struct{})
+	runtimeManager, err := runtimepkg.NewManager(&configschema.Config{Routing: configschema.Routing{DefaultProvider: string(provider.Copilot)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerManager, err := provider.NewManager(runtimeManager, provider.NewHealthRegistry(), provider.NewEventBus(32), provider.ManagerOptions{
+		DrainTimeout: time.Second,
+		CloseTimeout: 15 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := providerManager.RegisterFactory(managedBlockingFactory(closeGate)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := providerManager.Reconcile(context.Background(), []provider.DesiredProvider{{ID: provider.Copilot, Enabled: true, Config: "old"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now()
+	report, err := providerManager.Replace(context.Background(), provider.Copilot, "new")
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Completed || report.CloseErrors != 1 {
+		t.Fatalf("close timeout report = %#v", report)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("replacement took %s despite close timeout", elapsed)
+	}
+	close(closeGate)
 }
 
 func TestConcurrentReplaceRemoveListAndRoute(t *testing.T) {

@@ -2,6 +2,8 @@
 package yarouter
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +11,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	configschema "github.com/duvu/ya-router/internal/config"
 )
@@ -72,6 +75,11 @@ const (
 // configPathOverride lets tests redirect config I/O to a temp path.
 var configPathOverride string
 
+// configWriteMu serializes all in-process config writes. YA-TUI-03 will add the
+// cross-process daemon lock and revisions; this guard prevents provider refresh
+// callbacks in the current process from sharing or replacing the same temp file.
+var configWriteMu sync.Mutex
+
 func getConfigPath() (string, error) {
 	if configPathOverride != "" {
 		return configPathOverride, nil
@@ -108,7 +116,10 @@ func loadConfig() (*Config, error) {
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return defaultConfig(), nil
+		if os.IsNotExist(err) {
+			return defaultConfig(), nil
+		}
+		return nil, fmt.Errorf("open config: %w", err)
 	}
 	defer file.Close()
 
@@ -256,16 +267,49 @@ func applyConfigDefaults(cfg *Config) {
 // This ensures single-account configs remain valid without operator changes.
 func normalizeCopilotAccounts(c *CopilotProviderConfig) {
 	if len(c.Accounts) == 0 && c.Auth.GitHubToken != "" {
-		c.Accounts = []CopilotAccount{{Label: "primary", Auth: c.Auth}}
+		c.Accounts = []CopilotAccount{{ID: stableAccountID("copilot", "primary"), Label: "primary", Auth: c.Auth}}
 		c.Auth = CopilotAuthState{}
 	}
+	ensureCopilotAccountIDs(c.Accounts)
 }
 
 func normalizeCodexAccounts(c *CodexProviderConfig) {
 	if len(c.Accounts) == 0 && (c.Auth.AccessToken != "" || c.Auth.APIKey != "") {
-		c.Accounts = []CodexAccount{{Label: "primary", Auth: c.Auth}}
+		c.Accounts = []CodexAccount{{ID: stableAccountID("codex", "primary"), Label: "primary", Auth: c.Auth}}
 		c.Auth = CodexAuthState{}
 	}
+	ensureCodexAccountIDs(c.Accounts)
+}
+
+func ensureCopilotAccountIDs(accounts []CopilotAccount) {
+	seen := make(map[string]int, len(accounts))
+	for index := range accounts {
+		if accounts[index].ID != "" {
+			continue
+		}
+		label := strings.TrimSpace(accounts[index].Label)
+		occurrence := seen[label]
+		seen[label]++
+		accounts[index].ID = stableAccountID("copilot", fmt.Sprintf("%s\x00%d", label, occurrence))
+	}
+}
+
+func ensureCodexAccountIDs(accounts []CodexAccount) {
+	seen := make(map[string]int, len(accounts))
+	for index := range accounts {
+		if accounts[index].ID != "" {
+			continue
+		}
+		label := strings.TrimSpace(accounts[index].Label)
+		occurrence := seen[label]
+		seen[label]++
+		accounts[index].ID = stableAccountID("codex", fmt.Sprintf("%s\x00%d", label, occurrence))
+	}
+}
+
+func stableAccountID(provider, identity string) string {
+	digest := sha256.Sum256([]byte(provider + "\x00" + identity))
+	return "acct_" + hex.EncodeToString(digest[:12])
 }
 
 // setDefaultTimeouts fills zero-valued timeout fields with sensible defaults.
@@ -305,16 +349,32 @@ func setDefaultTimeouts(cfg *Config) {
 
 // saveConfig writes cfg to disk atomically with 0600 permissions.
 func saveConfig(cfg *Config) error {
+	configWriteMu.Lock()
+	defer configWriteMu.Unlock()
+	return saveConfigLocked(cfg)
+}
+
+func saveConfigLocked(cfg *Config) error {
 	path, err := getConfigPath()
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	tmp := f.Name()
+	keepTemp := true
+	defer func() {
+		_ = f.Close()
+		if keepTemp {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if err := f.Chmod(0o600); err != nil {
+		return err
+	}
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(cfg); err != nil {
@@ -323,10 +383,83 @@ func saveConfig(cfg *Config) error {
 	if err := f.Sync(); err != nil {
 		return err
 	}
+	if err := f.Close(); err != nil {
+		return err
+	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("rename temp config: %w", err)
 	}
+	keepTemp = false
+	directory, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open config directory: %w", err)
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return fmt.Errorf("sync config directory: %w", err)
+	}
 	return nil
+}
+
+// persistCopilotRuntimeAccount merges only runtime-owned authentication and
+// cooldown state into the latest config. Provider instances hold immutable
+// runtime config snapshots, so writing their whole snapshot would overwrite
+// unrelated configuration or credentials refreshed by another provider.
+func persistCopilotRuntimeAccount(source *Config, accountIndex int) error {
+	configWriteMu.Lock()
+	defer configWriteMu.Unlock()
+	latest, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	if len(source.Providers.Copilot.Accounts) == 0 {
+		latest.Providers.Copilot.Auth = source.Providers.Copilot.Auth
+		return saveConfigLocked(latest)
+	}
+	if accountIndex < 0 || accountIndex >= len(source.Providers.Copilot.Accounts) {
+		return fmt.Errorf("persist Copilot account: invalid account index %d", accountIndex)
+	}
+	sourceAccount := source.Providers.Copilot.Accounts[accountIndex]
+	for index := range latest.Providers.Copilot.Accounts {
+		if sameAccount(sourceAccount.ID, sourceAccount.Label, latest.Providers.Copilot.Accounts[index].ID, latest.Providers.Copilot.Accounts[index].Label) {
+			latest.Providers.Copilot.Accounts[index].Auth = sourceAccount.Auth
+			latest.Providers.Copilot.Accounts[index].LastLimitedAt = sourceAccount.LastLimitedAt
+			return saveConfigLocked(latest)
+		}
+	}
+	return fmt.Errorf("persist Copilot account %q: account no longer exists", sourceAccount.ID)
+}
+
+func persistCodexRuntimeAccount(source *Config, accountIndex int) error {
+	configWriteMu.Lock()
+	defer configWriteMu.Unlock()
+	latest, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	if len(source.Providers.Codex.Accounts) == 0 {
+		latest.Providers.Codex.Auth = source.Providers.Codex.Auth
+		return saveConfigLocked(latest)
+	}
+	if accountIndex < 0 || accountIndex >= len(source.Providers.Codex.Accounts) {
+		return fmt.Errorf("persist Codex account: invalid account index %d", accountIndex)
+	}
+	sourceAccount := source.Providers.Codex.Accounts[accountIndex]
+	for index := range latest.Providers.Codex.Accounts {
+		if sameAccount(sourceAccount.ID, sourceAccount.Label, latest.Providers.Codex.Accounts[index].ID, latest.Providers.Codex.Accounts[index].Label) {
+			latest.Providers.Codex.Accounts[index].Auth = sourceAccount.Auth
+			latest.Providers.Codex.Accounts[index].LastLimitedAt = sourceAccount.LastLimitedAt
+			return saveConfigLocked(latest)
+		}
+	}
+	return fmt.Errorf("persist Codex account %q: account no longer exists", sourceAccount.ID)
+}
+
+func sameAccount(sourceID, sourceLabel, candidateID, candidateLabel string) bool {
+	if sourceID != "" && candidateID != "" {
+		return sourceID == candidateID
+	}
+	return sourceLabel != "" && sourceLabel == candidateLabel
 }
 
 // loadDefaultConfigFromExample loads a default config from config.example.json if it exists.

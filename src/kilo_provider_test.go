@@ -186,3 +186,29 @@ func TestKiloAnonymousAllowlistDoesNotSynthesizePaidModel(t *testing.T) {
 		t.Fatalf("models = %#v, want no anonymous paid models", models.Data)
 	}
 }
+
+func TestKiloFreeModelDiscoveryRevokesStaleEntries(t *testing.T) {
+	calls := 0
+	provider, _ := newTestKiloProvider(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls == 1 {
+			_, _ = w.Write([]byte(`{"data":[{"id":"vendor/changing","isFree":true}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"vendor/changing","pricing":{"prompt":"0.1","completion":"0.2"}}]}`))
+	})
+
+	if _, err := provider.ListModels(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !provider.allowsAnonymousModel("vendor/changing") {
+		t.Fatal("discovered free model was not admitted")
+	}
+	provider.InvalidateModelCache()
+	if _, err := provider.ListModels(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if provider.allowsAnonymousModel("vendor/changing") {
+		t.Fatal("model remained anonymously accessible after the catalog marked it paid")
+	}
+}

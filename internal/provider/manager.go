@@ -2,6 +2,9 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -21,10 +24,11 @@ type AccountState struct {
 // DesiredProvider is reconciliation input. Config remains opaque to the
 // manager and is never returned by List.
 type DesiredProvider struct {
-	ID       ID
-	Enabled  bool
-	Config   any
-	Accounts []AccountState
+	ID                ID
+	Enabled           bool
+	Config            any
+	ConfigFingerprint string
+	Accounts          []AccountState
 }
 
 // ProviderStatus is a redacted snapshot of one compiled-in provider.
@@ -54,13 +58,21 @@ type ManagerOptions struct {
 }
 
 type desiredRecord struct {
-	enabled  bool
-	accounts []AccountState
+	enabled     bool
+	accounts    []AccountState
+	fingerprint string
 }
 
 type effectiveRecord struct {
 	provider   Provider
 	generation uint64
+}
+
+type removalPlan struct {
+	report      DrainReport
+	publication Publication
+	retired     []Provider
+	needsDrain  bool
 }
 
 // Manager serializes provider lifecycle mutations while allowing concurrent
@@ -140,7 +152,12 @@ func (manager *Manager) RegisterFactory(factory Factory) error {
 // descriptor. Compiled-in callers normally keep factories registered.
 func (manager *Manager) UnregisterFactory(ctx context.Context, id ID) (DrainReport, error) {
 	manager.mutations.Lock()
-	defer manager.mutations.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			manager.mutations.Unlock()
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		return DrainReport{}, err
 	}
@@ -150,9 +167,9 @@ func (manager *Manager) UnregisterFactory(ctx context.Context, id ID) (DrainRepo
 	if !exists {
 		return DrainReport{}, fmt.Errorf("provider factory %q is not registered", id)
 	}
-	report, err := manager.removeLocked(id)
+	plan, err := manager.prepareRemoveLocked(id)
 	if err != nil {
-		return report, err
+		return plan.report, err
 	}
 	manager.mu.Lock()
 	delete(manager.factories, id)
@@ -166,7 +183,12 @@ func (manager *Manager) UnregisterFactory(ctx context.Context, id ID) (DrainRepo
 	manager.mu.Unlock()
 	manager.health.Remove(id)
 	manager.events.Publish(LifecycleEvent{Type: EventFactoryUnregistered, ProviderID: id})
-	return report, nil
+	manager.mutations.Unlock()
+	locked = false
+	if !plan.needsDrain {
+		return plan.report, nil
+	}
+	return manager.drainRetired(plan.publication, plan.retired)
 }
 
 // Reconcile atomically replaces the entire desired provider/account set. All
@@ -174,7 +196,12 @@ func (manager *Manager) UnregisterFactory(ctx context.Context, id ID) (DrainRepo
 // failure leaves the prior effective runtime untouched.
 func (manager *Manager) Reconcile(ctx context.Context, desired []DesiredProvider) (DrainReport, error) {
 	manager.mutations.Lock()
-	defer manager.mutations.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			manager.mutations.Unlock()
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		return DrainReport{}, err
 	}
@@ -200,6 +227,7 @@ func (manager *Manager) Reconcile(ctx context.Context, desired []DesiredProvider
 		factories[id] = factory
 	}
 	oldEffective := cloneEffective(manager.effective)
+	oldDesired := cloneDesired(manager.desired)
 	manager.mu.RUnlock()
 
 	for id := range requested {
@@ -209,25 +237,54 @@ func (manager *Manager) Reconcile(ctx context.Context, desired []DesiredProvider
 	}
 
 	nextEffective := make(map[ID]effectiveRecord)
-	built := make([]Provider, 0, len(desired))
+	newlyBuilt := make([]Provider, 0, len(desired))
+	reused := make(map[ID]struct{}, len(oldEffective))
+	changed := false
 	for _, id := range factoryOrder {
 		spec, exists := requested[id]
 		if !exists || !spec.Enabled {
+			if _, active := oldEffective[id]; active {
+				changed = true
+			}
+			continue
+		}
+		fingerprint, fingerprintOK := desiredFingerprint(spec)
+		priorDesired, wasDesired := oldDesired[id]
+		priorEffective, wasEffective := oldEffective[id]
+		if fingerprintOK && wasDesired && wasEffective && priorDesired.enabled && priorDesired.fingerprint == fingerprint {
+			nextEffective[id] = priorEffective
+			reused[id] = struct{}{}
 			continue
 		}
 		registered, err := manager.build(ctx, factories[id], spec.Config)
 		if err != nil {
-			manager.closeProviders(built)
+			manager.closeProviders(newlyBuilt)
 			manager.events.Publish(LifecycleEvent{Type: EventReconcileFailed, ProviderID: id, Reason: "build_or_validation_failed"})
 			return DrainReport{}, err
 		}
-		built = append(built, registered)
+		changed = true
+		newlyBuilt = append(newlyBuilt, registered)
 		nextEffective[id] = effectiveRecord{provider: registered}
 	}
 
-	publication, err := manager.publisher.PublishProviders(built)
+	nextDesired := make(map[ID]desiredRecord, len(requested))
+	for id, spec := range requested {
+		fingerprint, _ := desiredFingerprint(spec)
+		nextDesired[id] = desiredRecord{enabled: spec.Enabled, accounts: cloneAccounts(spec.Accounts), fingerprint: fingerprint}
+	}
+	if !changed {
+		manager.mu.Lock()
+		manager.desired = nextDesired
+		manager.mu.Unlock()
+		manager.mutations.Unlock()
+		locked = false
+		return completedDrainReport(), nil
+	}
+
+	providers := providersFromEffective(nextEffective, factoryOrder)
+	publication, err := manager.publisher.PublishProviders(providers)
 	if err != nil {
-		manager.closeProviders(built)
+		manager.closeProviders(newlyBuilt)
 		manager.events.Publish(LifecycleEvent{Type: EventReconcileFailed, Reason: "publication_failed"})
 		return DrainReport{}, fmt.Errorf("publish provider reconciliation: %w", err)
 	}
@@ -235,11 +292,6 @@ func (manager *Manager) Reconcile(ctx context.Context, desired []DesiredProvider
 		record.generation = publication.Generation
 		nextEffective[id] = record
 	}
-	nextDesired := make(map[ID]desiredRecord, len(requested))
-	for id, spec := range requested {
-		nextDesired[id] = desiredRecord{enabled: spec.Enabled, accounts: cloneAccounts(spec.Accounts)}
-	}
-
 	manager.mu.Lock()
 	manager.effective = nextEffective
 	manager.desired = nextDesired
@@ -250,7 +302,15 @@ func (manager *Manager) Reconcile(ctx context.Context, desired []DesiredProvider
 			manager.events.Publish(LifecycleEvent{Type: EventPublished, ProviderID: id, Generation: publication.Generation})
 		}
 	}
-	retired := providersFromEffective(oldEffective, factoryOrder)
+	retiredEffective := make(map[ID]effectiveRecord)
+	for id, record := range oldEffective {
+		if _, kept := reused[id]; !kept {
+			retiredEffective[id] = record
+		}
+	}
+	retired := providersFromEffective(retiredEffective, factoryOrder)
+	manager.mutations.Unlock()
+	locked = false
 	return manager.drainRetired(publication, retired)
 }
 
@@ -258,7 +318,12 @@ func (manager *Manager) Reconcile(ctx context.Context, desired []DesiredProvider
 // effective instances.
 func (manager *Manager) Replace(ctx context.Context, id ID, config any) (DrainReport, error) {
 	manager.mutations.Lock()
-	defer manager.mutations.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			manager.mutations.Unlock()
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		return DrainReport{}, err
 	}
@@ -293,6 +358,7 @@ func (manager *Manager) Replace(ctx context.Context, id ID, config any) (DrainRe
 	manager.mu.Lock()
 	manager.effective = nextEffective
 	desired.enabled = true
+	desired.fingerprint, _ = configFingerprint(config)
 	manager.desired[id] = desired
 	manager.mu.Unlock()
 	manager.updateHealth(publication.Generation)
@@ -301,6 +367,8 @@ func (manager *Manager) Replace(ctx context.Context, id ID, config any) (DrainRe
 	if old, found := oldEffective[id]; found {
 		retired = append(retired, old.provider)
 	}
+	manager.mutations.Unlock()
+	locked = false
 	return manager.drainRetired(publication, retired)
 }
 
@@ -308,14 +376,28 @@ func (manager *Manager) Replace(ctx context.Context, id ID, config any) (DrainRe
 // registered, so List reports the provider as disabled.
 func (manager *Manager) Remove(ctx context.Context, id ID) (DrainReport, error) {
 	manager.mutations.Lock()
-	defer manager.mutations.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			manager.mutations.Unlock()
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		return DrainReport{}, err
 	}
-	return manager.removeLocked(id)
+	plan, err := manager.prepareRemoveLocked(id)
+	if err != nil {
+		return plan.report, err
+	}
+	manager.mutations.Unlock()
+	locked = false
+	if !plan.needsDrain {
+		return plan.report, nil
+	}
+	return manager.drainRetired(plan.publication, plan.retired)
 }
 
-func (manager *Manager) removeLocked(id ID) (DrainReport, error) {
+func (manager *Manager) prepareRemoveLocked(id ID) (removalPlan, error) {
 	manager.mu.RLock()
 	oldEffective := cloneEffective(manager.effective)
 	order := append([]ID(nil), manager.factoryOrder...)
@@ -323,7 +405,7 @@ func (manager *Manager) removeLocked(id ID) (DrainReport, error) {
 	_, factoryExists := manager.factories[id]
 	manager.mu.RUnlock()
 	if !factoryExists {
-		return DrainReport{}, fmt.Errorf("provider factory %q is not registered", id)
+		return removalPlan{}, fmt.Errorf("provider factory %q is not registered", id)
 	}
 	old, active := oldEffective[id]
 	if !active {
@@ -332,13 +414,13 @@ func (manager *Manager) removeLocked(id ID) (DrainReport, error) {
 		manager.desired[id] = desired
 		manager.mu.Unlock()
 		manager.health.Set(HealthRecord{ProviderID: id, State: StateDisabled})
-		return completedDrainReport(), nil
+		return removalPlan{report: completedDrainReport()}, nil
 	}
 
 	delete(oldEffective, id)
 	publication, err := manager.publisher.PublishProviders(providersFromEffective(oldEffective, order))
 	if err != nil {
-		return DrainReport{}, fmt.Errorf("publish provider %q removal: %w", id, err)
+		return removalPlan{}, fmt.Errorf("publish provider %q removal: %w", id, err)
 	}
 	for providerID, record := range oldEffective {
 		record.generation = publication.Generation
@@ -351,7 +433,7 @@ func (manager *Manager) removeLocked(id ID) (DrainReport, error) {
 	manager.mu.Unlock()
 	manager.health.Set(HealthRecord{ProviderID: id, State: StateDisabled, Generation: publication.Generation})
 	manager.events.Publish(LifecycleEvent{Type: EventRemoved, ProviderID: id, Generation: publication.Generation})
-	return manager.drainRetired(publication, []Provider{old.provider})
+	return removalPlan{publication: publication, retired: []Provider{old.provider}, needsDrain: true}, nil
 }
 
 // ActiveProviders returns a deterministic copy of effective instances for
@@ -474,9 +556,9 @@ func (manager *Manager) drainRetired(publication Publication, retired []Provider
 	cancel()
 	if err == nil {
 		report.Completed = true
-		report.CompletedAt = time.Now().UTC()
 		report.PendingSnapshots = 0
 		report.CloseErrors = manager.closeProviders(retired)
+		report.CompletedAt = time.Now().UTC()
 		manager.publishDrained(publication.Generation, retired, report.CloseErrors)
 		return report, nil
 	}
@@ -518,19 +600,31 @@ func (manager *Manager) closeProviders(providers []Provider) int {
 		if registered == nil {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), manager.options.CloseTimeout)
-		if lifecycle, ok := registered.(Lifecycle); ok {
-			if err := lifecycle.Close(ctx); err != nil {
-				closeErrors++
-			}
-		} else if closer, ok := registered.(interface{ Close() error }); ok {
-			if err := closer.Close(); err != nil {
-				closeErrors++
-			}
+		if err := manager.closeProvider(registered); err != nil {
+			closeErrors++
 		}
-		cancel()
 	}
 	return closeErrors
+}
+
+func (manager *Manager) closeProvider(registered Provider) error {
+	ctx, cancel := context.WithTimeout(context.Background(), manager.options.CloseTimeout)
+	defer cancel()
+	done := make(chan error, 1)
+	switch lifecycle := registered.(type) {
+	case Lifecycle:
+		go func() { done <- lifecycle.Close(ctx) }()
+	case interface{ Close() error }:
+		go func() { done <- lifecycle.Close() }()
+	default:
+		return nil
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func validateAccounts(providerID ID, accounts []AccountState) error {
@@ -593,6 +687,31 @@ func cloneEffective(source map[ID]effectiveRecord) map[ID]effectiveRecord {
 		cloned[id] = record
 	}
 	return cloned
+}
+
+func cloneDesired(source map[ID]desiredRecord) map[ID]desiredRecord {
+	cloned := make(map[ID]desiredRecord, len(source))
+	for id, record := range source {
+		record.accounts = cloneAccounts(record.accounts)
+		cloned[id] = record
+	}
+	return cloned
+}
+
+func desiredFingerprint(spec DesiredProvider) (string, bool) {
+	if spec.ConfigFingerprint != "" {
+		return spec.ConfigFingerprint, true
+	}
+	return configFingerprint(spec.Config)
+}
+
+func configFingerprint(config any) (string, bool) {
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		return "", false
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), true
 }
 
 func providersFromEffective(effective map[ID]effectiveRecord, order []ID) []Provider {

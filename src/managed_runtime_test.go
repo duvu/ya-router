@@ -35,9 +35,7 @@ func TestManagedProxyHandlerPinsRequestSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pool := NewWorkerPool(2)
-	defer pool.Stop()
-	handler := managedProxyHandler(pool, runtimeManager)
+	handler := managedProxyHandler(runtimeManager)
 
 	oldDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {

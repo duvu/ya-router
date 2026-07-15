@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -551,8 +552,8 @@ func TestIsAccountLimitSignal_403WithRateLimit(t *testing.T) {
 	if !ok {
 		t.Error("403 with 'rate limit' body should be account limit signal")
 	}
-	if !strings.Contains(preview, "rate limit") {
-		t.Errorf("expected preview to contain 'rate limit', got %q", preview)
+	if preview != "quota_exhausted" {
+		t.Errorf("expected redacted quota reason, got %q", preview)
 	}
 }
 
@@ -663,6 +664,84 @@ func TestAdvanceCodexAccount_ReturnsFalseOnSingleAccount(t *testing.T) {
 	p := NewCodexProvider(cfg)
 	if p.advanceCodexAccount() {
 		t.Error("expected false for single-account pool")
+	}
+}
+
+func TestAccountFailoverMarksTheAccountThatServedTheRequest(t *testing.T) {
+	codexConfig := buildTestCodexConfigWithAccounts(300, []string{"chatgpt", "chatgpt"}, 0, 0)
+	codex := NewCodexProvider(codexConfig)
+	codex.accountCursor = 1
+	if !codex.advanceCodexAccountFrom(0) {
+		t.Fatal("Codex should retain the already-selected healthy account")
+	}
+	if codexConfig.Providers.Codex.Accounts[0].LastLimitedAt == 0 || codexConfig.Providers.Codex.Accounts[1].LastLimitedAt != 0 {
+		t.Fatalf("Codex cooldowns = %#v", codexConfig.Providers.Codex.Accounts)
+	}
+
+	copilotConfig := defaultConfig()
+	copilotConfig.Providers.Copilot.Accounts = []CopilotAccount{
+		{ID: "one", Label: "one"},
+		{ID: "two", Label: "two"},
+	}
+	copilot := NewCopilotProvider(copilotConfig)
+	copilot.accountCursor = 1
+	if !copilot.advanceAccountFrom(0) {
+		t.Fatal("Copilot should retain the already-selected healthy account")
+	}
+	if copilotConfig.Providers.Copilot.Accounts[0].LastLimitedAt == 0 || copilotConfig.Providers.Copilot.Accounts[1].LastLimitedAt != 0 {
+		t.Fatalf("Copilot cooldowns = %#v", copilotConfig.Providers.Copilot.Accounts)
+	}
+}
+
+func TestCopilotFreeFinalRateLimitResponseBodyIsForwarded(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Providers.Copilot.Accounts = []CopilotAccount{{
+		ID:    "only",
+		Label: "only",
+		Auth: CopilotAuthState{
+			Mode:         "device_code",
+			CopilotToken: "token",
+			ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		},
+	}}
+	provider := NewCopilotProvider(cfg)
+	provider.freeModelResolver = func(context.Context) ([]Model, error) {
+		return []Model{{ID: "free-model"}}, nil
+	}
+	provider.proxyExecutor = func(context.Context, *http.Request, []byte, Capability) (*http.Response, string, error) {
+		recorder := httptest.NewRecorder()
+		recorder.WriteHeader(http.StatusTooManyRequests)
+		recorder.WriteString(`{"error":{"code":"rate_limited"}}`)
+		return recorder.Result(), "", nil
+	}
+
+	response := httptest.NewRecorder()
+	err := provider.ProxyFreeChatRequest(
+		context.Background(), response,
+		httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		[]byte(`{"model":"auto-free","messages":[]}`), "auto-free",
+	)
+	if err != nil {
+		t.Fatalf("ProxyFreeChatRequest() error = %v", err)
+	}
+	if response.Code != http.StatusTooManyRequests || !strings.Contains(response.Body.String(), "rate_limited") {
+		t.Fatalf("final response = status %d body %q", response.Code, response.Body.String())
+	}
+}
+
+func TestResponseBodyPreviewIsBoundedAndReplayable(t *testing.T) {
+	original := strings.Repeat("x", 8*1024)
+	response := &http.Response{Body: io.NopCloser(strings.NewReader(original))}
+	preview := readAndResetResponseBody(response)
+	if len(preview) != 4*1024 {
+		t.Fatalf("preview length = %d, want %d", len(preview), 4*1024)
+	}
+	replayed, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(replayed) != original {
+		t.Fatalf("replayed body length = %d, want %d", len(replayed), len(original))
 	}
 }
 

@@ -135,7 +135,7 @@ func pollForGitHubToken(deviceCode string, interval int) (string, error) {
 			if tr.Error == "authorization_pending" {
 				continue
 			}
-			return "", fmt.Errorf("authorization error: %s - %s", tr.Error, tr.ErrorDesc)
+			return "", fmt.Errorf("authorization error: %s", sanitizeReasonCode(tr.Error))
 		}
 		if tr.AccessToken != "" {
 			return tr.AccessToken, nil

@@ -209,6 +209,17 @@ func TestOfficialCodexStoreIsNeverMutated(t *testing.T) {
 	}
 }
 
+func TestRedactAuthErrorNeverReturnsUpstreamSecrets(t *testing.T) {
+	secret := "sensitive-refresh-token"
+	reason := redactAuthError([]byte(`{"error":{"code":"invalid_grant","message":"` + secret + `"}}`))
+	if reason != "invalid_grant" {
+		t.Fatalf("reason = %q, want invalid_grant", reason)
+	}
+	if strings.Contains(reason, secret) {
+		t.Fatalf("redacted reason leaked secret: %q", reason)
+	}
+}
+
 func TestExtractJWTExpiryAndAccountMetadata(t *testing.T) {
 	payload, _ := json.Marshal(map[string]interface{}{
 		"exp":                         1234567890,

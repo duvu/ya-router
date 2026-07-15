@@ -308,11 +308,44 @@ func codexRefreshToken(auth *CodexAuthState, save func() error) error {
 }
 
 func redactAuthError(body []byte) string {
-	text := strings.TrimSpace(string(body))
-	if len(text) > 200 {
-		return text[:200] + "…"
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err == nil {
+		if code := authErrorReason(payload["error"]); code != "" {
+			return code
+		}
+		if code := authErrorReason(payload["code"]); code != "" {
+			return code
+		}
 	}
-	return text
+	return "upstream_authentication_rejected"
+}
+
+func authErrorReason(value interface{}) string {
+	switch typed := value.(type) {
+	case string:
+		return sanitizeReasonCode(typed)
+	case map[string]interface{}:
+		for _, key := range []string{"code", "type", "error"} {
+			if code := authErrorReason(typed[key]); code != "" {
+				return code
+			}
+		}
+	}
+	return ""
+}
+
+func sanitizeReasonCode(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 64 {
+		return "upstream_error"
+	}
+	for _, char := range value {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') &&
+			(char < '0' || char > '9') && char != '_' && char != '-' && char != '.' {
+			return "upstream_error"
+		}
+	}
+	return value
 }
 
 // officialCodexAuthJSON is intentionally read-only and lenient. Unknown fields

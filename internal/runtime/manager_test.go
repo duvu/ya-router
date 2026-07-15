@@ -189,3 +189,32 @@ func TestRuntimeSnapshotDeepCopiesConfig(t *testing.T) {
 		t.Fatal("snapshot exposed mutable effective config")
 	}
 }
+
+func TestRetirementPendingTracksOutOfOrderDrains(t *testing.T) {
+	config := &configschema.Config{}
+	first := newSnapshot(1, config, nil)
+	second := newSnapshot(2, config, nil)
+	if !first.tryAcquire() || !second.tryAcquire() {
+		t.Fatal("failed to acquire test snapshots")
+	}
+	first.retire()
+	second.retire()
+	retirement := newRetirement([]*Snapshot{first, second})
+	if got := retirement.Pending(); got != 2 {
+		t.Fatalf("initial pending snapshots = %d, want 2", got)
+	}
+
+	second.release()
+	if got := retirement.Pending(); got != 1 {
+		t.Fatalf("pending after second snapshot drained first = %d, want 1", got)
+	}
+	first.release()
+	waitContext, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := retirement.Wait(waitContext); err != nil {
+		t.Fatalf("retirement wait: %v", err)
+	}
+	if got := retirement.Pending(); got != 0 {
+		t.Fatalf("final pending snapshots = %d, want 0", got)
+	}
+}

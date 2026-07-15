@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -44,28 +45,33 @@ type CircuitBreaker struct {
 	lastFailureTime time.Time
 	state           CircuitBreakerState
 	timeout         time.Duration
-	mutex           sync.RWMutex
+	probeInFlight   bool
+	mutex           sync.Mutex
 }
 
 func (cb *CircuitBreaker) canExecute() bool {
-	cb.mutex.RLock()
-	defer cb.mutex.RUnlock()
+	cb.mutex.Lock()
+	defer cb.mutex.Unlock()
 
-	if cb.state == CircuitClosed {
+	switch cb.state {
+	case CircuitClosed:
 		return true
-	}
-	if cb.state == CircuitOpen {
+	case CircuitOpen:
 		if time.Since(cb.lastFailureTime) > cb.timeout {
-			cb.mutex.RUnlock()
-			cb.mutex.Lock()
 			cb.state = CircuitHalfOpen
-			cb.mutex.Unlock()
-			cb.mutex.RLock()
+			cb.probeInFlight = true
 			return true
 		}
 		return false
+	case CircuitHalfOpen:
+		if cb.probeInFlight {
+			return false
+		}
+		cb.probeInFlight = true
+		return true
+	default:
+		return false
 	}
-	return true // CircuitHalfOpen
 }
 
 func (cb *CircuitBreaker) onSuccess() {
@@ -73,13 +79,19 @@ func (cb *CircuitBreaker) onSuccess() {
 	defer cb.mutex.Unlock()
 	cb.failureCount = 0
 	cb.state = CircuitClosed
+	cb.probeInFlight = false
 }
 
 func (cb *CircuitBreaker) onFailure() {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
-	cb.failureCount++
+	if cb.state == CircuitHalfOpen {
+		cb.failureCount = circuitBreakerFailureThreshold
+	} else {
+		cb.failureCount++
+	}
 	cb.lastFailureTime = time.Now()
+	cb.probeInFlight = false
 	if cb.failureCount >= circuitBreakerFailureThreshold {
 		cb.state = CircuitOpen
 	}
@@ -116,11 +128,14 @@ var bufferPool = sync.Pool{
 
 // WorkerPool dispatches jobs across a fixed goroutine pool.
 type WorkerPool struct {
-	workers  int
-	jobQueue chan func()
-	quit     chan bool
-	wg       sync.WaitGroup
-	stopOnce sync.Once
+	workers        int
+	jobQueue       chan func()
+	spaceAvailable chan struct{}
+	quit           chan struct{}
+	wg             sync.WaitGroup
+	stopOnce       sync.Once
+	stateMu        sync.Mutex
+	stopped        bool
 }
 
 func NewWorkerPool(workers int) *WorkerPool {
@@ -128,9 +143,10 @@ func NewWorkerPool(workers int) *WorkerPool {
 		workers = runtime.NumCPU() * 2
 	}
 	wp := &WorkerPool{
-		workers:  workers,
-		jobQueue: make(chan func(), workers*2),
-		quit:     make(chan bool),
+		workers:        workers,
+		jobQueue:       make(chan func(), workers*2),
+		spaceAvailable: make(chan struct{}, 1),
+		quit:           make(chan struct{}),
 	}
 	wp.start()
 	return wp
@@ -144,7 +160,13 @@ func (wp *WorkerPool) start() {
 			for {
 				select {
 				case job := <-wp.jobQueue:
-					job()
+					select {
+					case wp.spaceAvailable <- struct{}{}:
+					default:
+					}
+					if job != nil {
+						job()
+					}
 				case <-wp.quit:
 					return
 				}
@@ -153,9 +175,49 @@ func (wp *WorkerPool) start() {
 	}
 }
 
-func (wp *WorkerPool) Submit(job func()) { wp.jobQueue <- job }
+func (wp *WorkerPool) Submit(job func()) bool {
+	return wp.SubmitContext(context.Background(), job)
+}
+
+// SubmitContext applies bounded backpressure and stops waiting when the caller
+// is cancelled. No job is accepted after Stop begins.
+func (wp *WorkerPool) SubmitContext(ctx context.Context, job func()) bool {
+	if wp == nil || job == nil {
+		return false
+	}
+	for {
+		wp.stateMu.Lock()
+		if wp.stopped {
+			wp.stateMu.Unlock()
+			return false
+		}
+		select {
+		case wp.jobQueue <- job:
+			wp.stateMu.Unlock()
+			return true
+		default:
+			wp.stateMu.Unlock()
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-wp.quit:
+			return false
+		case <-wp.spaceAvailable:
+		}
+	}
+}
+
 func (wp *WorkerPool) Stop() {
-	wp.stopOnce.Do(func() { close(wp.quit) })
+	if wp == nil {
+		return
+	}
+	wp.stopOnce.Do(func() {
+		wp.stateMu.Lock()
+		wp.stopped = true
+		close(wp.quit)
+		wp.stateMu.Unlock()
+	})
 	wp.wg.Wait()
 }
 
@@ -360,34 +422,35 @@ func capabilityFromPath(path string) (Capability, error) {
 }
 
 // proxyHandler is the HTTP handler factory for proxied API paths.
-func proxyHandler(pool *WorkerPool, registry *ProviderRegistry, router *ModelRouter, cfg *Config) http.HandlerFunc {
+func proxyHandler(registry *ProviderRegistry, router *ModelRouter, cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.Timeouts.ProxyContext)*time.Second)
 		defer cancel()
 
 		r.Body = http.MaxBytesReader(w, r.Body, 5*1024*1024)
 		rw := &responseWrapper{ResponseWriter: w}
-		done := make(chan error, 1)
-
-		pool.Submit(func() {
-			defer func() {
-				if rec := recover(); rec != nil {
-					log.Printf("Worker panic: %v", rec)
-					done <- newProviderError("", ProviderErrorTransport, http.StatusInternalServerError, false, "internal server error")
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				log.Printf("proxy panic: %v", recovered)
+				if !rw.headersSent {
+					writeOpenAIError(rw, http.StatusInternalServerError,
+						newProviderError("", ProviderErrorTransport, http.StatusInternalServerError, false, "internal server error"))
 				}
-			}()
-			done <- processProxyRequest(registry, router, cfg, rw, r, ctx)
-		})
-
-		select {
-		case err := <-done:
-			if err != nil && !rw.headersSent {
-				writeOpenAIError(rw, providerErrorStatus(err), err)
 			}
-		case <-ctx.Done():
-			if !rw.headersSent {
-				writeOpenAIError(rw, http.StatusGatewayTimeout, ctx.Err())
+		}()
+		// net/http already executes handlers concurrently. Keeping provider work on
+		// this goroutine ensures ResponseWriter is never used after ServeHTTP
+		// returns and makes the request context the sole lifetime boundary.
+		err := processProxyRequest(registry, router, cfg, rw, r, ctx)
+		if err == nil && ctx.Err() != nil && !rw.headersSent {
+			err = ctx.Err()
+		}
+		if err != nil && !rw.headersSent {
+			status := providerErrorStatus(err)
+			if errors.Is(err, context.DeadlineExceeded) {
+				status = http.StatusGatewayTimeout
 			}
+			writeOpenAIError(rw, status, err)
 		}
 	}
 }

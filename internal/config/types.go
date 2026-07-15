@@ -28,6 +28,7 @@ type CopilotAuthState struct {
 
 // CopilotAccount is one entry in the Copilot account pool.
 type CopilotAccount struct {
+	ID            string           `json:"id,omitempty"`
 	Label         string           `json:"label"`
 	Auth          CopilotAuthState `json:"auth"`
 	LastLimitedAt int64            `json:"last_limited_at,omitempty"`
@@ -54,6 +55,7 @@ type CodexAuthState struct {
 
 // CodexAccount is one entry in the Codex account pool.
 type CodexAccount struct {
+	ID            string         `json:"id,omitempty"`
 	Label         string         `json:"label"`
 	Auth          CodexAuthState `json:"auth"`
 	LastLimitedAt int64          `json:"last_limited_at,omitempty"`
