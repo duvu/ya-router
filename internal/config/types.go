@@ -1,7 +1,13 @@
-// Package config defines the persisted configuration schema. Persistence and
-// migration remain in the service package until the revisioned config manager
-// is introduced by YA-TUI-03.
+// Package config defines the persisted configuration schema.
 package config
+
+// SecretReference identifies a credential managed by a SecretStore. The raw
+// value is intentionally not part of this structure.
+type SecretReference struct {
+	ID       string `json:"id"`
+	Source   string `json:"source,omitempty"`
+	ReadOnly bool   `json:"read_only,omitempty"`
+}
 
 // Routing controls how the model router dispatches requests.
 type Routing struct {
@@ -17,13 +23,17 @@ type ModelMapEntry struct {
 	UpstreamModel string `json:"upstream_model,omitempty"`
 }
 
-// CopilotAuthState holds persisted Copilot authentication state.
+// CopilotAuthState holds persisted Copilot authentication state. Direct secret
+// fields remain readable for V1 compatibility; managed control-plane writes use
+// the corresponding references once YA-TUI-07 installs a SecretStore.
 type CopilotAuthState struct {
-	Mode         string `json:"mode"`
-	GitHubToken  string `json:"github_token,omitempty"`
-	CopilotToken string `json:"copilot_token,omitempty"`
-	ExpiresAt    int64  `json:"expires_at,omitempty"`
-	RefreshIn    int64  `json:"refresh_in,omitempty"`
+	Mode            string           `json:"mode"`
+	GitHubToken     string           `json:"github_token,omitempty"`
+	GitHubTokenRef  *SecretReference `json:"github_token_ref,omitempty"`
+	CopilotToken    string           `json:"copilot_token,omitempty"`
+	CopilotTokenRef *SecretReference `json:"copilot_token_ref,omitempty"`
+	ExpiresAt       int64            `json:"expires_at,omitempty"`
+	RefreshIn       int64            `json:"refresh_in,omitempty"`
 }
 
 // CopilotAccount is one entry in the Copilot account pool.
@@ -45,12 +55,15 @@ type CopilotProvider struct {
 
 // CodexAuthState holds auth configuration and persisted token state.
 type CodexAuthState struct {
-	Mode         string `json:"mode"`
-	APIKey       string `json:"api_key,omitempty"`
-	AccessToken  string `json:"access_token,omitempty"`
-	RefreshToken string `json:"refresh_token,omitempty"`
-	ExpiresAt    int64  `json:"expires_at,omitempty"`
-	AccountID    string `json:"account_id,omitempty"`
+	Mode            string           `json:"mode"`
+	APIKey          string           `json:"api_key,omitempty"`
+	APIKeyRef       *SecretReference `json:"api_key_ref,omitempty"`
+	AccessToken     string           `json:"access_token,omitempty"`
+	AccessTokenRef  *SecretReference `json:"access_token_ref,omitempty"`
+	RefreshToken    string           `json:"refresh_token,omitempty"`
+	RefreshTokenRef *SecretReference `json:"refresh_token_ref,omitempty"`
+	ExpiresAt       int64            `json:"expires_at,omitempty"`
+	AccountID       string           `json:"account_id,omitempty"`
 }
 
 // CodexAccount is one entry in the Codex account pool.
@@ -73,12 +86,14 @@ type CodexProvider struct {
 
 // KiloProvider holds settings for the OpenAI-compatible Kilo Gateway.
 type KiloProvider struct {
-	Enabled        bool     `json:"enabled"`
-	AllowAnonymous bool     `json:"allow_anonymous"`
-	APIKey         string   `json:"api_key,omitempty"`
-	OrganizationID string   `json:"organization_id,omitempty"`
-	BaseURL        string   `json:"base_url,omitempty"`
-	AllowedModels  []string `json:"allowed_models"`
+	Enabled           bool             `json:"enabled"`
+	AllowAnonymous    bool             `json:"allow_anonymous"`
+	APIKey            string           `json:"api_key,omitempty"`
+	APIKeyRef         *SecretReference `json:"api_key_ref,omitempty"`
+	OrganizationID    string           `json:"organization_id,omitempty"`
+	OrganizationIDRef *SecretReference `json:"organization_id_ref,omitempty"`
+	BaseURL           string           `json:"base_url,omitempty"`
+	AllowedModels     []string         `json:"allowed_models"`
 }
 
 // Providers groups all provider configurations.
