@@ -1,19 +1,20 @@
 name: Apply YA-TUI-06 implementation
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/ya-tui-06-operations-cleanup
+      - agent/ya-tui-06-staging
 
 permissions:
   contents: write
 
 jobs:
   apply:
+    if: github.head_ref == 'agent/ya-tui-06-operations-cleanup'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Checkout branch
+      - name: Checkout source branch
         uses: actions/checkout@v4
         with:
           ref: agent/ya-tui-06-operations-cleanup
