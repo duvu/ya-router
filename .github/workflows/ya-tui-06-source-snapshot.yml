@@ -3,11 +3,10 @@ name: Apply YA-TUI-06 implementation
 on:
   pull_request:
     branches:
-      - agent/ya-tui-06-staging
+      - agent/ya-tui-06-staging-validate
 
 permissions:
   contents: write
-  actions: read
 
 jobs:
   apply:
@@ -21,26 +20,12 @@ jobs:
           ref: agent/ya-tui-06-operations-cleanup
           fetch-depth: 0
 
-      - name: Assemble staged payload
+      - name: Apply verified source overlay
         shell: bash
         run: |
           set -euo pipefail
           test -f .tmp/ya-tui-06-overlay.ready
           cat .tmp/ya-tui-06-overlay.part* > /tmp/ya-tui-06-overlay.b64
-          wc -c .tmp/ya-tui-06-overlay.part* /tmp/ya-tui-06-overlay.b64
-
-      - name: Upload assembled payload diagnostics
-        uses: actions/upload-artifact@v4
-        with:
-          name: ya-tui-06-assembled-payload
-          path: /tmp/ya-tui-06-overlay.b64
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Apply verified source overlay
-        shell: bash
-        run: |
-          set -euo pipefail
           test "$(wc -c < /tmp/ya-tui-06-overlay.b64)" = "42412"
           base64 --decode /tmp/ya-tui-06-overlay.b64 > /tmp/ya-tui-06-overlay.tar.gz
           echo '2fac2346ac042a146cdb9432600eaa916df0e5470ea960260756e4262592710b  /tmp/ya-tui-06-overlay.tar.gz' | sha256sum -c -
@@ -54,7 +39,10 @@ jobs:
         run: |
           set -euo pipefail
           unformatted="$(gofmt -l ./cmd ./internal ./src)"
-          test -z "$unformatted"
+          if [ -n "$unformatted" ]; then
+            printf 'Files require gofmt:\n%s\n' "$unformatted"
+            exit 1
+          fi
           go vet ./...
           go test -race -count=1 ./...
           go build -trimpath -o /tmp/ya-router ./cmd/ya-router
@@ -62,7 +50,7 @@ jobs:
           go build -trimpath -o /tmp/ya ./cmd/ya
           python -c "import yaml; yaml.safe_load(open('docs/api/control-v1.openapi.yaml'))"
 
-      - name: Commit implementation
+      - name: Commit implementation to clean output branch
         shell: bash
         run: |
           set -euo pipefail
@@ -70,4 +58,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "feat(operations): add persistent async operations"
-          git push origin HEAD:agent/ya-tui-06-operations-cleanup
+          git push origin HEAD:refs/heads/agent/ya-tui-06-source-ready
