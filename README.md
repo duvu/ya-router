@@ -7,7 +7,7 @@
 - OpenAI Platform API-key access;
 - Kilo AI Gateway, including `kilo-auto/free`.
 
-It exposes one client-facing API while keeping provider authentication, model routing, request translation, rate-limit failover, and transport policy inside provider implementations.
+It exposes one client-facing API while keeping provider authentication, model routing, request translation, provider-internal rate-limit handling, and transport policy inside provider implementations.
 
 ## Security model
 
@@ -83,6 +83,33 @@ in-flight requests retain their original snapshot while replaced instances
 drain for a bounded, observable duration. Compiled-in provider descriptors
 remain available independently from active instances, forming the lifecycle
 foundation for the future Control API and TUI.
+
+## Planned umbrella model routing
+
+Umbrella models are planned client-facing virtual model IDs such as
+`router/auto`. Each umbrella model contains an ordered list of canonical
+provider-prefixed targets. The router will select the first target that is
+active for the requested capability, then pin that provider/model for the full
+request.
+
+This is **selection before dispatch**, not cross-provider failover. If the
+selected target returns an auth, entitlement, rate-limit, upstream, timeout, or
+transport error, that error is returned to the client. The same request is not
+retried against another target. A later request may select a different target
+after health or catalog state changes.
+
+The first version is intentionally narrow: priority order only, provider-prefixed
+targets only, and no nested umbrella models, weighted routing, prompt analysis,
+or cost/latency scoring.
+
+- [Umbrella model routing architecture](docs/architecture/umbrella-model-routing.md)
+- [Umbrella model routing roadmap](docs/roadmaps/umbrella-model-routing-roadmap.md)
+- [Wiki source: Umbrella Model Routing](docs/wiki/Umbrella-Model-Routing.md)
+- [Implementation epic #25](https://github.com/duvu/ya-router/issues/25)
+
+Runtime support is not implemented yet. Do not add `routing.virtual_models` to
+production configuration until the core implementation issues #26 through #29
+are accepted.
 
 ## Quick start
 
