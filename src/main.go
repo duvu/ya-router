@@ -114,6 +114,16 @@ func Execute(args []string) int {
 			fmt.Printf("Invalid config-migrate mode: %s\n", mode)
 			return 2
 		}
+		releaseState, err := acquireManagedConfigState("ya-routerd")
+		if err != nil {
+			fmt.Printf("Server failed: %v\n", err)
+			return 1
+		}
+		defer func() {
+			if err := releaseState(); err != nil {
+				fmt.Printf("State shutdown warning: %v\n", err)
+			}
+		}()
 		if err := handleRunWithMigration(mode); err != nil {
 			fmt.Printf("Server failed: %v\n", err)
 			return 1
