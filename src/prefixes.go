@@ -13,6 +13,8 @@ const (
 	CopilotModelPrefix = "github/"
 	// CodexModelPrefix is the namespace prefix for OpenAI Codex models.
 	CodexModelPrefix = "codex/"
+	// KiloModelPrefix is the namespace prefix for Kilo Gateway models.
+	KiloModelPrefix = "kilo/"
 )
 
 // ProviderPrefix returns the model ID prefix for the given provider.
@@ -23,6 +25,8 @@ func ProviderPrefix(providerID ProviderID) string {
 		return CopilotModelPrefix
 	case ProviderCodex:
 		return CodexModelPrefix
+	case ProviderKilo:
+		return KiloModelPrefix
 	default:
 		return ""
 	}
@@ -35,6 +39,8 @@ func ProviderOwnedBy(providerID ProviderID) string {
 		return "github-copilot"
 	case ProviderCodex:
 		return "openai"
+	case ProviderKilo:
+		return "kilo"
 	default:
 		return "openai"
 	}
@@ -60,6 +66,8 @@ func StripModelPrefix(modelID string) (bare string, provider ProviderID, ok bool
 		return modelID[len(CopilotModelPrefix):], ProviderCopilot, true
 	case strings.HasPrefix(modelID, CodexModelPrefix):
 		return modelID[len(CodexModelPrefix):], ProviderCodex, true
+	case strings.HasPrefix(modelID, KiloModelPrefix):
+		return modelID[len(KiloModelPrefix):], ProviderKilo, true
 	default:
 		return modelID, "", false
 	}

@@ -105,10 +105,24 @@ type CodexProviderConfig struct {
 	ChatGPTBaseURL         string         `json:"chatgpt_base_url,omitempty"`
 }
 
+// KiloProviderConfig holds settings for the OpenAI-compatible Kilo Gateway.
+// APIKey may be populated through the CLI, but KILO_API_KEY is preferred for
+// server deployments. When AllowAnonymous is true and no key is configured,
+// the provider exposes and accepts only free model IDs.
+type KiloProviderConfig struct {
+	Enabled        bool     `json:"enabled"`
+	AllowAnonymous bool     `json:"allow_anonymous"`
+	APIKey         string   `json:"api_key,omitempty"`
+	OrganizationID string   `json:"organization_id,omitempty"`
+	BaseURL        string   `json:"base_url,omitempty"`
+	AllowedModels  []string `json:"allowed_models"`
+}
+
 // ProvidersConfig groups all provider configurations.
 type ProvidersConfig struct {
 	Copilot CopilotProviderConfig `json:"copilot"`
 	Codex   CodexProviderConfig   `json:"codex"`
+	Kilo    KiloProviderConfig    `json:"kilo"`
 }
 
 // TimeoutsConfig holds all timeout values (seconds).
@@ -326,6 +340,8 @@ func defaultConfig() *Config {
 	// allowed_models left empty = allow all models from upstream
 	cfg.Providers.Codex.Enabled = false
 	cfg.Providers.Codex.Auth.Mode = "device_code"
+	cfg.Providers.Kilo.Enabled = false
+	cfg.Providers.Kilo.AllowAnonymous = true
 	setDefaultTimeouts(cfg)
 	return cfg
 }
@@ -486,6 +502,9 @@ func mergeConfigs(existing *Config, defaults *Config, mode ConfigMigrationMode) 
 		}
 		if merged.Providers.Copilot.AllowedModels == nil {
 			merged.Providers.Copilot.AllowedModels = defaults.Providers.Copilot.AllowedModels
+		}
+		if merged.Providers.Kilo.AllowedModels == nil {
+			merged.Providers.Kilo.AllowedModels = defaults.Providers.Kilo.AllowedModels
 		}
 		mergeTimeouts(&merged.Timeouts, &defaults.Timeouts)
 		return &merged

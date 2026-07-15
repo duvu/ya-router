@@ -4,7 +4,8 @@
 
 - GitHub Copilot;
 - ChatGPT-backed OpenAI Codex;
-- OpenAI Platform API-key access.
+- OpenAI Platform API-key access;
+- Kilo AI Gateway, including `kilo-auto/free`.
 
 It exposes one client-facing API while keeping provider authentication, model routing, request translation, rate-limit failover, and transport policy inside provider implementations.
 
@@ -35,6 +36,8 @@ ChatGPT-backed Codex uses a first-party-style OAuth/device flow and the ChatGPT 
 | `GET /health/providers` | Redacted provider health and capabilities |
 
 ChatGPT-authenticated Codex supports chat and native Responses. Embeddings require OpenAI Platform API-key mode; the router fails explicitly rather than sending a ChatGPT token to a Platform endpoint.
+
+Kilo Gateway supports Chat Completions and native Responses passthrough. Its public model catalog is discovered dynamically. Without `KILO_API_KEY`, ya-router exposes only anonymous/free Kilo models.
 
 ## Build and validate
 
@@ -102,6 +105,33 @@ printf '%s\n' "$CHATGPT_ACCESS_TOKEN" | ./ya-router auth codex --token-stdin
 ```
 
 Manual access tokens do not carry a refresh token and should not be used for normal operation.
+
+### Kilo Gateway and Auto Free
+
+Enable anonymous access to Kilo's free model catalog:
+
+```bash
+./ya-router auth kilo
+./ya-router run
+```
+
+The stable Auto Free model is exposed as `kilo/kilo-auto/free` and forwarded upstream as `kilo-auto/free`. Kilo documents anonymous free access as rate-limited by source IP.
+
+For authenticated or paid models, prefer the process environment:
+
+```bash
+export KILO_API_KEY=your_kilo_api_key
+./ya-router auth kilo
+./ya-router run
+```
+
+Alternatively, import the key into ya-router's `0600` config through stdin:
+
+```bash
+printf '%s\n' "$KILO_API_KEY" | ./ya-router auth kilo --api-key-stdin
+```
+
+Auto Free may route requests to providers that log prompts and outputs or use them to improve services. Do not send confidential, personal, or regulated data through `kilo-auto/free`.
 
 ## Server exposure
 
@@ -207,6 +237,7 @@ Provider prefixes make routing deterministic:
 |---|---|---|
 | `github/` | GitHub Copilot | `github/gpt-4o` |
 | `codex/` | OpenAI Codex | `codex/gpt-5.4` |
+| `kilo/` | Kilo AI Gateway | `kilo/kilo-auto/free` |
 
 Resolution order:
 
@@ -215,7 +246,7 @@ Resolution order:
 3. provider catalog discovery;
 4. configured default provider only when the request omitted a model.
 
-A `codex/*` request cannot enter Copilot, and a `github/*` request cannot enter Codex. Unknown explicit bare model names fail. The default provider is used only when the request omitted a model. Ambiguous bare model names fail with a message asking for a prefix or explicit mapping.
+A prefixed request cannot enter another provider: `kilo/*`, `codex/*`, and `github/*` remain isolated. Unknown explicit bare model names fail. The default provider is used only when the request omitted a model. Ambiguous bare model names fail with a message asking for a prefix or explicit mapping.
 
 Example config:
 

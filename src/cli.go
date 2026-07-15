@@ -17,11 +17,11 @@ func printUsage() {
 	fmt.Printf("Commands:\n")
 	fmt.Printf("  run|start             Start the proxy server\n")
 	fmt.Printf("    --config-migrate    Config migration mode: merge (default), none, override\n")
-	fmt.Printf("  auth [copilot|codex]  Authenticate a provider (default: copilot)\n")
+	fmt.Printf("  auth [copilot|codex|kilo] Authenticate or enable a provider (default: copilot)\n")
 	fmt.Printf("    --mode              Auth mode: device_code (default)\n")
 	fmt.Printf("    --account <label>   Account label for multi-account pool\n")
-	fmt.Printf("    --api-key <key>     Legacy API-key input; prefer OPENAI_API_KEY\n")
-	fmt.Printf("    --token <token>     Legacy manual token input; prefer device auth\n")
+	fmt.Printf("    --api-key-stdin     Read a Codex or Kilo API key from stdin\n")
+	fmt.Printf("    --token-stdin       Read a ChatGPT manual token from stdin (recovery only)\n")
 	fmt.Printf("  status                Show authentication status for all providers\n")
 	fmt.Printf("  config                Show current configuration\n")
 	fmt.Printf("  models [--provider P] [--refresh] List models\n")
@@ -33,6 +33,10 @@ func printUsage() {
 	fmt.Printf("  YA_ROUTER_LISTEN_ADDRESS         Defaults to 127.0.0.1\n")
 	fmt.Printf("  YA_ROUTER_API_KEY                Required for non-loopback binding\n")
 	fmt.Printf("  YA_ROUTER_CORS_ALLOWED_ORIGINS   Comma-separated origin allowlist\n\n")
+	fmt.Printf("Kilo environment:\n")
+	fmt.Printf("  KILO_API_KEY                     Optional; free models support anonymous access\n")
+	fmt.Printf("  KILO_ORG_ID                      Optional organization context\n")
+	fmt.Printf("  KILO_GATEWAY_BASE_URL            Defaults to https://api.kilo.ai/api/gateway\n\n")
 	flag.PrintDefaults()
 }
 
@@ -178,6 +182,35 @@ func handleAuthCodexManualToken(token, accountLabel string) error {
 	return nil
 }
 
+func handleAuthKiloAnonymous() error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+	cfg.Providers.Kilo.Enabled = true
+	cfg.Providers.Kilo.AllowAnonymous = true
+	if err := saveConfig(cfg); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+	fmt.Println("Kilo Gateway enabled in anonymous mode (free model IDs only).")
+	return nil
+}
+
+func handleAuthKiloAPIKey(apiKey string) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+	cfg.Providers.Kilo.Enabled = true
+	cfg.Providers.Kilo.AllowAnonymous = true
+	cfg.Providers.Kilo.APIKey = apiKey
+	if err := saveConfig(cfg); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+	fmt.Println("Kilo Gateway API key stored in ya-router's local credential config.")
+	return nil
+}
+
 func handleStatus() error {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -191,6 +224,9 @@ func handleStatus() error {
 	}
 	if cfg.Providers.Codex.Enabled {
 		printCodexStatus(cfg)
+	}
+	if cfg.Providers.Kilo.Enabled {
+		printKiloStatus(cfg)
 	}
 	return nil
 }
@@ -346,6 +382,21 @@ func printCodexAuthLines(auth *CodexAuthState) {
 	fmt.Printf("  Backend: %s\n", defaultChatGPTBaseURL)
 }
 
+func printKiloStatus(cfg *Config) {
+	provider := NewKiloProvider(cfg)
+	health := provider.Health(context.Background())
+	_, source := provider.apiKey()
+	backend, backendErr := provider.baseURL()
+	if backendErr != nil {
+		backend = "invalid configuration"
+	}
+	fmt.Println("Provider: Kilo Gateway")
+	fmt.Printf("  Ready: %t\n", health.Authenticated)
+	fmt.Printf("  Credential source: %s\n", source)
+	fmt.Printf("  Anonymous free models: %t\n", cfg.Providers.Kilo.AllowAnonymous)
+	fmt.Printf("  Backend: %s\n\n", backend)
+}
+
 func handleConfig() error {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -360,6 +411,7 @@ func handleConfig() error {
 	fmt.Printf("Default provider: %s\n", cfg.Routing.DefaultProvider)
 	fmt.Printf("Copilot enabled: %t\n", cfg.Providers.Copilot.Enabled)
 	fmt.Printf("Codex enabled: %t\n", cfg.Providers.Codex.Enabled)
+	fmt.Printf("Kilo enabled: %t\n", cfg.Providers.Kilo.Enabled)
 	return nil
 }
 
@@ -389,6 +441,9 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 	}
 	if cfg.Providers.Codex.Enabled {
 		registry.Register(NewCodexProvider(cfg))
+	}
+	if cfg.Providers.Kilo.Enabled {
+		registry.Register(NewKiloProvider(cfg))
 	}
 	ctx := context.Background()
 	for _, provider := range registry.All() {
@@ -461,6 +516,9 @@ func handleModels(providerFilter string, forceRefresh bool) error {
 	if cfg.Providers.Codex.Enabled {
 		registry.Register(NewCodexProvider(cfg))
 	}
+	if cfg.Providers.Kilo.Enabled {
+		registry.Register(NewKiloProvider(cfg))
+	}
 	ctx := context.Background()
 	for _, provider := range registry.All() {
 		if providerFilter != "" && string(provider.ID()) != providerFilter {
@@ -506,6 +564,15 @@ func handleRefresh(providerFilter string) error {
 		if err := refreshCodex(cfg); err != nil {
 			return err
 		}
+	}
+	if providerFilter == string(ProviderKilo) && cfg.Providers.Kilo.Enabled {
+		provider := NewKiloProvider(cfg)
+		provider.InvalidateModelCache()
+		models, err := provider.ListModels(context.Background())
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Kilo model catalog refreshed (%d models).\n", len(models.Data))
 	}
 	return nil
 }

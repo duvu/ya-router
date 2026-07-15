@@ -52,6 +52,7 @@ Current prefixes:
 
 - `github/` → GitHub Copilot.
 - `codex/` → OpenAI Codex.
+- `kilo/` → Kilo AI Gateway.
 
 Unknown explicit models fail. Ambiguous bare model names fail. A prefixed request never falls through to another provider. Cross-provider billing fallback is forbidden without a separate accepted specification.
 
@@ -81,6 +82,18 @@ Providers expose only the capabilities their current auth mode can safely serve.
 - ChatGPT mode supports chat and native Responses.
 - Embeddings require API-key mode.
 - A ChatGPT `401` permits at most one refresh and one request retry.
+
+### Kilo Gateway
+
+- Provider runtime: `src/kilo_provider.go`.
+- Default backend: `https://api.kilo.ai/api/gateway`.
+- Dynamic model discovery through `GET /models`.
+- Chat Completions and native Responses passthrough; embeddings are not advertised.
+- `KILO_API_KEY` is optional for free anonymous models and takes precedence over config import.
+- Anonymous mode exposes and accepts only free model IDs, including `kilo-auto/free`.
+- Inbound router credentials are never forwarded to Kilo.
+- Kilo status codes and SSE events pass through unchanged.
+- Auto Free carries an explicit warning against confidential, personal, or regulated data.
 
 ## Protocol and Error Contract
 
@@ -115,6 +128,7 @@ Providers expose only the capabilities their current auth mode can safely serve.
 - `src/proxy_test.go` and `src/proxy_freepool_regression_test.go`: dispatch, status, retry, and free-pool regressions.
 - `src/responses_adapter_test.go`: Chat Completions/Responses conversion and streaming events.
 - `src/hardening_test.go`: security, auth, routing, and transport boundaries.
+- `src/kilo_provider_test.go`: Kilo catalog filtering, credential isolation, status/SSE passthrough, and base-URL policy.
 - Provider-specific and prefix tests alongside production sources.
 
 ## Provider Drift Rule
