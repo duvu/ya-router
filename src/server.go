@@ -1,4 +1,4 @@
-package main
+package yarouter
 
 import (
 	"context"
@@ -9,27 +9,9 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 )
-
-var healthRegistryState struct {
-	sync.RWMutex
-	registry *ProviderRegistry
-}
-
-func setHealthRegistry(registry *ProviderRegistry) {
-	healthRegistryState.Lock()
-	healthRegistryState.registry = registry
-	healthRegistryState.Unlock()
-}
-
-func currentHealthRegistry() *ProviderRegistry {
-	healthRegistryState.RLock()
-	defer healthRegistryState.RUnlock()
-	return healthRegistryState.registry
-}
 
 func setupGracefulShutdown(server *http.Server) {
 	signals := make(chan os.Signal, 1)
@@ -37,7 +19,6 @@ func setupGracefulShutdown(server *http.Server) {
 	go func() {
 		<-signals
 		fmt.Println("\nGracefully shutting down...")
-		globalWorkerPool.Stop()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {
@@ -46,24 +27,25 @@ func setupGracefulShutdown(server *http.Server) {
 	}()
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimSuffix(r.URL.Path, "/")
-	switch path {
-	case "/health/ready":
-		writeReadiness(w, r)
-	case "/health/providers":
-		writeProviderHealth(w, r)
-	default:
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"status":    "ok",
-			"service":   "ya-router",
-			"timestamp": time.Now().Unix(),
-		})
+func healthHandler(registry *ProviderRegistry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimSuffix(r.URL.Path, "/")
+		switch path {
+		case "/health/ready":
+			writeReadiness(w, r, registry)
+		case "/health/providers":
+			writeProviderHealth(w, r, registry)
+		default:
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"status":    "ok",
+				"service":   "ya-router",
+				"timestamp": time.Now().Unix(),
+			})
+		}
 	}
 }
 
-func writeReadiness(w http.ResponseWriter, r *http.Request) {
-	registry := currentHealthRegistry()
+func writeReadiness(w http.ResponseWriter, r *http.Request, registry *ProviderRegistry) {
 	if registry == nil || len(registry.All()) == 0 {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
 			"status": "not_ready",
@@ -90,8 +72,7 @@ func writeReadiness(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func writeProviderHealth(w http.ResponseWriter, r *http.Request) {
-	registry := currentHealthRegistry()
+func writeProviderHealth(w http.ResponseWriter, r *http.Request, registry *ProviderRegistry) {
 	providers := make([]map[string]interface{}, 0)
 	if registry != nil {
 		for _, provider := range registry.All() {

@@ -1,5 +1,5 @@
 // models.go — unified /v1/models handler and shared model utilities.
-package main
+package yarouter
 
 import (
 	"context"

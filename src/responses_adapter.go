@@ -1,6 +1,6 @@
 // responses_adapter.go converts between OpenAI Chat Completions and Responses
 // formats while preserving structured output and tool-call semantics.
-package main
+package yarouter
 
 import (
 	"bufio"

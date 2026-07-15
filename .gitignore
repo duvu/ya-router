@@ -43,3 +43,5 @@ context_portal/**/*.pyc
 
 # Compiled build output
 /ya-router
+/ya-routerd
+/ya

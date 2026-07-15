@@ -1,5 +1,5 @@
 // cli.go — command-line command handlers.
-package main
+package yarouter
 
 import (
 	"context"
@@ -9,6 +9,8 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"time"
+
+	runtimepkg "github.com/duvu/ya-router/internal/runtime"
 )
 
 func printUsage() {
@@ -452,19 +454,25 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 		}
 	}
 	router := NewModelRouter(registry, cfg.Routing)
+	components, err := runtimepkg.NewComponents(cfg, registry, router)
+	if err != nil {
+		return fmt.Errorf("compose runtime: %w", err)
+	}
+	workerPool := NewWorkerPool(0)
+	defer workerPool.Stop()
 	setupLogging()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/models", modelsHandler(registry, cfg))
-	mux.HandleFunc("/v1/models/", modelsHandler(registry, cfg))
-	mux.HandleFunc("/v1/embeddings", proxyHandler(registry, router, cfg))
-	mux.HandleFunc("/v1/embeddings/", proxyHandler(registry, router, cfg))
-	mux.HandleFunc("/v1/chat/completions", proxyHandler(registry, router, cfg))
-	mux.HandleFunc("/v1/chat/completions/", proxyHandler(registry, router, cfg))
-	mux.HandleFunc("/v1/responses", proxyHandler(registry, router, cfg))
-	mux.HandleFunc("/v1/responses/", proxyHandler(registry, router, cfg))
-	mux.HandleFunc("/health", healthHandler)
-	mux.HandleFunc("/health/", healthHandler)
+	mux.HandleFunc("/v1/models", modelsHandler(components.Providers, components.Config))
+	mux.HandleFunc("/v1/models/", modelsHandler(components.Providers, components.Config))
+	mux.HandleFunc("/v1/embeddings", proxyHandler(workerPool, components.Providers, components.Router, components.Config))
+	mux.HandleFunc("/v1/embeddings/", proxyHandler(workerPool, components.Providers, components.Router, components.Config))
+	mux.HandleFunc("/v1/chat/completions", proxyHandler(workerPool, components.Providers, components.Router, components.Config))
+	mux.HandleFunc("/v1/chat/completions/", proxyHandler(workerPool, components.Providers, components.Router, components.Config))
+	mux.HandleFunc("/v1/responses", proxyHandler(workerPool, components.Providers, components.Router, components.Config))
+	mux.HandleFunc("/v1/responses/", proxyHandler(workerPool, components.Providers, components.Router, components.Config))
+	mux.HandleFunc("/health", healthHandler(components.Providers))
+	mux.HandleFunc("/health/", healthHandler(components.Providers))
 	if cfg.EnablePprof {
 		mux.HandleFunc("/debug/pprof/", http.DefaultServeMux.ServeHTTP)
 		mux.HandleFunc("/debug/pprof/cmdline", http.DefaultServeMux.ServeHTTP)

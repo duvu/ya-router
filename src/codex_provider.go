@@ -2,7 +2,7 @@
 //
 // ChatGPT auth uses the ChatGPT/Codex backend only. API-key auth uses OpenAI
 // Platform endpoints only. Credentials never cross those transport domains.
-package main
+package yarouter
 
 import (
 	"bytes"

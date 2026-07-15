@@ -1,5 +1,5 @@
 // kilo_provider.go — Kilo AI Gateway provider implementation.
-package main
+package yarouter
 
 import (
 	"bytes"

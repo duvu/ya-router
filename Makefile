@@ -1,10 +1,21 @@
 BINARY ?= ya-router
+DAEMON_BINARY ?= ya-routerd
+CLIENT_BINARY ?= ya
 VERSION ?= dev
+VERSION_LDFLAG = -X github.com/duvu/ya-router/src.version=$(VERSION)
 
 all: build
 
 build:
-	go build -trimpath -ldflags="-s -w -X main.version=$(VERSION)" -o $(BINARY) ./src
+	go build -trimpath -ldflags="-s -w $(VERSION_LDFLAG)" -o $(BINARY) ./cmd/ya-router
+
+build-daemon:
+	go build -trimpath -ldflags="-s -w $(VERSION_LDFLAG)" -o $(DAEMON_BINARY) ./cmd/ya-routerd
+
+build-client:
+	go build -trimpath -ldflags="-s -w $(VERSION_LDFLAG)" -o $(CLIENT_BINARY) ./cmd/ya
+
+build-all: build build-daemon build-client
 
 run: build
 	./$(BINARY) run
@@ -19,23 +30,23 @@ config: build
 	./$(BINARY) config
 
 clean:
-	rm -f $(BINARY)
+	rm -f $(BINARY) $(DAEMON_BINARY) $(CLIENT_BINARY)
 
 fmt:
-	gofmt -w ./src
+	gofmt -w ./cmd ./internal ./src
 
 fmt-check:
-	@test -z "$$(gofmt -l ./src)" || (gofmt -l ./src && exit 1)
+	@test -z "$$(gofmt -l ./cmd ./internal ./src)" || (gofmt -l ./cmd ./internal ./src && exit 1)
 
 vet:
-	go vet ./src/...
+	go vet ./...
 
 test:
-	go test -race -count=1 ./src/...
+	go test -race -count=1 ./...
 
-check: fmt-check vet test build
+check: fmt-check vet test build-all
 
 help:
-	@echo "Targets: build run auth models config clean fmt fmt-check vet test check"
+	@echo "Targets: build build-daemon build-client build-all run auth models config clean fmt fmt-check vet test check"
 
-.PHONY: all build run auth models config clean fmt fmt-check vet test check help
+.PHONY: all build build-daemon build-client build-all run auth models config clean fmt fmt-check vet test check help
