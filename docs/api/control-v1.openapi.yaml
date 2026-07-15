@@ -1,0 +1,196 @@
+openapi: 3.1.0
+info:
+  title: ya-router Control API
+  version: 1.0.0
+  description: |
+    Isolated management-plane contract for ya-routerd. The Control API does
+    not accept YA_ROUTER_API_KEY and is not served from the OpenAI-compatible
+    data-plane listener.
+servers:
+  - url: http://unix/control/v1
+    description: Local Unix socket transport (socket path is deployment-specific)
+  - url: https://127.0.0.1:7443/control/v1
+    description: Optional loopback TLS transport
+paths:
+  /meta:
+    get:
+      operationId: getControlMeta
+      summary: Negotiate Control API and client compatibility
+      description: |
+        Returns service version, supported Control API versions, feature flags,
+        N/N-1 client compatibility, deployment mode, current configuration
+        revision, and restart-required state. Unsupported clients may call this
+        discovery endpoint and receive compatible=false; other resources reject
+        unsupported clients before executing an operation.
+      security:
+        - localUnixSocket: []
+        - controlBearer: []
+        - mutualTLS: []
+      parameters:
+        - $ref: '#/components/parameters/RequestID'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: Control metadata and compatibility result
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetaResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  securitySchemes:
+    localUnixSocket:
+      type: apiKey
+      in: header
+      name: X-Local-Unix-Socket-Identity
+      description: |
+        Documentation marker only. Local identity is established by Unix socket
+        ownership and mode; clients do not send this header.
+    controlBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-control-token
+      description: |
+        Independent viewer/operator/admin control token. It must differ from
+        YA_ROUTER_API_KEY and is allowed only for explicitly configured loopback
+        TLS administration.
+    mutualTLS:
+      type: mutualTLS
+      description: |
+        Required for non-loopback remote administration. Verified URI SAN,
+        full subject, or Common Name values map to viewer/operator/admin roles.
+  parameters:
+    RequestID:
+      name: X-Request-ID
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+      description: Optional safe caller correlation ID. The service generates one otherwise.
+    ClientVersion:
+      name: X-YA-Client-Version
+      in: header
+      required: false
+      schema:
+        type: string
+        examples: [1.1.0, 1.0.0]
+      description: ya client semantic version used for N/N-1 negotiation.
+  headers:
+    RequestID:
+      schema:
+        type: string
+      description: Correlation ID included in logs, audit, and typed errors.
+  schemas:
+    MetaResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - service_version
+        - control_api_versions
+        - features
+        - client_compatibility
+        - deployment_mode
+        - config_revision
+        - restart_required
+      properties:
+        service_version:
+          type: string
+        control_api_versions:
+          type: array
+          items:
+            type: string
+          examples: [[v1]]
+        features:
+          type: array
+          items:
+            type: string
+        client_compatibility:
+          $ref: '#/components/schemas/ClientCompatibility'
+        deployment_mode:
+          type: string
+          enum: [local, remote, local+remote]
+        config_revision:
+          type: integer
+          format: uint64
+          minimum: 0
+        restart_required:
+          type: boolean
+    ClientCompatibility:
+      type: object
+      additionalProperties: false
+      required: [minimum, maximum, current, compatible]
+      properties:
+        requested:
+          type: string
+        minimum:
+          type: string
+          const: 1.0.0
+        maximum:
+          type: string
+          const: 1.1.x
+        current:
+          type: string
+          const: 1.1.0
+        compatible:
+          type: boolean
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorBody'
+    ErrorBody:
+      type: object
+      additionalProperties: false
+      required: [code, message, retryable, request_id]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        retryable:
+          type: boolean
+        request_id:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+  responses:
+    Unauthorized:
+      description: Missing, invalid, or data-plane-only credential
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: Authenticated identity lacks the required role
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    InternalError:
+      description: Sanitized internal failure
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
