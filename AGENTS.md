@@ -16,8 +16,10 @@ It routes to GitHub Copilot, ChatGPT-backed Codex, OpenAI Platform API-key mode,
 
 ## Layout
 
-- Production Go sources live flat in `src/` as `package main`.
-- Build target is `./src`, not `./...`.
+- Provider implementations and the compatibility service live in the importable `src` package.
+- Executable roots are `cmd/ya-router` (compatibility), `cmd/ya-routerd` (service), and `cmd/ya` (client foundation).
+- Shared contracts live under `internal/api`, `internal/config`, `internal/provider`, `internal/proxy`, `internal/routing`, and `internal/runtime`.
+- Build and test the full module with `./...`; the default `make build` still emits `ya-router`.
 - `openspec/` records non-trivial changes and validation evidence.
 - `docs/architecture/managed-service-and-tui.md` and `docs/roadmaps/managed-service-and-tui-roadmap.md` define the target daemon/control-plane/TUI direction; they do not override current runtime behavior until their ordered issues are implemented and accepted.
 - Dated documents under `docs/` are historical decision records; current runtime code and accepted OpenSpec requirements take precedence when old request cards conflict.
@@ -40,7 +42,7 @@ Before claiming container readiness:
 docker build -t ya-router:check .
 ```
 
-CI runs formatting verification, `go vet`, `go test -race -count=1 ./src/...`, and `go build`. Test failures are blocking.
+CI runs formatting verification, `go vet ./...`, `go test -race -count=1 ./...`, builds all three binaries, and builds the compatibility container. Test failures are blocking.
 
 ## Routing invariants
 

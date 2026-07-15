@@ -1,5 +1,5 @@
 // config.go — application configuration with V0→V1 migration.
-package main
+package yarouter
 
 import (
 	"encoding/json"
@@ -9,145 +9,24 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+
+	configschema "github.com/duvu/ya-router/internal/config"
 )
 
 const currentConfigVersion = 1
 
-// RoutingConfig controls how the model router dispatches requests.
-type RoutingConfig struct {
-	DefaultModel          string                   `json:"default_model"`
-	DefaultProvider       string                   `json:"default_provider"`
-	ShowUnavailableModels bool                     `json:"show_unavailable_models"`
-	ModelMap              map[string]ModelMapEntry `json:"model_map,omitempty"`
-}
-
-// ModelMapEntry explicitly maps a model name to a provider and optional upstream alias.
-type ModelMapEntry struct {
-	Provider      string `json:"provider"`
-	UpstreamModel string `json:"upstream_model,omitempty"`
-}
-
-// CopilotAuthState holds persisted Copilot authentication state.
-type CopilotAuthState struct {
-	Mode         string `json:"mode"`
-	GitHubToken  string `json:"github_token,omitempty"`
-	CopilotToken string `json:"copilot_token,omitempty"`
-	ExpiresAt    int64  `json:"expires_at,omitempty"`
-	RefreshIn    int64  `json:"refresh_in,omitempty"`
-}
-
-// CopilotAccount is one entry in the Copilot account pool.
-// Label uniquely identifies the account for CLI operations.
-// LastLimitedAt is the Unix timestamp when this account was last rate-limited;
-// used to enforce the per-account cooldown window.
-type CopilotAccount struct {
-	Label         string           `json:"label"`
-	Auth          CopilotAuthState `json:"auth"`
-	LastLimitedAt int64            `json:"last_limited_at,omitempty"`
-}
-
-// CopilotProviderConfig holds config for the GitHub Copilot provider.
-//
-// Accounts is the multi-account pool. If Accounts is empty but Auth is
-// non-zero, the service promotes Auth to Accounts[0] (label "primary")
-// automatically for backward compatibility.
-//
-// AccountCooldownSeconds is how long (in seconds) a rate-limited account
-// is skipped before being considered healthy again. Default 300.
-type CopilotProviderConfig struct {
-	Enabled                bool             `json:"enabled"`
-	Auth                   CopilotAuthState `json:"auth"`
-	Accounts               []CopilotAccount `json:"accounts,omitempty"`
-	AccountCooldownSeconds int              `json:"account_cooldown_seconds,omitempty"`
-	AllowedModels          []string         `json:"allowed_models"`
-}
-
-// CodexAuthState holds auth configuration and persisted token state
-// for the OpenAI Codex provider.
-//
-// Mode selects the transport and credential source:
-//   - "chatgpt" / "device_code" / "chatgpt_device_auth": ChatGPT backend.
-//     Reads credentials from the official Codex auth store (~/.codex/auth.json).
-//   - "api_key": OpenAI Platform API with a user-supplied API key.
-type CodexAuthState struct {
-	Mode         string `json:"mode"`
-	APIKey       string `json:"api_key,omitempty"`
-	AccessToken  string `json:"access_token,omitempty"`
-	RefreshToken string `json:"refresh_token,omitempty"`
-	ExpiresAt    int64  `json:"expires_at,omitempty"`
-	AccountID    string `json:"account_id,omitempty"`
-}
-
-// CodexAccount is one entry in the Codex account pool.
-// Label uniquely identifies the account for CLI operations.
-// LastLimitedAt is the Unix timestamp when this account was last rate-limited;
-// used to enforce the per-account cooldown window.
-type CodexAccount struct {
-	Label         string         `json:"label"`
-	Auth          CodexAuthState `json:"auth"`
-	LastLimitedAt int64          `json:"last_limited_at,omitempty"`
-}
-
-// CodexProviderConfig holds config for the OpenAI Codex provider.
-//
-// Accounts is the multi-account pool. If Accounts is empty but Auth.Mode is
-// non-empty, the service promotes Auth to Accounts[0] (label "primary")
-// automatically for backward compatibility.
-//
-// AccountCooldownSeconds is how long (in seconds) a rate-limited account
-// is skipped before being considered healthy again. Default 300.
-type CodexProviderConfig struct {
-	Enabled                bool           `json:"enabled"`
-	Auth                   CodexAuthState `json:"auth"`
-	Accounts               []CodexAccount `json:"accounts,omitempty"`
-	AccountCooldownSeconds int            `json:"account_cooldown_seconds,omitempty"`
-	AllowedModels          []string       `json:"allowed_models"`
-	ChatGPTBaseURL         string         `json:"chatgpt_base_url,omitempty"`
-}
-
-// KiloProviderConfig holds settings for the OpenAI-compatible Kilo Gateway.
-// APIKey may be populated through the CLI, but KILO_API_KEY is preferred for
-// server deployments. When AllowAnonymous is true and no key is configured,
-// the provider exposes and accepts only free model IDs.
-type KiloProviderConfig struct {
-	Enabled        bool     `json:"enabled"`
-	AllowAnonymous bool     `json:"allow_anonymous"`
-	APIKey         string   `json:"api_key,omitempty"`
-	OrganizationID string   `json:"organization_id,omitempty"`
-	BaseURL        string   `json:"base_url,omitempty"`
-	AllowedModels  []string `json:"allowed_models"`
-}
-
-// ProvidersConfig groups all provider configurations.
-type ProvidersConfig struct {
-	Copilot CopilotProviderConfig `json:"copilot"`
-	Codex   CodexProviderConfig   `json:"codex"`
-	Kilo    KiloProviderConfig    `json:"kilo"`
-}
-
-// TimeoutsConfig holds all timeout values (seconds).
-type TimeoutsConfig struct {
-	HTTPClient      int `json:"http_client"`
-	ServerRead      int `json:"server_read"`
-	ServerWrite     int `json:"server_write"`
-	ServerIdle      int `json:"server_idle"`
-	ProxyContext    int `json:"proxy_context"`
-	CircuitBreaker  int `json:"circuit_breaker"`
-	KeepAlive       int `json:"keep_alive"`
-	TLSHandshake    int `json:"tls_handshake"`
-	DialTimeout     int `json:"dial_timeout"`
-	IdleConnTimeout int `json:"idle_conn_timeout"`
-}
-
-// Config is the top-level application configuration (V1 schema).
-type Config struct {
-	Port          int             `json:"port"`
-	ConfigVersion int             `json:"config_version"`
-	EnablePprof   bool            `json:"enable_pprof"`
-	Routing       RoutingConfig   `json:"routing"`
-	Providers     ProvidersConfig `json:"providers"`
-	Timeouts      TimeoutsConfig  `json:"timeouts"`
-}
+type RoutingConfig = configschema.Routing
+type ModelMapEntry = configschema.ModelMapEntry
+type CopilotAuthState = configschema.CopilotAuthState
+type CopilotAccount = configschema.CopilotAccount
+type CopilotProviderConfig = configschema.CopilotProvider
+type CodexAuthState = configschema.CodexAuthState
+type CodexAccount = configschema.CodexAccount
+type CodexProviderConfig = configschema.CodexProvider
+type KiloProviderConfig = configschema.KiloProvider
+type ProvidersConfig = configschema.Providers
+type TimeoutsConfig = configschema.Timeouts
+type Config = configschema.Config
 
 // legacyV0Config is used only for reading and migrating pre-V1 config files.
 type legacyV0Config struct {

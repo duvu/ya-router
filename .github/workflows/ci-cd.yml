@@ -30,20 +30,24 @@ jobs:
       - name: Verify formatting
         shell: bash
         run: |
-          unformatted="$(gofmt -l ./src)"
+          unformatted="$(gofmt -l ./cmd ./internal ./src)"
           if [ -n "$unformatted" ]; then
             printf 'Files require gofmt:\n%s\n' "$unformatted"
             exit 1
           fi
 
       - name: Vet
-        run: go vet ./src/...
+        run: go vet ./...
 
       - name: Test with race detector
-        run: go test -race -count=1 ./src/...
+        run: go test -race -count=1 ./...
 
-      - name: Build
-        run: go build -trimpath -ldflags="-s -w -X main.version=${{ github.sha }}" -o /tmp/ya-router ./src
+      - name: Build compatibility, daemon, and client binaries
+        run: |
+          version_ldflag="-X github.com/duvu/ya-router/src.version=${{ github.sha }}"
+          go build -trimpath -ldflags="-s -w ${version_ldflag}" -o /tmp/ya-router ./cmd/ya-router
+          go build -trimpath -ldflags="-s -w ${version_ldflag}" -o /tmp/ya-routerd ./cmd/ya-routerd
+          go build -trimpath -ldflags="-s -w ${version_ldflag}" -o /tmp/ya ./cmd/ya
 
   deploy:
     name: Publish and deploy

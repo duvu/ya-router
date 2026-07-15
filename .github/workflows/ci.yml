@@ -33,14 +33,14 @@ jobs:
       - name: Verify formatting
         shell: bash
         run: |
-          unformatted="$(gofmt -l ./src)"
+          unformatted="$(gofmt -l ./cmd ./internal ./src)"
           if [ -n "$unformatted" ]; then
             printf 'Files require gofmt:\n%s\n' "$unformatted"
             exit 1
           fi
 
       - name: Vet
-        run: go vet ./src/...
+        run: go vet ./...
 
       - name: Test with race detector
         id: race_tests
@@ -48,7 +48,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          go test -race -count=1 ./src/... 2>&1 | tee race-test.log
+          go test -race -count=1 ./... 2>&1 | tee race-test.log
 
       - name: Upload failing race-test diagnostics
         if: steps.race_tests.outcome == 'failure'
@@ -63,6 +63,13 @@ jobs:
         if: steps.race_tests.outcome == 'failure'
         run: exit 1
 
-      - name: Build
+      - name: Build compatibility, daemon, and client binaries
         if: steps.race_tests.outcome == 'success'
-        run: go build -trimpath -o /tmp/ya-router ./src
+        run: |
+          go build -trimpath -o /tmp/ya-router ./cmd/ya-router
+          go build -trimpath -o /tmp/ya-routerd ./cmd/ya-routerd
+          go build -trimpath -o /tmp/ya ./cmd/ya
+
+      - name: Build compatibility container
+        if: steps.race_tests.outcome == 'success'
+        run: docker build --build-arg IMAGE_VERSION="${GITHUB_SHA}" -t ya-router:ci .

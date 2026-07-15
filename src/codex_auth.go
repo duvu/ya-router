@@ -3,7 +3,7 @@
 // The official Codex auth store is read-only import data. ya-router stores its
 // own runtime credentials in its permission-restricted configuration so one
 // process never truncates or rewrites another application's credential schema.
-package main
+package yarouter
 
 import (
 	"encoding/base64"

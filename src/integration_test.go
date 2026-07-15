@@ -1,4 +1,4 @@
-package main
+package yarouter
 
 import (
 	"context"
@@ -458,7 +458,7 @@ func TestHealthHandler(t *testing.T) {
 	req := httptest.NewRequest("GET", "/healthz", nil)
 	rec := httptest.NewRecorder()
 
-	healthHandler(rec, req)
+	healthHandler(NewProviderRegistry()).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -469,6 +469,29 @@ func TestHealthHandler(t *testing.T) {
 
 	if resp["status"] != "ok" {
 		t.Errorf("health status = %q, want ok", resp["status"])
+	}
+}
+
+func TestHealthHandlersUseIsolatedRegistries(t *testing.T) {
+	readyRegistry := NewProviderRegistry()
+	readyRegistry.Register(&mockProvider{
+		id:     ProviderCopilot,
+		name:   "Copilot",
+		health: ProviderHealth{Authenticated: true},
+	})
+	emptyRegistry := NewProviderRegistry()
+
+	request := httptest.NewRequest("GET", "/health/ready", nil)
+	readyResponse := httptest.NewRecorder()
+	healthHandler(readyRegistry).ServeHTTP(readyResponse, request)
+	if readyResponse.Code != http.StatusOK {
+		t.Fatalf("ready registry status=%d", readyResponse.Code)
+	}
+
+	emptyResponse := httptest.NewRecorder()
+	healthHandler(emptyRegistry).ServeHTTP(emptyResponse, request)
+	if emptyResponse.Code != http.StatusServiceUnavailable {
+		t.Fatalf("empty registry status=%d", emptyResponse.Code)
 	}
 }
 

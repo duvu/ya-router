@@ -1,5 +1,5 @@
 // model_cache.go — TTL-based model list cache to avoid repeated upstream calls.
-package main
+package yarouter
 
 import (
 	"log"

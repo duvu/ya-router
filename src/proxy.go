@@ -1,13 +1,12 @@
 // proxy.go — HTTP proxy infrastructure (circuit breaker, retry, worker pool,
 // request coalescing) and the provider-dispatching request handler.
-package main
+package yarouter
 
 import (
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -16,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	requestproxy "github.com/duvu/ya-router/internal/proxy"
 )
 
 const (
@@ -119,11 +120,12 @@ type WorkerPool struct {
 	jobQueue chan func()
 	quit     chan bool
 	wg       sync.WaitGroup
+	stopOnce sync.Once
 }
 
 func NewWorkerPool(workers int) *WorkerPool {
 	if workers <= 0 {
-		workers = runtime.NumCPU()
+		workers = runtime.NumCPU() * 2
 	}
 	wp := &WorkerPool{
 		workers:  workers,
@@ -153,11 +155,9 @@ func (wp *WorkerPool) start() {
 
 func (wp *WorkerPool) Submit(job func()) { wp.jobQueue <- job }
 func (wp *WorkerPool) Stop() {
-	close(wp.quit)
+	wp.stopOnce.Do(func() { close(wp.quit) })
 	wp.wg.Wait()
 }
-
-var globalWorkerPool = NewWorkerPool(runtime.NumCPU() * 2)
 
 // coalescingEntry holds a pending or completed coalesced request.
 type coalescingEntry struct {
@@ -356,20 +356,11 @@ func copyHeaders(w http.ResponseWriter, src http.Header, skip ...string) {
 
 // capabilityFromPath maps a request path to a Capability.
 func capabilityFromPath(path string) (Capability, error) {
-	switch {
-	case strings.Contains(path, "/chat/completions"):
-		return CapabilityChat, nil
-	case strings.Contains(path, "/responses"):
-		return CapabilityResponses, nil
-	case strings.Contains(path, "/embeddings"):
-		return CapabilityEmbeddings, nil
-	default:
-		return "", fmt.Errorf("unsupported path: %s", path)
-	}
+	return requestproxy.CapabilityFromPath(path)
 }
 
 // proxyHandler is the HTTP handler factory for proxied API paths.
-func proxyHandler(registry *ProviderRegistry, router *ModelRouter, cfg *Config) http.HandlerFunc {
+func proxyHandler(pool *WorkerPool, registry *ProviderRegistry, router *ModelRouter, cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.Timeouts.ProxyContext)*time.Second)
 		defer cancel()
@@ -378,7 +369,7 @@ func proxyHandler(registry *ProviderRegistry, router *ModelRouter, cfg *Config) 
 		rw := &responseWrapper{ResponseWriter: w}
 		done := make(chan error, 1)
 
-		globalWorkerPool.Submit(func() {
+		pool.Submit(func() {
 			defer func() {
 				if rec := recover(); rec != nil {
 					log.Printf("Worker panic: %v", rec)

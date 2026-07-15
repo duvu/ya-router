@@ -1,5 +1,5 @@
 // responses_adapter_test.go — contract tests for Chat Completions ↔ Responses.
-package main
+package yarouter
 
 import (
 	"encoding/json"

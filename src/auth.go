@@ -1,6 +1,6 @@
 // auth.go — GitHub Copilot device-flow authentication helpers.
 // Functions operate on CopilotAuthState rather than the top-level Config.
-package main
+package yarouter
 
 import (
 	"encoding/json"

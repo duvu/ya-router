@@ -1,5 +1,5 @@
 // copilot_provider.go — GitHub Copilot backend provider implementation.
-package main
+package yarouter
 
 import (
 	"bytes"

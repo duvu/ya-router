@@ -45,29 +45,37 @@ Requirements: Go 1.22 or newer. The production runtime is Go; no Rust runtime is
 
 ```bash
 make build
+make build-all
 make check
 ```
 
 `make check` runs:
 
 ```text
-gofmt verification
-go vet ./src/...
-go test -race -count=1 ./src/...
-go build ./src
+gofmt verification across cmd, internal, and src
+go vet ./...
+go test -race -count=1 ./...
+build ya-router, ya-routerd, and ya
 ```
 
-The output binary is `./ya-router`.
+`make build` retains the compatibility output `./ya-router`. `make build-all`
+also emits the service entrypoint `./ya-routerd` and the client foundation
+`./ya`. The client transport and TUI are delivered by later roadmap issues;
+the current `ya` binary intentionally exposes only help and version.
 
 ## Target managed-service architecture
 
-The current production runtime remains the single Go `ya-router` binary. The proposed planning direction is to evolve it incrementally into a daemon-owned control plane and an OS client without changing the `/v1/*` data contract during migration:
+The production data-plane behavior remains available through the Go
+`ya-router` compatibility binary. Package and executable boundaries now also
+provide `ya-routerd` and `ya` foundations so the daemon-owned control plane and
+OS client can be delivered incrementally without changing the `/v1/*` contract:
 
 - [Managed service and TUI architecture](docs/architecture/managed-service-and-tui.md)
 - [Managed service and TUI delivery roadmap](docs/roadmaps/managed-service-and-tui-roadmap.md)
 - [OpenSpec change](openspec/changes/add-managed-service-and-tui/proposal.md)
 
-These documents are a target architecture and ordered implementation plan, not a claim that the split binaries or control API already exist.
+These documents remain the ordered implementation plan. The executable
+foundations exist; the Control API and interactive TUI do not yet exist.
 
 ## Quick start
 

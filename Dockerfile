@@ -2,15 +2,16 @@ FROM golang:1.22-alpine AS build
 
 WORKDIR /src
 COPY go.mod ./
-COPY go.sum* ./
 RUN go mod download
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
 COPY src/ ./src/
 
 ARG IMAGE_VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -trimpath \
-      -ldflags="-s -w -extldflags=-static -X main.version=${IMAGE_VERSION}" \
-      -o /out/ya-router ./src
+      -ldflags="-s -w -extldflags=-static -X github.com/duvu/ya-router/src.version=${IMAGE_VERSION}" \
+      -o /out/ya-router ./cmd/ya-router
 
 FROM alpine:3.20 AS runtime
 
