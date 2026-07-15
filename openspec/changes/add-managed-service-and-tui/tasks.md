@@ -14,7 +14,7 @@
 
 - [x] [YA-TUI-01 (#7)](https://github.com/duvu/ya-router/issues/7) refactor package and binary boundaries.
 - [x] [YA-TUI-02 (#8)](https://github.com/duvu/ya-router/issues/8) add runtime/provider manager.
-- [ ] [YA-TUI-03 (#9)](https://github.com/duvu/ya-router/issues/9) add revisioned single-writer state.
+- [x] [YA-TUI-03 (#9)](https://github.com/duvu/ya-router/issues/9) add revisioned single-writer state.
 - [ ] [YA-TUI-04 (#10)](https://github.com/duvu/ya-router/issues/10) add isolated control API/security foundation.
 - [ ] [YA-TUI-05 (#11)](https://github.com/duvu/ya-router/issues/11) add read-only control resources.
 - [ ] [YA-TUI-06 (#12)](https://github.com/duvu/ya-router/issues/12) add async operation/auth-session framework.
