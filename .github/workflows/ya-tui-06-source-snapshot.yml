@@ -45,7 +45,6 @@ jobs:
           base64 --decode /tmp/ya-tui-06-overlay.b64 > /tmp/ya-tui-06-overlay.tar.gz
           echo '2fac2346ac042a146cdb9432600eaa916df0e5470ea960260756e4262592710b  /tmp/ya-tui-06-overlay.tar.gz' | sha256sum -c -
           gzip -t /tmp/ya-tui-06-overlay.tar.gz
-          tar -tzf /tmp/ya-tui-06-overlay.tar.gz
           tar -xzf /tmp/ya-tui-06-overlay.tar.gz -C .
           rm -rf .tmp
           rm -f .github/workflows/ya-tui-06-source-snapshot.yml
@@ -55,20 +54,13 @@ jobs:
         run: |
           set -euo pipefail
           unformatted="$(gofmt -l ./cmd ./internal ./src)"
-          if [ -n "$unformatted" ]; then
-            printf 'Files require gofmt:\n%s\n' "$unformatted"
-            exit 1
-          fi
+          test -z "$unformatted"
           go vet ./...
           go test -race -count=1 ./...
           go build -trimpath -o /tmp/ya-router ./cmd/ya-router
           go build -trimpath -o /tmp/ya-routerd ./cmd/ya-routerd
           go build -trimpath -o /tmp/ya ./cmd/ya
-          python - <<'PY'
-          import yaml
-          with open('docs/api/control-v1.openapi.yaml') as source:
-              yaml.safe_load(source)
-          PY
+          python -c "import yaml; yaml.safe_load(open('docs/api/control-v1.openapi.yaml'))"
 
       - name: Commit implementation
         shell: bash
