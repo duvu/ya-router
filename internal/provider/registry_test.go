@@ -54,3 +54,17 @@ func TestRegistryConcurrentAccess(t *testing.T) {
 		t.Fatalf("providers=%d", len(registry.All()))
 	}
 }
+
+func TestFrozenRegistryRejectsMutation(t *testing.T) {
+	registry := NewRegistry(&testProvider{id: Copilot})
+	registry.Freeze()
+	if !registry.Frozen() {
+		t.Fatal("registry did not report frozen state")
+	}
+	if err := registry.Register(&testProvider{id: Codex}); err != ErrRegistryFrozen {
+		t.Fatalf("frozen Register error = %v", err)
+	}
+	if _, _, err := registry.Unregister(Copilot); err != ErrRegistryFrozen {
+		t.Fatalf("frozen Unregister error = %v", err)
+	}
+}

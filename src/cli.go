@@ -437,42 +437,45 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 		}
 	}
 
-	registry := NewProviderRegistry()
-	if cfg.Providers.Copilot.Enabled {
-		registry.Register(NewCopilotProvider(cfg))
+	runtimeManager, err := runtimepkg.NewManager(cfg)
+	if err != nil {
+		return fmt.Errorf("create runtime manager: %w", err)
 	}
-	if cfg.Providers.Codex.Enabled {
-		registry.Register(NewCodexProvider(cfg))
-	}
-	if cfg.Providers.Kilo.Enabled {
-		registry.Register(NewKiloProvider(cfg))
+	providerManager, err := newProviderManager(cfg, runtimeManager)
+	if err != nil {
+		shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = runtimeManager.Close(shutdownContext)
+		return fmt.Errorf("create provider manager: %w", err)
 	}
 	ctx := context.Background()
-	for _, provider := range registry.All() {
+	for _, provider := range providerManager.ActiveProviders() {
 		if err := provider.EnsureAuthenticated(ctx); err != nil {
 			fmt.Printf("Warning: provider %s auth failed: %v\n", provider.ID(), err)
 		}
 	}
-	router := NewModelRouter(registry, cfg.Routing)
-	components, err := runtimepkg.NewComponents(cfg, registry, router)
-	if err != nil {
-		return fmt.Errorf("compose runtime: %w", err)
-	}
+	providerManager.RefreshHealth(ctx)
 	workerPool := NewWorkerPool(0)
 	defer workerPool.Stop()
+	defer func() {
+		shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, _ = providerManager.Reconcile(shutdownContext, nil)
+		_ = runtimeManager.Close(shutdownContext)
+	}()
 	setupLogging()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/models", modelsHandler(components.Providers, components.Config))
-	mux.HandleFunc("/v1/models/", modelsHandler(components.Providers, components.Config))
-	mux.HandleFunc("/v1/embeddings", proxyHandler(workerPool, components.Providers, components.Router, components.Config))
-	mux.HandleFunc("/v1/embeddings/", proxyHandler(workerPool, components.Providers, components.Router, components.Config))
-	mux.HandleFunc("/v1/chat/completions", proxyHandler(workerPool, components.Providers, components.Router, components.Config))
-	mux.HandleFunc("/v1/chat/completions/", proxyHandler(workerPool, components.Providers, components.Router, components.Config))
-	mux.HandleFunc("/v1/responses", proxyHandler(workerPool, components.Providers, components.Router, components.Config))
-	mux.HandleFunc("/v1/responses/", proxyHandler(workerPool, components.Providers, components.Router, components.Config))
-	mux.HandleFunc("/health", healthHandler(components.Providers))
-	mux.HandleFunc("/health/", healthHandler(components.Providers))
+	mux.HandleFunc("/v1/models", managedModelsHandler(runtimeManager))
+	mux.HandleFunc("/v1/models/", managedModelsHandler(runtimeManager))
+	mux.HandleFunc("/v1/embeddings", managedProxyHandler(workerPool, runtimeManager))
+	mux.HandleFunc("/v1/embeddings/", managedProxyHandler(workerPool, runtimeManager))
+	mux.HandleFunc("/v1/chat/completions", managedProxyHandler(workerPool, runtimeManager))
+	mux.HandleFunc("/v1/chat/completions/", managedProxyHandler(workerPool, runtimeManager))
+	mux.HandleFunc("/v1/responses", managedProxyHandler(workerPool, runtimeManager))
+	mux.HandleFunc("/v1/responses/", managedProxyHandler(workerPool, runtimeManager))
+	mux.HandleFunc("/health", managedHealthHandler(providerManager))
+	mux.HandleFunc("/health/", managedHealthHandler(providerManager))
 	if cfg.EnablePprof {
 		mux.HandleFunc("/debug/pprof/", http.DefaultServeMux.ServeHTTP)
 		mux.HandleFunc("/debug/pprof/cmdline", http.DefaultServeMux.ServeHTTP)

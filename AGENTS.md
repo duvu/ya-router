@@ -19,6 +19,8 @@ It routes to GitHub Copilot, ChatGPT-backed Codex, OpenAI Platform API-key mode,
 - Provider implementations and the compatibility service live in the importable `src` package.
 - Executable roots are `cmd/ya-router` (compatibility), `cmd/ya-routerd` (service), and `cmd/ya` (client foundation).
 - Shared contracts live under `internal/api`, `internal/config`, `internal/provider`, `internal/proxy`, `internal/routing`, and `internal/runtime`.
+- `internal/runtime.Manager` atomically publishes immutable snapshots. Every data-plane handler must acquire one lease at request start and release it only after the response finishes.
+- `internal/provider.Manager` owns factory/descriptor registration, provider/account reconciliation, replacement/removal, bounded drain, lifecycle events, and the independent health registry. Never mutate a provider already present in a published snapshot.
 - Build and test the full module with `./...`; the default `make build` still emits `ya-router`.
 - `openspec/` records non-trivial changes and validation evidence.
 - `docs/architecture/managed-service-and-tui.md` and `docs/roadmaps/managed-service-and-tui-roadmap.md` define the target daemon/control-plane/TUI direction; they do not override current runtime behavior until their ordered issues are implemented and accepted.
@@ -55,6 +57,15 @@ CI runs formatting verification, `go vet ./...`, `go test -race -count=1 ./...`,
 7. Cross-provider billing fallback is forbidden unless an explicit future specification allows it.
 
 Do not reintroduce a pre-router Copilot fast path.
+
+## Runtime lifecycle invariants
+
+- Build and validate every replacement before publication; a failed replacement must leave the effective snapshot unchanged.
+- New requests use the newly published snapshot while existing requests finish against the snapshot lease they acquired.
+- Provider close happens only after every pre-publication snapshot that might reference it has drained.
+- A drain timeout is observable and returns control, but cleanup continues in the background; never force-close an instance still reachable by an in-flight request.
+- Lifecycle events use stable reason codes and must not include arbitrary provider errors or secret values.
+- Registered descriptors remain listable while a provider is disabled; effective capabilities remain separate from supported descriptor capabilities.
 
 ## Codex auth and transport invariants
 
