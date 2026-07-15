@@ -187,6 +187,7 @@ func (p *KiloProvider) fetchModels(ctx context.Context) (*ModelList, error) {
 	key, _ := p.apiKey()
 	models := make([]Model, 0, len(payload.Data)+1)
 	seen := make(map[string]bool, len(payload.Data)+1)
+	discoveredFree := map[string]struct{}{kiloAutoFreeModel: {}}
 	for _, item := range payload.Data {
 		item.ID = strings.TrimSpace(item.ID)
 		free := isFreeKiloCatalogModel(item)
@@ -194,7 +195,7 @@ func (p *KiloProvider) fetchModels(ctx context.Context) (*ModelList, error) {
 			continue
 		}
 		if free {
-			p.rememberFreeModel(item.ID)
+			discoveredFree[strings.ToLower(item.ID)] = struct{}{}
 		}
 		object := item.Object
 		if object == "" {
@@ -214,6 +215,7 @@ func (p *KiloProvider) fetchModels(ctx context.Context) (*ModelList, error) {
 			ID: kiloAutoFreeModel, Object: "model", Created: time.Now().Unix(), OwnedBy: "kilo", Name: "Kilo Auto Free",
 		})
 	}
+	p.replaceFreeModels(discoveredFree)
 
 	modelList := &ModelList{Object: "list", Data: models}
 	if key == "" {
@@ -252,9 +254,9 @@ func isAnonymousKiloModel(model string) bool {
 	return model == kiloAutoFreeModel || model == "openrouter/free" || strings.HasSuffix(model, ":free")
 }
 
-func (p *KiloProvider) rememberFreeModel(model string) {
+func (p *KiloProvider) replaceFreeModels(models map[string]struct{}) {
 	p.freeMu.Lock()
-	p.freeModels[strings.ToLower(strings.TrimSpace(model))] = struct{}{}
+	p.freeModels = models
 	p.freeMu.Unlock()
 }
 
@@ -379,7 +381,10 @@ func (p *KiloProvider) setHeaders(request *http.Request, clientRequest *http.Req
 	}
 }
 
-func (p *KiloProvider) InvalidateModelCache() { p.cache.Invalidate() }
+func (p *KiloProvider) InvalidateModelCache() {
+	p.cache.Invalidate()
+	p.replaceFreeModels(map[string]struct{}{kiloAutoFreeModel: {}})
+}
 
 func (p *KiloProvider) Health(_ context.Context) ProviderHealth {
 	_, baseErr := p.baseURL()

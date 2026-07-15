@@ -65,7 +65,7 @@ func resolveOrCreateCopilotAccount(cfg *Config, label string) (*CopilotAuthState
 	accounts := &cfg.Providers.Copilot.Accounts
 	if label == "" {
 		if len(*accounts) == 0 {
-			*accounts = append(*accounts, CopilotAccount{Label: "primary"})
+			*accounts = append(*accounts, CopilotAccount{ID: stableAccountID("copilot", "primary"), Label: "primary"})
 		}
 		label = (*accounts)[0].Label
 		return &(*accounts)[0].Auth, label, nil
@@ -75,7 +75,7 @@ func resolveOrCreateCopilotAccount(cfg *Config, label string) (*CopilotAuthState
 			return &(*accounts)[i].Auth, label, nil
 		}
 	}
-	*accounts = append(*accounts, CopilotAccount{Label: label})
+	*accounts = append(*accounts, CopilotAccount{ID: stableAccountID("copilot", label), Label: label})
 	index := len(*accounts) - 1
 	if err := saveConfig(cfg); err != nil {
 		return nil, "", fmt.Errorf("failed to add account %q: %w", label, err)
@@ -114,7 +114,7 @@ func resolveOrCreateCodexAccount(cfg *Config, label string) (*CodexAuthState, st
 	accounts := &cfg.Providers.Codex.Accounts
 	if label == "" {
 		if len(*accounts) == 0 {
-			*accounts = append(*accounts, CodexAccount{Label: "primary"})
+			*accounts = append(*accounts, CodexAccount{ID: stableAccountID("codex", "primary"), Label: "primary"})
 		}
 		label = (*accounts)[0].Label
 		return &(*accounts)[0].Auth, label, nil
@@ -124,7 +124,7 @@ func resolveOrCreateCodexAccount(cfg *Config, label string) (*CodexAuthState, st
 			return &(*accounts)[i].Auth, label, nil
 		}
 	}
-	*accounts = append(*accounts, CodexAccount{Label: label})
+	*accounts = append(*accounts, CodexAccount{ID: stableAccountID("codex", label), Label: label})
 	index := len(*accounts) - 1
 	if err := saveConfig(cfg); err != nil {
 		return nil, "", fmt.Errorf("failed to add Codex account %q: %w", label, err)
@@ -455,8 +455,6 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 		}
 	}
 	providerManager.RefreshHealth(ctx)
-	workerPool := NewWorkerPool(0)
-	defer workerPool.Stop()
 	defer func() {
 		shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -468,12 +466,12 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", managedModelsHandler(runtimeManager))
 	mux.HandleFunc("/v1/models/", managedModelsHandler(runtimeManager))
-	mux.HandleFunc("/v1/embeddings", managedProxyHandler(workerPool, runtimeManager))
-	mux.HandleFunc("/v1/embeddings/", managedProxyHandler(workerPool, runtimeManager))
-	mux.HandleFunc("/v1/chat/completions", managedProxyHandler(workerPool, runtimeManager))
-	mux.HandleFunc("/v1/chat/completions/", managedProxyHandler(workerPool, runtimeManager))
-	mux.HandleFunc("/v1/responses", managedProxyHandler(workerPool, runtimeManager))
-	mux.HandleFunc("/v1/responses/", managedProxyHandler(workerPool, runtimeManager))
+	mux.HandleFunc("/v1/embeddings", managedProxyHandler(runtimeManager))
+	mux.HandleFunc("/v1/embeddings/", managedProxyHandler(runtimeManager))
+	mux.HandleFunc("/v1/chat/completions", managedProxyHandler(runtimeManager))
+	mux.HandleFunc("/v1/chat/completions/", managedProxyHandler(runtimeManager))
+	mux.HandleFunc("/v1/responses", managedProxyHandler(runtimeManager))
+	mux.HandleFunc("/v1/responses/", managedProxyHandler(runtimeManager))
 	mux.HandleFunc("/health", managedHealthHandler(providerManager))
 	mux.HandleFunc("/health/", managedHealthHandler(providerManager))
 	if cfg.EnablePprof {

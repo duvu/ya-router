@@ -444,6 +444,40 @@ func TestCircuitBreaker_OpenClosedTransition(t *testing.T) {
 	}
 }
 
+func TestCircuitBreaker_HalfOpenAllowsSingleProbe(t *testing.T) {
+	cb := &CircuitBreaker{
+		failureCount:    circuitBreakerFailureThreshold,
+		lastFailureTime: time.Now().Add(-time.Second),
+		state:           CircuitOpen,
+		timeout:         time.Millisecond,
+	}
+
+	const callers = 64
+	start := make(chan struct{})
+	var allowed atomic.Int32
+	var wait sync.WaitGroup
+	wait.Add(callers)
+	for index := 0; index < callers; index++ {
+		go func() {
+			defer wait.Done()
+			<-start
+			if cb.canExecute() {
+				allowed.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wait.Wait()
+
+	if got := allowed.Load(); got != 1 {
+		t.Fatalf("half-open probes allowed = %d, want 1", got)
+	}
+	cb.onFailure()
+	if cb.canExecute() {
+		t.Fatal("failed half-open probe should reopen the circuit")
+	}
+}
+
 // TestCapabilityFromPath tests path to capability mapping.
 func TestCapabilityFromPath(t *testing.T) {
 	tests := []struct {
@@ -488,5 +522,43 @@ func TestWorkerPool_ProcessesJobs(t *testing.T) {
 	wg.Wait()
 	if c := atomic.LoadInt32(&counter); c != 10 {
 		t.Errorf("processed %d jobs, want 10", c)
+	}
+}
+
+func TestWorkerPool_BackpressureHonorsCancellationAndStop(t *testing.T) {
+	pool := NewWorkerPool(1)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	if !pool.Submit(func() {
+		close(started)
+		<-release
+	}) {
+		t.Fatal("first job was rejected")
+	}
+	<-started
+
+	queuedDone := make(chan struct{}, 2)
+	for index := 0; index < 2; index++ {
+		if !pool.Submit(func() { queuedDone <- struct{}{} }) {
+			t.Fatal("queue fill job was rejected")
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if pool.SubmitContext(ctx, func() {}) {
+		t.Fatal("saturated pool accepted a job after its context expired")
+	}
+
+	close(release)
+	for index := 0; index < 2; index++ {
+		select {
+		case <-queuedDone:
+		case <-time.After(time.Second):
+			t.Fatal("queued job did not finish")
+		}
+	}
+	pool.Stop()
+	if pool.SubmitContext(context.Background(), func() {}) {
+		t.Fatal("stopped pool accepted a job")
 	}
 }

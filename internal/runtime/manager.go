@@ -147,8 +147,8 @@ func validateProviders(providers []provider.Provider) error {
 }
 
 type retirement struct {
-	done    chan struct{}
-	pending atomic.Int64
+	done      chan struct{}
+	snapshots []*Snapshot
 }
 
 func newRetirement(snapshots []*Snapshot) *retirement {
@@ -159,22 +159,19 @@ func newRetirement(snapshots []*Snapshot) *retirement {
 			pendingSnapshots = append(pendingSnapshots, snapshot)
 		}
 	}
-	retirement.pending.Store(int64(len(pendingSnapshots)))
+	retirement.snapshots = pendingSnapshots
 	if len(pendingSnapshots) == 0 {
 		close(retirement.done)
 		return retirement
 	}
-	var wait sync.WaitGroup
-	wait.Add(len(pendingSnapshots))
-	for _, snapshot := range pendingSnapshots {
-		go func(snapshot *Snapshot) {
-			defer wait.Done()
-			<-snapshot.drained
-			retirement.pending.Add(-1)
-		}(snapshot)
-	}
+	// One waiter per retirement avoids creating another waiter goroutine for
+	// every still-live snapshot on every publication. Pending() observes each
+	// drained channel directly, so its count remains accurate while this waiter
+	// advances sequentially.
 	go func() {
-		wait.Wait()
+		for _, snapshot := range pendingSnapshots {
+			<-snapshot.drained
+		}
 		close(retirement.done)
 	}()
 	return retirement
@@ -196,5 +193,11 @@ func (retirement *retirement) Pending() int {
 	if retirement == nil {
 		return 0
 	}
-	return int(retirement.pending.Load())
+	pending := 0
+	for _, snapshot := range retirement.snapshots {
+		if !snapshot.isDrained() {
+			pending++
+		}
+	}
+	return pending
 }

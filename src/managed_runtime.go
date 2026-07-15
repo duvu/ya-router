@@ -2,6 +2,9 @@ package yarouter
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -142,24 +145,46 @@ func validateBuiltProvider(_ context.Context, registered providerpkg.Provider) e
 func desiredProviders(config *Config) []providerpkg.DesiredProvider {
 	return []providerpkg.DesiredProvider{
 		{
-			ID:       ProviderCopilot,
-			Enabled:  config.Providers.Copilot.Enabled,
-			Config:   configschema.Clone(config),
+			ID:      ProviderCopilot,
+			Enabled: config.Providers.Copilot.Enabled,
+			Config:  configschema.Clone(config),
+			ConfigFingerprint: runtimeConfigFingerprint(struct {
+				Provider CopilotProviderConfig
+				Timeouts TimeoutsConfig
+			}{config.Providers.Copilot, config.Timeouts}),
 			Accounts: copilotAccountState(config),
 		},
 		{
-			ID:       ProviderCodex,
-			Enabled:  config.Providers.Codex.Enabled,
-			Config:   configschema.Clone(config),
+			ID:      ProviderCodex,
+			Enabled: config.Providers.Codex.Enabled,
+			Config:  configschema.Clone(config),
+			ConfigFingerprint: runtimeConfigFingerprint(struct {
+				Provider CodexProviderConfig
+				Timeouts TimeoutsConfig
+				ModelMap map[string]ModelMapEntry
+			}{config.Providers.Codex, config.Timeouts, config.Routing.ModelMap}),
 			Accounts: codexAccountState(config),
 		},
 		{
-			ID:       ProviderKilo,
-			Enabled:  config.Providers.Kilo.Enabled,
-			Config:   configschema.Clone(config),
+			ID:      ProviderKilo,
+			Enabled: config.Providers.Kilo.Enabled,
+			Config:  configschema.Clone(config),
+			ConfigFingerprint: runtimeConfigFingerprint(struct {
+				Provider KiloProviderConfig
+				Timeouts TimeoutsConfig
+			}{config.Providers.Kilo, config.Timeouts}),
 			Accounts: []providerpkg.AccountState{{ID: "default", Label: "Default", Enabled: true}},
 		},
 	}
+}
+
+func runtimeConfigFingerprint(value interface{}) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
 }
 
 func copilotAccountState(config *Config) []providerpkg.AccountState {
@@ -169,7 +194,7 @@ func copilotAccountState(config *Config) []providerpkg.AccountState {
 	accounts := make([]providerpkg.AccountState, 0, len(config.Providers.Copilot.Accounts))
 	for index, account := range config.Providers.Copilot.Accounts {
 		accounts = append(accounts, providerpkg.AccountState{
-			ID:       fmt.Sprintf("account-%d", index+1),
+			ID:       account.ID,
 			Label:    account.Label,
 			Enabled:  true,
 			Priority: index,
@@ -185,7 +210,7 @@ func codexAccountState(config *Config) []providerpkg.AccountState {
 	accounts := make([]providerpkg.AccountState, 0, len(config.Providers.Codex.Accounts))
 	for index, account := range config.Providers.Codex.Accounts {
 		accounts = append(accounts, providerpkg.AccountState{
-			ID:       fmt.Sprintf("account-%d", index+1),
+			ID:       account.ID,
 			Label:    account.Label,
 			Enabled:  true,
 			Priority: index,
@@ -194,7 +219,7 @@ func codexAccountState(config *Config) []providerpkg.AccountState {
 	return accounts
 }
 
-func managedProxyHandler(pool *WorkerPool, manager *runtimepkg.Manager) http.HandlerFunc {
+func managedProxyHandler(manager *runtimepkg.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		lease, err := manager.Acquire()
 		if err != nil {
@@ -203,7 +228,7 @@ func managedProxyHandler(pool *WorkerPool, manager *runtimepkg.Manager) http.Han
 		}
 		defer lease.Release()
 		snapshot := lease.Snapshot()
-		proxyHandler(pool, snapshot.Providers(), snapshot.Router(), snapshot.Config()).ServeHTTP(w, r)
+		proxyHandler(snapshot.Providers(), snapshot.Router(), snapshot.Config()).ServeHTTP(w, r)
 	}
 }
 

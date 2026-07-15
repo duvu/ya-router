@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -130,14 +129,30 @@ func (p *CodexProvider) firstHealthyCodexAccount() int {
 }
 
 func (p *CodexProvider) advanceCodexAccount() bool {
+	return p.advanceCodexAccountFrom(p.accountCursor)
+}
+
+// advanceCodexAccountFrom marks the account that served the failed request,
+// even if another concurrent response already changed the shared cursor.
+// Caller must hold p.mu.
+func (p *CodexProvider) advanceCodexAccountFrom(failedIndex int) bool {
 	accounts := p.cfg.Providers.Codex.Accounts
+	if failedIndex < 0 || failedIndex >= len(accounts) {
+		return false
+	}
+	accounts[failedIndex].LastLimitedAt = time.Now().Unix()
 	if len(accounts) <= 1 {
 		return false
 	}
-	accounts[p.accountCursor].LastLimitedAt = time.Now().Unix()
-	next := (p.accountCursor + 1) % len(accounts)
+	next := p.accountCursor
+	if next == failedIndex {
+		next = (failedIndex + 1) % len(accounts)
+	}
 	for i := 0; i < len(accounts); i++ {
 		index := (next + i) % len(accounts)
+		if index == failedIndex {
+			continue
+		}
 		if !p.isCodexAccountInCooldown(&accounts[index]) {
 			p.accountCursor = index
 			return true
@@ -146,21 +161,42 @@ func (p *CodexProvider) advanceCodexAccount() bool {
 	return false
 }
 
-func (p *CodexProvider) save() error { return saveConfig(p.cfg) }
+func (p *CodexProvider) save() error { return persistCodexRuntimeAccount(p.cfg, p.accountCursor) }
 
 func (p *CodexProvider) authCredentials() (token, accountID string, chatgpt bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	auth := p.authState()
+	credential := p.credentialAtLocked(p.accountCursor)
+	return credential.token, credential.accountID, credential.chatgpt
+}
+
+type codexCredential struct {
+	index     int
+	token     string
+	accountID string
+	chatgpt   bool
+}
+
+func (p *CodexProvider) selectedCredential() codexCredential {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.credentialAtLocked(p.accountCursor)
+}
+
+func (p *CodexProvider) credentialAtLocked(index int) codexCredential {
+	auth := &p.cfg.Providers.Codex.Auth
+	if len(p.cfg.Providers.Codex.Accounts) > 0 && index >= 0 && index < len(p.cfg.Providers.Codex.Accounts) {
+		auth = &p.cfg.Providers.Codex.Accounts[index].Auth
+	}
 	if isAPIKeyMode(auth.Mode) {
 		key, _, err := resolveCodexAPIKey(auth)
 		if err != nil {
 			log.Printf("[codex] API-key resolution failed: %v", err)
-			return "", "", false
+			return codexCredential{index: index}
 		}
-		return key, "", false
+		return codexCredential{index: index, token: key}
 	}
-	return auth.AccessToken, auth.AccountID, true
+	return codexCredential{index: index, token: auth.AccessToken, accountID: auth.AccountID, chatgpt: true}
 }
 
 func (p *CodexProvider) currentToken() string {
@@ -259,14 +295,20 @@ func (p *CodexProvider) EnsureAuthenticated(_ context.Context) error {
 	return nil
 }
 
-func (p *CodexProvider) forceRefreshActiveAccount() error {
+func (p *CodexProvider) forceRefreshAccount(index int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	auth := p.authState()
+	auth := &p.cfg.Providers.Codex.Auth
+	if len(p.cfg.Providers.Codex.Accounts) > 0 {
+		if index < 0 || index >= len(p.cfg.Providers.Codex.Accounts) {
+			return fmt.Errorf("Codex account index %d is no longer valid", index)
+		}
+		auth = &p.cfg.Providers.Codex.Accounts[index].Auth
+	}
 	if isAPIKeyMode(auth.Mode) {
 		return fmt.Errorf("API-key credentials do not refresh")
 	}
-	return codexRefreshToken(auth, p.save)
+	return codexRefreshToken(auth, func() error { return persistCodexRuntimeAccount(p.cfg, index) })
 }
 
 // codexKnownModels is a compatibility manifest. Model-map entries are merged
@@ -348,7 +390,8 @@ func (p *CodexProvider) ProxyRequest(
 		if !p.cb.canExecute() {
 			return newProviderError(ProviderCodex, ProviderErrorUnavailable, http.StatusServiceUnavailable, true, "Codex circuit breaker is open")
 		}
-		token, accountID, chatgpt := p.authCredentials()
+		credential := p.selectedCredential()
+		token, accountID, chatgpt := credential.token, credential.accountID, credential.chatgpt
 		if token == "" {
 			return newProviderError(ProviderCodex, ProviderErrorAuthRequired, http.StatusUnauthorized, false, "Codex credential is empty")
 		}
@@ -413,10 +456,13 @@ func (p *CodexProvider) ProxyRequest(
 			}
 			if response.StatusCode == http.StatusUnauthorized && chatgpt && authAttempt == 0 {
 				response.Body.Close()
-				if refreshErr := p.forceRefreshActiveAccount(); refreshErr != nil {
+				if refreshErr := p.forceRefreshAccount(credential.index); refreshErr != nil {
 					return newProviderError(ProviderCodex, ProviderErrorAuthRequired, http.StatusUnauthorized, false, "Codex authentication expired: %v", refreshErr)
 				}
-				token, accountID, _ = p.authCredentials()
+				p.mu.Lock()
+				refreshed := p.credentialAtLocked(credential.index)
+				p.mu.Unlock()
+				token, accountID = refreshed.token, refreshed.accountID
 				continue
 			}
 			break
@@ -428,7 +474,7 @@ func (p *CodexProvider) ProxyRequest(
 		limited, reason := isAccountLimitSignal(response)
 		if limited && maxAccountAttempts > 1 {
 			p.mu.Lock()
-			advanced := p.advanceCodexAccount()
+			advanced := p.advanceCodexAccountFrom(credential.index)
 			p.mu.Unlock()
 			if advanced {
 				log.Printf("[codex] account limit signal (%s); advancing account", reason)
@@ -465,9 +511,7 @@ func (p *CodexProvider) proxyClassic(ctx context.Context, w http.ResponseWriter,
 	}
 	defer response.Body.Close()
 	if response.StatusCode >= 400 && response.StatusCode < 500 {
-		preview, _ := io.ReadAll(io.LimitReader(response.Body, 512))
-		log.Printf("[codex] Platform upstream HTTP %d: %s", response.StatusCode, redactAuthError(preview))
-		response.Body = io.NopCloser(io.MultiReader(bytes.NewReader(preview), response.Body))
+		log.Printf("[codex] Platform upstream rejected request with HTTP %d", response.StatusCode)
 	}
 	if response.StatusCode >= 500 {
 		p.cb.onFailure()
