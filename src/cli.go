@@ -497,19 +497,23 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 		WriteTimeout: time.Duration(cfg.Timeouts.ServerWrite) * time.Second,
 		IdleTimeout:  time.Duration(cfg.Timeouts.ServerIdle) * time.Second,
 	}
-	setupGracefulShutdown(server)
+	controlRuntime, err := newManagedControlRuntime(cfg)
+	if err != nil {
+		return fmt.Errorf("configure control service: %w", err)
+	}
 	fmt.Printf("Starting proxy on %s\n", address)
 	fmt.Println("  /v1/models              → aggregated from all providers")
 	fmt.Println("  /v1/chat/completions    → Chat Completions compatibility")
 	fmt.Println("  /v1/responses           → native Responses API")
 	fmt.Println("  /v1/embeddings          → API-key-capable providers only")
+	fmt.Printf("Starting local control API on unix://%s\n", controlRuntime.unixSocket)
+	if controlRuntime.remoteAddress != "" {
+		fmt.Printf("Starting remote control API on https://%s\n", controlRuntime.remoteAddress)
+	}
 	if cfg.EnablePprof {
 		fmt.Println("  /debug/pprof/           → enabled and access-controlled")
 	}
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return fmt.Errorf("server: %w", err)
-	}
-	return nil
+	return serveManagedServers(server, controlRuntime)
 }
 
 func handleModels(providerFilter string, forceRefresh bool) error {
