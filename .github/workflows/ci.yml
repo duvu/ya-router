@@ -24,6 +24,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-snapshot
+          path: |
+            .
+            !.git
+          include-hidden-files: true
+          retention-days: 1
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
