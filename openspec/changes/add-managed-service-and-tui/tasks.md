@@ -8,21 +8,20 @@
 - [x] Define operation/auth-session and provider/account/model resource contracts.
 - [x] Define TUI, automation, systemd, Docker, release, and compatibility requirements.
 - [x] Publish an ordered implementation roadmap.
-- [ ] Link the GitHub epic and child issues into the roadmap and PR.
+- [x] Link [GitHub epic #20](https://github.com/duvu/ya-router/issues/20) and child issues #7 through #19 into the roadmap and PR.
 
 ## Implementation tracking
 
-- [ ] YA-TUI-01 refactor package and binary boundaries.
-- [ ] YA-TUI-02 add runtime/provider manager.
-- [ ] YA-TUI-03 add revisioned single-writer state.
-- [ ] YA-TUI-04 add isolated control API/security foundation.
-- [ ] YA-TUI-05 add read-only control resources.
-- [ ] YA-TUI-06 add async operation/auth-session framework.
-- [ ] YA-TUI-07 add provider auth adapters and secret store.
-- [ ] YA-TUI-08 add revision-safe mutations and hot reload.
-- [ ] YA-TUI-09 add client SDK and scriptable commands.
-- [ ] YA-TUI-10 add read-only TUI.
-- [ ] YA-TUI-11 add auth and mutation TUI workflows.
-- [ ] YA-TUI-12 add production packaging/hardening.
-- [ ] YA-TUI-13 complete production acceptance gates.
-
+- [ ] [YA-TUI-01 (#7)](https://github.com/duvu/ya-router/issues/7) refactor package and binary boundaries.
+- [ ] [YA-TUI-02 (#8)](https://github.com/duvu/ya-router/issues/8) add runtime/provider manager.
+- [ ] [YA-TUI-03 (#9)](https://github.com/duvu/ya-router/issues/9) add revisioned single-writer state.
+- [ ] [YA-TUI-04 (#10)](https://github.com/duvu/ya-router/issues/10) add isolated control API/security foundation.
+- [ ] [YA-TUI-05 (#11)](https://github.com/duvu/ya-router/issues/11) add read-only control resources.
+- [ ] [YA-TUI-06 (#12)](https://github.com/duvu/ya-router/issues/12) add async operation/auth-session framework.
+- [ ] [YA-TUI-07 (#13)](https://github.com/duvu/ya-router/issues/13) add provider auth adapters and secret store.
+- [ ] [YA-TUI-08 (#14)](https://github.com/duvu/ya-router/issues/14) add revision-safe mutations and hot reload.
+- [ ] [YA-TUI-09 (#15)](https://github.com/duvu/ya-router/issues/15) add client SDK and scriptable commands.
+- [ ] [YA-TUI-10 (#16)](https://github.com/duvu/ya-router/issues/16) add read-only TUI.
+- [ ] [YA-TUI-11 (#17)](https://github.com/duvu/ya-router/issues/17) add auth and mutation TUI workflows.
+- [ ] [YA-TUI-12 (#18)](https://github.com/duvu/ya-router/issues/18) add production packaging/hardening.
+- [ ] [YA-TUI-13 (#19)](https://github.com/duvu/ya-router/issues/19) complete production acceptance gates.

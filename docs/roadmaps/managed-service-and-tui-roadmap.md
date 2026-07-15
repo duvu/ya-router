@@ -2,7 +2,7 @@
 
 Status: proposed execution roadmap  
 Architecture contract: [`docs/architecture/managed-service-and-tui.md`](../architecture/managed-service-and-tui.md)  
-Epic: pending; GitHub Issues must be enabled for this repository before backlog creation  
+Epic: [#20 — Managed ya-router service, Control API, and TUI](https://github.com/duvu/ya-router/issues/20)
 Last updated: 2026-07-15
 
 ## 1. Outcome
@@ -168,9 +168,9 @@ Exit criteria:
 
 ## 6. Ordered implementation backlog
 
-The titles below are stable planning IDs. GitHub issue links are added after creation.
+The titles below are stable planning IDs linked to their implementation issues.
 
-### YA-TUI-01 — Refactor Go package and binary boundaries
+### [YA-TUI-01](https://github.com/duvu/ya-router/issues/7) — Refactor Go package and binary boundaries
 
 Priority: P0  
 Depends on: architecture acceptance  
@@ -191,7 +191,7 @@ Acceptance:
 - no new third-party runtime dependency is introduced without explicit review;
 - Docker and existing build stay functional.
 
-### YA-TUI-02 — Implement RuntimeManager and dynamic ProviderManager
+### [YA-TUI-02](https://github.com/duvu/ya-router/issues/8) — Implement RuntimeManager and dynamic ProviderManager
 
 Priority: P0  
 Depends on: YA-TUI-01
@@ -211,7 +211,7 @@ Acceptance:
 - provider drain is bounded and observable;
 - race tests cover replace/remove/list/route operations.
 
-### YA-TUI-03 — Add single-writer state and revisioned configuration
+### [YA-TUI-03](https://github.com/duvu/ya-router/issues/9) — Add single-writer state and revisioned configuration
 
 Priority: P0  
 Depends on: YA-TUI-01 and YA-TUI-02
@@ -232,7 +232,7 @@ Acceptance:
 - a second daemon fails with an actionable error;
 - migration and rollback preserve current credentials and config path compatibility.
 
-### YA-TUI-04 — Establish the isolated Control API and security boundary
+### [YA-TUI-04](https://github.com/duvu/ya-router/issues/10) — Establish the isolated Control API and security boundary
 
 Priority: P0  
 Depends on: YA-TUI-01 and YA-TUI-03
@@ -253,7 +253,7 @@ Acceptance:
 - unauthorized and forbidden actions are distinct and audited without secret data;
 - current and previous supported client versions negotiate predictably.
 
-### YA-TUI-05 — Expose read-only provider, account, model, config, and event resources
+### [YA-TUI-05](https://github.com/duvu/ya-router/issues/11) — Expose read-only provider, account, model, config, and event resources
 
 Priority: P1  
 Depends on: YA-TUI-02, YA-TUI-03, and YA-TUI-04
@@ -273,7 +273,7 @@ Acceptance:
 - SSE resumes with `Last-Event-ID` and has polling fallback;
 - catalog refresh errors do not discard last-known-good data.
 
-### YA-TUI-06 — Implement persistent asynchronous operations and auth sessions
+### [YA-TUI-06](https://github.com/duvu/ya-router/issues/12) — Implement persistent asynchronous operations and auth sessions
 
 Priority: P1  
 Depends on: YA-TUI-03, YA-TUI-04, and YA-TUI-05
@@ -293,7 +293,7 @@ Acceptance:
 - repeated idempotent creation returns one operation;
 - operation failures are typed and redacted.
 
-### YA-TUI-07 — Add provider-managed authentication adapters and SecretStore
+### [YA-TUI-07](https://github.com/duvu/ya-router/issues/13) — Add provider-managed authentication adapters and SecretStore
 
 Priority: P1  
 Depends on: YA-TUI-06
@@ -314,7 +314,7 @@ Acceptance:
 - environment credentials cannot be silently shadowed by a lower-precedence TUI write;
 - real-provider checks are manual, redacted, and excluded from normal CI artifacts.
 
-### YA-TUI-08 — Add revision-safe management mutations and hot reload
+### [YA-TUI-08](https://github.com/duvu/ya-router/issues/14) — Add revision-safe management mutations and hot reload
 
 Priority: P1  
 Depends on: YA-TUI-02, YA-TUI-03, YA-TUI-06, and YA-TUI-07
@@ -334,7 +334,7 @@ Acceptance:
 - a rejected/failed apply makes no effective data-plane change;
 - no mutation triggers `systemctl`, Docker, shell, or process self-restart.
 
-### YA-TUI-09 — Build the ya client SDK and scriptable control commands
+### [YA-TUI-09](https://github.com/duvu/ya-router/issues/15) — Build the ya client SDK and scriptable control commands
 
 Priority: P1  
 Depends on: YA-TUI-04 and YA-TUI-05
@@ -354,7 +354,7 @@ Acceptance:
 - mutation retries never violate idempotency;
 - unsupported server/client combinations fail before mutation.
 
-### YA-TUI-10 — Deliver the read-only Bubble Tea TUI
+### [YA-TUI-10](https://github.com/duvu/ya-router/issues/16) — Deliver the read-only Bubble Tea TUI
 
 Priority: P1  
 Depends on: YA-TUI-05 and YA-TUI-09
@@ -373,7 +373,7 @@ Acceptance:
 - TUI exit leaves daemon and operations running;
 - no logs are written into the controlled terminal output.
 
-### YA-TUI-11 — Add authentication and safe mutation workflows to the TUI
+### [YA-TUI-11](https://github.com/duvu/ya-router/issues/17) — Add authentication and safe mutation workflows to the TUI
 
 Priority: P1  
 Depends on: YA-TUI-07, YA-TUI-08, YA-TUI-09, and YA-TUI-10
@@ -394,7 +394,7 @@ Acceptance:
 - revision conflicts reload state instead of overwriting;
 - disconnect/reconnect preserves operation visibility.
 
-### YA-TUI-12 — Package and harden systemd, Docker, client, and release artifacts
+### [YA-TUI-12](https://github.com/duvu/ya-router/issues/18) — Package and harden systemd, Docker, client, and release artifacts
 
 Priority: P2  
 Depends on: YA-TUI-08, YA-TUI-09, and YA-TUI-11
@@ -414,7 +414,7 @@ Acceptance:
 - service correctly receives and drains on stop signals;
 - release artifacts are reproducible enough to verify checksums and source commit.
 
-### YA-TUI-13 — Complete production E2E, security, recovery, and compatibility gates
+### [YA-TUI-13](https://github.com/duvu/ya-router/issues/19) — Complete production E2E, security, recovery, and compatibility gates
 
 Priority: P2  
 Depends on: YA-TUI-01 through YA-TUI-12
