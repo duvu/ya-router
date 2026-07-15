@@ -38,7 +38,7 @@ ChatGPT-authenticated Codex supports chat and native Responses. Embeddings requi
 
 ## Build and validate
 
-Requirements: Go 1.22 or newer.
+Requirements: Go 1.22 or newer. The production runtime is Go; no Rust runtime is currently present in the repository.
 
 ```bash
 make build
@@ -215,7 +215,7 @@ Resolution order:
 3. provider catalog discovery;
 4. configured default provider only when the request omitted a model.
 
-An `codex/*` request cannot enter Copilot, and a `github/*` request cannot enter Codex. Unknown explicit bare model names fail. The default provider is used only when the request omitted a model. Ambiguous bare model names fail with a message asking for a prefix or explicit mapping.
+A `codex/*` request cannot enter Copilot, and a `github/*` request cannot enter Codex. Unknown explicit bare model names fail. The default provider is used only when the request omitted a model. Ambiguous bare model names fail with a message asking for a prefix or explicit mapping.
 
 Example config:
 
