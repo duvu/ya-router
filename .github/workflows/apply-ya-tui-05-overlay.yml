@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   apply:
@@ -20,23 +21,43 @@ jobs:
           ref: agent/ya-tui-05-read-models-cleanup
           fetch-depth: 0
 
+      - name: Upload staged payload for diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: ya-tui-05-overlay-parts
+          path: .tmp/ya-tui-05-overlay.part*
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Apply staged source overlay
+        id: apply
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
-          if [ ! -f .tmp/ya-tui-05-overlay.part00 ]; then
-            echo "Overlay already applied."
-            exit 0
-          fi
+          set -uo pipefail
           cat .tmp/ya-tui-05-overlay.part* > /tmp/ya-tui-05-overlay.b64
-          base64 --decode /tmp/ya-tui-05-overlay.b64 > /tmp/ya-tui-05-overlay.tar.gz
+          wc -c .tmp/ya-tui-05-overlay.part* /tmp/ya-tui-05-overlay.b64
+          if ! base64 --decode /tmp/ya-tui-05-overlay.b64 > /tmp/ya-tui-05-overlay.tar.gz; then
+            echo "base64 decode failed"
+            exit 1
+          fi
+          file /tmp/ya-tui-05-overlay.tar.gz
+          if ! gzip -t /tmp/ya-tui-05-overlay.tar.gz; then
+            echo "gzip validation failed"
+            exit 1
+          fi
           tar -tzf /tmp/ya-tui-05-overlay.tar.gz
           tar -xzf /tmp/ya-tui-05-overlay.tar.gz -C .
           rm -f .tmp/ya-tui-05-overlay.part*
           rmdir .tmp 2>/dev/null || true
           rm -f .github/workflows/apply-ya-tui-05-overlay.yml
 
+      - name: Fail on invalid overlay
+        if: steps.apply.outcome == 'failure'
+        run: exit 1
+
       - name: Verify formatting
+        if: steps.apply.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -47,18 +68,22 @@ jobs:
           fi
 
       - name: Vet
+        if: steps.apply.outcome == 'success'
         run: go vet ./...
 
       - name: Test with race detector
+        if: steps.apply.outcome == 'success'
         run: go test -race -count=1 ./...
 
       - name: Build binaries
+        if: steps.apply.outcome == 'success'
         run: |
           go build -trimpath -o /tmp/ya-router ./cmd/ya-router
           go build -trimpath -o /tmp/ya-routerd ./cmd/ya-routerd
           go build -trimpath -o /tmp/ya ./cmd/ya
 
       - name: Commit applied implementation
+        if: steps.apply.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
