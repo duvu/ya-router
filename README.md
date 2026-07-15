@@ -77,6 +77,13 @@ OS client can be delivered incrementally without changing the `/v1/*` contract:
 These documents remain the ordered implementation plan. The executable
 foundations exist; the Control API and interactive TUI do not yet exist.
 
+Data-plane handlers now use immutable, generation-tagged runtime snapshots.
+Provider changes are constructed and validated before atomic publication;
+in-flight requests retain their original snapshot while replaced instances
+drain for a bounded, observable duration. Compiled-in provider descriptors
+remain available independently from active instances, forming the lifecycle
+foundation for the future Control API and TUI.
+
 ## Quick start
 
 ### GitHub Copilot

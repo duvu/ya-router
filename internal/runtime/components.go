@@ -10,8 +10,9 @@ import (
 	"github.com/duvu/ya-router/internal/routing"
 )
 
-// Components groups one service instance's explicit dependencies. It is not
-// a mutable runtime manager; YA-TUI-02 will add snapshot publication and drain.
+// Components groups one static service instance's explicit dependencies. New
+// daemon wiring uses Manager snapshots; this type remains for compatibility
+// and focused composition tests.
 type Components struct {
 	Config    *configschema.Config
 	Providers *provider.Registry
