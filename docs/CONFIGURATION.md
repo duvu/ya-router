@@ -87,7 +87,7 @@ Enables `/debug/pprof/`. The endpoints are still covered by the inbound access p
 ### Resolution order
 
 1. Exact `model_map` key.
-2. Bare `model_map` key after removing `gc-` or `oc-`.
+2. Bare `model_map` key after removing a recognized provider prefix.
 3. Explicit provider prefix.
 4. Provider catalog discovery.
 5. Configured default provider only when the request omitted the model.
@@ -96,8 +96,8 @@ Explicit prefixes are authoritative:
 
 | Prefix | Provider |
 |---|---|
-| `gc-` | GitHub Copilot |
-| `oc-` | OpenAI Codex |
+| `github/` | GitHub Copilot |
+| `codex/` | OpenAI Codex |
 
 The prefix is removed before forwarding upstream. A model present in multiple providers requires a prefix or `model_map` rule. Unknown explicit bare model names fail. The default provider is used only when the request omitted the model.
 
@@ -128,7 +128,7 @@ Authenticate:
 ./ya-router auth copilot --account work
 ```
 
-Copilot chat only receives requests selected by `model_map`, a `gc-` prefix, or provider catalog discovery. It cannot intercept `oc-*` requests, explicit Codex mappings, or unknown bare model names.
+Copilot chat only receives requests selected by `model_map`, a `github/` prefix, or provider catalog discovery. It cannot intercept `codex/*` requests, explicit Codex mappings, or unknown bare model names.
 
 ## Codex provider
 
