@@ -14,6 +14,7 @@ type ProviderID string
 const (
 	ProviderCopilot ProviderID = "copilot"
 	ProviderCodex   ProviderID = "codex"
+	ProviderKilo    ProviderID = "kilo"
 )
 
 // Capability describes a request type that a provider may support.

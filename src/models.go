@@ -16,8 +16,8 @@ import (
 //
 // The filter is prefix-tolerant: a model ID with a provider prefix matches an
 // allowed entry that specifies only the bare ID, and vice versa.  For example,
-// an allowed list entry "gpt-4o" will match the model "gc-gpt-4o", and an entry
-// "gc-gpt-4o" will match the model "gc-gpt-4o" exactly.
+// an allowed list entry "gpt-4o" will match the model "github/gpt-4o", and an
+// entry "github/gpt-4o" will match that prefixed model exactly.
 //
 // If the allowedModels list is set but no models match, a synthetic entry for
 // each allowed ID is returned so clients can still see the allowed model names.
@@ -86,8 +86,8 @@ func isModelAllowedWithPrefix(modelID string, allowedModels []string) bool {
 // modelsHandler returns an HTTP handler that merges model lists from all
 // enabled providers and writes the combined list as JSON.
 //
-// Each model ID is prefixed with the provider's namespace prefix (e.g. "gc-"
-// for Copilot, "oc-" for Codex) so clients can target a provider
+// Each model ID is prefixed with the provider's namespace prefix (for example,
+// "github/", "codex/", or "kilo/") so clients can target a provider
 // deterministically.  The prefix is stripped by the router before any request
 // is forwarded to the upstream.
 func modelsHandler(registry *ProviderRegistry, cfg *Config) http.HandlerFunc {

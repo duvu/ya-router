@@ -29,6 +29,9 @@ Server exposure is intentionally controlled outside the JSON credential file.
 | `YA_ROUTER_CODEX_OAUTH_CLIENT_ID` | Codex-compatible default | OAuth client override for managed deployments |
 | `OPENAI_API_KEY` | empty | OpenAI Platform API key |
 | `CODEX_HOME` | `~/.codex` | Read-only source for a legacy/single-account Codex credential import |
+| `KILO_API_KEY` | empty | Kilo Gateway API key; optional for free anonymous models |
+| `KILO_ORG_ID` | empty | Kilo organization context |
+| `KILO_GATEWAY_BASE_URL` | `https://api.kilo.ai/api/gateway` | Full Kilo Gateway base URL override |
 
 Examples:
 
@@ -98,6 +101,7 @@ Explicit prefixes are authoritative:
 |---|---|
 | `github/` | GitHub Copilot |
 | `codex/` | OpenAI Codex |
+| `kilo/` | Kilo AI Gateway |
 
 The prefix is removed before forwarding upstream. A model present in multiple providers requires a prefix or `model_map` rule. Unknown explicit bare model names fail. The default provider is used only when the request omitted the model.
 
@@ -199,6 +203,52 @@ printf '%s\n' "$CHATGPT_ACCESS_TOKEN" | ./ya-router auth codex --token-stdin
 ```
 
 This path is intended for recovery only. Without a refresh token, reauthentication is required when the access token expires.
+
+## Kilo Gateway provider
+
+Kilo is disabled by default. Enable anonymous access to free models with:
+
+```bash
+./ya-router auth kilo
+```
+
+Or configure it directly:
+
+```json
+{
+  "providers": {
+    "kilo": {
+      "enabled": true,
+      "allow_anonymous": true,
+      "organization_id": "",
+      "base_url": "https://api.kilo.ai/api/gateway",
+      "allowed_models": []
+    }
+  }
+}
+```
+
+The provider discovers `GET /models`, forwards Chat Completions to `/chat/completions`, and passes native Responses requests to `/responses`. It intentionally does not advertise embeddings because embeddings are not part of Kilo's documented public Gateway contract.
+
+### Auto Free
+
+Use the client-facing model ID:
+
+```text
+kilo/kilo-auto/free
+```
+
+ya-router removes only its leading `kilo/` namespace and sends `kilo-auto/free` upstream. Without an API key, the catalog and proxy are restricted to IDs marked free by Kilo, IDs ending in `:free`, `openrouter/free`, and `kilo-auto/free`. Paid IDs fail before an upstream request is made.
+
+Anonymous access can be disabled with `"allow_anonymous": false`. For authenticated models, prefer `KILO_API_KEY`; importing through stdin is also supported:
+
+```bash
+printf '%s\n' "$KILO_API_KEY" | ./ya-router auth kilo --api-key-stdin
+```
+
+The inbound ya-router API credential is never forwarded. Kilo requests receive only the server-owned Kilo credential, optional organization ID, and a small allowlist of Kilo task/mode headers.
+
+Auto Free may route requests to providers that log prompts and outputs or use them to improve services. Do not submit confidential, personal, or regulated data through Auto Free.
 
 ## Multi-account pools
 

@@ -82,8 +82,8 @@ func (r *ModelRouter) Resolve(ctx context.Context, requestedModel string, capabi
 			providers[i] = string(candidates[i].Provider.ID())
 		}
 		return nil, fmt.Errorf(
-			"model %q is ambiguous: found in %d providers %v; use a provider-prefixed model ID (for example github/%s or codex/%s) or add routing.model_map",
-			model, len(candidates), providers, model, model,
+			"model %q is ambiguous: found in %d providers %v; use a provider-prefixed model ID or add routing.model_map",
+			model, len(candidates), providers,
 		)
 	}
 }

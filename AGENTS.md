@@ -12,7 +12,7 @@ Compact orientation for development agents working in this repository.
 - `POST /v1/embeddings`
 - `/health`, `/health/ready`, and `/health/providers`
 
-It routes to GitHub Copilot, ChatGPT-backed Codex, or OpenAI Platform API-key mode.
+It routes to GitHub Copilot, ChatGPT-backed Codex, OpenAI Platform API-key mode, or Kilo AI Gateway.
 
 ## Layout
 
@@ -44,7 +44,7 @@ CI runs formatting verification, `go vet`, `go test -race -count=1 ./src/...`, a
 ## Routing invariants
 
 1. `routing.model_map` is evaluated first.
-2. `github/` and `codex/` prefixes are authoritative.
+2. `github/`, `codex/`, and `kilo/` prefixes are authoritative.
 3. Provider catalogs are checked next.
 4. The configured default provider is used only when the request omitted a model.
 5. Explicit unknown models fail and do not implicitly rotate to or select a Copilot model.
@@ -74,6 +74,16 @@ Do not reintroduce a pre-router Copilot fast path.
 - CORS is disabled unless `YA_ROUTER_CORS_ALLOWED_ORIGINS` is configured.
 - `/health*` endpoints expose only redacted metadata.
 - Secret CLI input uses stdin or environment variables; do not add secret-bearing argv flags.
+
+## Kilo Gateway invariants
+
+- The default upstream is `https://api.kilo.ai/api/gateway`.
+- `KILO_API_KEY` takes precedence over a key imported into ya-router config.
+- Anonymous mode exposes and accepts only free model IDs; it must not make paid requests implicitly.
+- The inbound ya-router `Authorization` header is never forwarded to Kilo; provider credentials are server-owned.
+- Kilo upstream status codes and SSE events pass through unchanged.
+- Kilo does not participate in implicit cross-provider fallback.
+- Auto Free may use providers with prompt/output logging or training policies; documentation must retain the data-handling warning.
 
 ## Protocol invariants
 

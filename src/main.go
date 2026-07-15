@@ -37,7 +37,7 @@ func main() {
 	case "auth":
 		authCmd := flag.NewFlagSet("auth", flag.ExitOnError)
 		modeFlag := authCmd.String("mode", "device_code", "Auth mode: device_code (default)")
-		apiKeyStdin := authCmd.Bool("api-key-stdin", false, "Read an OpenAI Platform API key from stdin")
+		apiKeyStdin := authCmd.Bool("api-key-stdin", false, "Read a provider API key from stdin")
 		tokenStdin := authCmd.Bool("token-stdin", false, "Read a ChatGPT access token from stdin (fallback only)")
 		accountFlag := authCmd.String("account", "", "Account label for the provider account pool")
 		args := os.Args[2:]
@@ -76,6 +76,18 @@ func main() {
 			}
 		case "copilot":
 			err = handleAuthCopilot(*modeFlag, *accountFlag)
+		case "kilo":
+			if *tokenStdin {
+				err = fmt.Errorf("--token-stdin is not supported for Kilo; use --api-key-stdin")
+			} else if *apiKeyStdin {
+				var secret string
+				secret, err = readSecretFromStdin("Kilo API key")
+				if err == nil {
+					err = handleAuthKiloAPIKey(secret)
+				}
+			} else {
+				err = handleAuthKiloAnonymous()
+			}
 		default:
 			err = fmt.Errorf("unknown provider %q", provider)
 		}
