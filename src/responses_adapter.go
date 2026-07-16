@@ -348,6 +348,19 @@ func buildChatGPTNativeResponsesRequest(body []byte) ([]byte, bool, error) {
 		}
 		out[key] = value
 	}
+	if input, ok := out["input"]; ok {
+		var text string
+		if json.Unmarshal(input, &text) == nil {
+			normalized, err := json.Marshal([]struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			}{{Role: "user", Content: text}})
+			if err != nil {
+				return nil, false, fmt.Errorf("encode ChatGPT Responses input: %w", err)
+			}
+			out["input"] = normalized
+		}
+	}
 	out["stream"], _ = json.Marshal(true)
 	out["store"], _ = json.Marshal(false)
 	encoded, err := json.Marshal(out)

@@ -1,17 +1,19 @@
 # Umbrella Model Routing Architecture
 
-Status: proposed target architecture  
+Status: implemented generic routing foundation; current MVP contract uses `thiendu`
 Epic: [#25 — Umbrella models with active-target routing](https://github.com/duvu/ya-router/issues/25)  
 Last updated: 2026-07-15
 
 ## 1. Decision summary
 
-`ya-router` will support client-facing **umbrella models** (also called virtual models), for example `router/auto`.
+`ya-router` supports client-facing **umbrella models** (also called virtual
+models). `thiendu` is the default simple public model; the generic
+`routing.virtual_models` engine remains supported for additional configured IDs.
 
 An umbrella model is not an upstream model and is not a failover chain. It is an ordered policy that selects one canonical provider-prefixed target before a request is dispatched:
 
 ```text
-router/auto
+thiendu
   1. github/gpt-5-mini
   2. codex/gpt-5.4-mini
   3. kilo/kilo-auto/free
@@ -61,7 +63,9 @@ Umbrella routing therefore belongs in the routing decision phase, before any pro
 4. Preserve all explicit routing and provider isolation guarantees.
 5. Avoid duplicate upstream generations caused by post-dispatch failover.
 6. Make every decision observable using bounded, redacted metadata.
-7. Support static configuration first, then integrate with the daemon-owned Control API and TUI.
+7. Preserve static configuration and expose read-only readiness through the
+   daemon-owned Control API and TUI; generic routing-policy CRUD remains out of
+   MVP scope.
 
 ## 5. Non-goals for v1
 
@@ -75,13 +79,13 @@ Umbrella routing therefore belongs in the routing decision phase, before any pro
 
 ## 6. Configuration contract
 
-Proposed backward-compatible shape:
+Implemented backward-compatible shape:
 
 ```json
 {
   "routing": {
     "virtual_models": {
-      "router/auto": {
+      "thiendu": {
         "strategy": "priority",
         "targets": [
           "github/gpt-5-mini",
@@ -214,7 +218,7 @@ Provider-internal account handling is separate. Umbrella routing neither expands
 
 ```json
 {
-  "id": "router/auto",
+  "id": "thiendu",
   "object": "model",
   "owned_by": "ya-router"
 }
@@ -234,7 +238,7 @@ Example conceptual payload:
 {
   "error": {
     "type": "model_unavailable",
-    "message": "No active target is available for model router/auto."
+    "message": "No active target is available for model thiendu."
   }
 }
 ```
@@ -268,13 +272,15 @@ Prompts, completions, tokens, keys, device codes, arbitrary upstream bodies, and
 
 Static config support can ship before the managed control plane is complete.
 
-After the daemon single-writer, revisioned config, read resources, client SDK, and mutation workflows land, the Control API will support:
+The daemon single-writer, revisioned config, read resources, client SDK, and
+mutation workflows expose:
 
 - listing umbrella models and current redacted readiness;
 - validating and dry-running a policy without sending a model request;
 - creating, updating, deleting, and reordering targets;
 - revision conflict detection, idempotency, audit, and rollback;
-- read-only TUI views followed by safe mutation workflows.
+- dashboard readiness and provider enable/disable/auth workflows. Generic
+  virtual-model policy CRUD remains intentionally deferred.
 
 The `ya` client and TUI never edit the service JSON directly.
 
@@ -306,15 +312,27 @@ Blocking tests include:
 
 ## 18. Delivery backlog
 
-| Order | Issue | Outcome |
-|---:|---|---|
-| 1 | [#26](https://github.com/duvu/ya-router/issues/26) | Contract and configuration schema |
-| 2 | [#27](https://github.com/duvu/ya-router/issues/27) | Target availability snapshots |
-| 3 | [#28](https://github.com/duvu/ya-router/issues/28) | Deterministic priority selector |
-| 4 | [#29](https://github.com/duvu/ya-router/issues/29) | Data-plane and model-catalog integration |
-| 5 | [#30](https://github.com/duvu/ya-router/issues/30) | Observability and diagnostics |
-| 6 | [#31](https://github.com/duvu/ya-router/issues/31) | Control API, CLI, and TUI integration |
-| 7 | [#32](https://github.com/duvu/ya-router/issues/32) | Production and regression gates |
+| Order | Issue | Outcome | Status |
+|---:|---|---|---|
+| 1 | [#26](https://github.com/duvu/ya-router/issues/26) | Contract and configuration schema | Delivered |
+| 2 | [#27](https://github.com/duvu/ya-router/issues/27) | Target availability snapshots | Delivered |
+| 3 | [#28](https://github.com/duvu/ya-router/issues/28) | Deterministic priority selector | Delivered |
+| 4 | [#29](https://github.com/duvu/ya-router/issues/29) | Data-plane and model-catalog integration | Delivered |
+| 5 | [#30](https://github.com/duvu/ya-router/issues/30) | Observability and diagnostics | Delivered |
+| 6 | [#31](https://github.com/duvu/ya-router/issues/31) | Control API, CLI, and TUI integration | Delivered for bounded routing status and dashboard observation |
+| 7 | [#32](https://github.com/duvu/ya-router/issues/32) | Production and regression gates | Superseded for MVP1 by [#59](https://github.com/duvu/ya-router/issues/59) end-to-end gate |
+
+### Implementation map (Go runtime)
+
+| Concern | Location |
+|---|---|
+| Config schema + validation | `internal/config` (`types.go`, `clone.go`, `validate.go`) |
+| Availability contract | `internal/availability` |
+| Priority selector | `internal/routing/selector.go` |
+| Router integration + no-failover | `internal/routing/router.go` |
+| Diagnostics + metrics | `internal/routing/diagnostics.go`, `internal/routing/metrics.go` |
+| `/v1/models` exposure + decision logs | `src/models.go`, `src/umbrella_observability.go` |
+| Health diagnostics endpoint | `src/managed_runtime.go` (`/health/umbrella`) |
 
 ## 19. Architecture decisions
 

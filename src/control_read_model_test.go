@@ -11,6 +11,7 @@ import (
 	controlpkg "github.com/duvu/ya-router/internal/control"
 	providerpkg "github.com/duvu/ya-router/internal/provider"
 	runtimepkg "github.com/duvu/ya-router/internal/runtime"
+	secretpkg "github.com/duvu/ya-router/internal/secret"
 )
 
 func TestControlReadModelListsEveryCompiledProvider(t *testing.T) {
@@ -28,7 +29,7 @@ func TestControlReadModelListsEveryCompiledProvider(t *testing.T) {
 		_ = runtimeManager.Close(context.Background())
 	}()
 
-	resources, err := newControlReadModel(runtimeManager, providerManager).Providers(context.Background())
+	resources, err := newControlReadModel(runtimeManager, providerManager, nil).Providers(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,5 +112,42 @@ func TestControlCatalogRetainsLastKnownGoodAfterRefreshFailure(t *testing.T) {
 	}
 	if !resource.Stale || resource.LastRefreshError != "catalog_refresh_failed" || resource.AgeSeconds != 60 {
 		t.Fatalf("catalog failure metadata missing: %+v", resource)
+	}
+}
+
+func TestCredentialMetadataUsesManagedCredentialPosture(t *testing.T) {
+	config := defaultConfig()
+	store := secretpkg.NewMemoryStore(nil)
+	if _, err := store.Set("operator", "copilot/token", "copilot-token"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Set("operator", "copilot/github_token", "github-token"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Set("operator", "codex/access_token", "access-token"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Set("operator", "codex/refresh_token", "refresh-token"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Set("operator", "kilo/api_key", "kilo-key"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name        string
+		providerID  providerpkg.ID
+		refreshable bool
+	}{
+		{name: "copilot", providerID: providerpkg.Copilot, refreshable: true},
+		{name: "codex", providerID: providerpkg.Codex, refreshable: true},
+		{name: "kilo", providerID: providerpkg.Kilo},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			credential := credentialMetadata(config, test.providerID, "default", "default", store)
+			if !credential.Configured || credential.Source != string(secretpkg.SourceManaged) || credential.Refreshable != test.refreshable {
+				t.Fatalf("credential posture = %+v", credential)
+			}
+		})
 	}
 }

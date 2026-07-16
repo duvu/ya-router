@@ -1,15 +1,16 @@
 # Control API foundation
 
 `ya-routerd` serves management traffic separately from the OpenAI-compatible
-data plane. The initial Control API exposes only discovery and negotiation:
+data plane. The Control API exposes discovery, redacted provider/account/model/
+config/routing state, durable operations, write-only secret posture, auth
+sessions, and revision-safe supported mutations:
 
 ```text
 GET /control/v1/meta
 ```
 
-Provider, model, operation, authentication, and configuration resources are
-added by the later managed-service roadmap issues. The current endpoint is the
-stable foundation for those resources.
+All resources remain version-negotiated and use the same private local socket
+by default.
 
 ## Local transport
 
@@ -125,7 +126,7 @@ All responses include `X-Request-ID`. Errors use a stable envelope:
 
 ## Idempotency framework
 
-Future mutation routes are registered as idempotent and require an
+Mutation and operation-creation routes are registered as idempotent and require an
 `Idempotency-Key` header. The service serializes concurrent duplicates,
 replays the first response for an identical payload, and returns `409` if the
 same key is reused with a different payload. Request bodies are bounded and a
@@ -147,9 +148,11 @@ The viewer role can inspect the complete redacted daemon read model:
 | `GET /control/v1/accounts` | Daemon-owned account IDs, labels, priority, and credential-source metadata without tokens or upstream account IDs |
 | `GET /control/v1/models` | Per-provider prefixed model catalogs with availability, freshness, and last-known-good refresh state |
 | `GET /control/v1/config` | Redacted desired/effective configuration, revision, digests, and restart-required paths |
+| `GET /control/v1/routing/thiendu` | Capability-specific configured candidates, selected target, stable skip reasons, cooldowns, and bounded counters |
 | `GET /control/v1/operations` | Stable polling collection; populated by the async-operation implementation |
 | `GET /control/v1/events?after=N` | Bounded lifecycle-event polling fallback |
 | `GET /control/v1/events/stream` | Resumable Server-Sent Events stream |
+| `GET /control/v1/secrets` | Redacted credential posture (slot, source, configured, read-only, version) — never secret values |
 
 Use `refresh=true` on the model resource to force an upstream refresh. A failed
 refresh records the generic `catalog_refresh_failed` state but does not discard
@@ -160,3 +163,80 @@ replaying retained history and de-duplicates by monotonic sequence, preventing
 an event gap between replay and live delivery. Clients that cannot maintain an
 SSE connection can poll `/events?after=<last sequence>` and persist
 `next_after`.
+
+## Revision-safe configuration mutations
+
+Operator-role clients apply online configuration changes through a single
+compare-and-swap endpoint. Each mutation carries an `expected_revision`; the
+daemon rejects a stale write with a typed `revision_conflict` (HTTP 409) so two
+writers cannot silently overwrite each other. `dry_run: true` validates and
+returns the diff (`changed_paths`, `restart_required`) without committing. A
+committed change is hot-reloaded by reconciling the provider runtime — never by
+invoking systemd, Docker, a shell, or a process self-restart. A rejected
+validation or conflict makes no effective data-plane change.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /control/v1/config/mutations` | Apply one revision-safe mutation (requires `Idempotency-Key`) |
+
+Supported mutation kinds: `provider_enabled`, `default_model`,
+`default_provider`, `allowed_models`, `model_map_set`, `model_map_delete`. A
+`model_map_set` key may not collide with a configured umbrella (virtual) model,
+preserving routing precedence.
+
+## The `ya` control client
+
+The installable `ya` binary opens the keyboard-driven daemon dashboard when
+called without a subcommand. It speaks the local Unix socket by default (or
+HTTPS/mTLS via `--address`) and never owns daemon lifecycle. The dashboard
+shows daemon readiness, providers, `thiendu` routing/cooldowns, catalogs,
+operations, and lifecycle events; its palette can authenticate providers,
+write masked API keys, refresh catalogs, cancel auth operations, and apply
+revision-safe provider enable/disable changes.
+
+Scriptable commands work without a TTY and support `--json`: `meta`,
+`providers`, `accounts`, `models`, `config`, `routing`, `operations`,
+`operation`, `events`, and `secrets`. Mutation commands require `--revision`
+and support `--dry-run`: `provider-enable`, `provider-disable`,
+`default-model`, `default-provider`, `allowed-models`, `model-map-set`, and
+`model-map-delete`. `auth-start`, `auth-cancel`, `secret-set --stdin`, and
+`secret-delete` cover the corresponding write-only control paths.
+
+Mutations send a generated `Idempotency-Key` that is reused across retries, so a
+retried mutation is deduplicated by the daemon rather than applied twice. Exit
+codes are stable: `0` ok, `2` usage, `3` connection, `4` auth, `5` forbidden,
+`6` not-found, `7` incompatible, `8` conflict, `9` server.
+
+## Persistent operations and authentication sessions
+
+Long-running control work is represented by durable operation records stored in
+`operations.json` beside the revisioned configuration by default. Override the
+path with `YA_ROUTER_OPERATIONS_PATH` when deployment packaging requires a
+separate state volume.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /control/v1/operations` | Create a bounded provider-neutral operation reservation |
+| `GET /control/v1/operations/{id}` | Reconnect to an owned operation; administrators may inspect all operations |
+| `DELETE /control/v1/operations/{id}` | Cancel an owned cancelable operation |
+| `GET /control/v1/operations/events?after=N` | Poll persisted operation lifecycle events |
+| `GET /control/v1/operations/events/stream` | Resume operation events using `Last-Event-ID` |
+| `POST /control/v1/auth-sessions` | Create a provider-neutral auth session for a supported provider and method |
+| `GET /control/v1/auth-sessions/{id}` | Reconnect to an auth session |
+| `DELETE /control/v1/auth-sessions/{id}` | Cancel an auth session |
+
+Creation requires `Idempotency-Key`. The key is hashed with the authenticated
+owner and persisted with a canonical request digest. Repeating the same request,
+even after daemon restart, returns the original operation; reusing the key with
+a different request returns `409`.
+
+Operation workers use daemon-owned contexts, so loss of the initiating HTTP or
+SSE connection does not cancel work. On restart, non-terminal work is never
+silently resumed: unsafe work becomes `failed` with `operation_interrupted`,
+while expiry-oriented auth sessions become `expired`. Failures use typed generic
+messages and never persist raw upstream error text.
+
+The auth-session creation contract accepts only provider, daemon-owned account
+ID, method, and expiry. API keys, recovery tokens, device codes, and other secret
+fields are rejected here; provider adapters and write-only secret handling are
+implemented by the next authentication milestone.

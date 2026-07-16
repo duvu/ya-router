@@ -14,8 +14,10 @@ import (
 	"time"
 
 	controlpkg "github.com/duvu/ya-router/internal/control"
+	operationpkg "github.com/duvu/ya-router/internal/operation"
 	providerpkg "github.com/duvu/ya-router/internal/provider"
 	runtimepkg "github.com/duvu/ya-router/internal/runtime"
+	secretpkg "github.com/duvu/ya-router/internal/secret"
 )
 
 const (
@@ -31,20 +33,48 @@ const (
 	controlViewerSubjectsEnv   = "YA_ROUTER_CONTROL_VIEWER_SUBJECTS"
 	controlOperatorSubjectsEnv = "YA_ROUTER_CONTROL_OPERATOR_SUBJECTS"
 	controlAdminSubjectsEnv    = "YA_ROUTER_CONTROL_ADMIN_SUBJECTS"
+	operationStatePathEnv      = "YA_ROUTER_OPERATIONS_PATH"
 )
 
 type managedControlRuntime struct {
 	service       *controlpkg.Service
 	audit         *controlpkg.MemoryAuditSink
+	operations    *operationpkg.Manager
 	unixSocket    string
 	remoteAddress string
 }
 
 func newManagedControlRuntime(config *Config, runtimeManager *runtimepkg.Manager, providerManager *providerpkg.Manager) (*managedControlRuntime, error) {
+	return newManagedControlRuntimeWithSecretStore(config, runtimeManager, providerManager, nil)
+}
+
+func newManagedControlRuntimeWithSecretStore(config *Config, runtimeManager *runtimepkg.Manager, providerManager *providerpkg.Manager, secretStore *secretpkg.MemoryStore) (*managedControlRuntime, error) {
 	listenerConfig, tokens, subjectRoles, err := configuredControlListener(config)
 	if err != nil {
 		return nil, err
 	}
+	operationPath, err := configuredOperationStatePath()
+	if err != nil {
+		return nil, err
+	}
+	operationManager, err := operationpkg.OpenManager(operationpkg.Options{
+		Path:          operationPath,
+		MaxOperations: 2048,
+		MaxEvents:     8192,
+		Retention:     7 * 24 * time.Hour,
+		DefaultTTL:    15 * time.Minute,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("open operation manager: %w", err)
+	}
+	closeOperations := true
+	defer func() {
+		if closeOperations {
+			shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = operationManager.Close(shutdownContext)
+		}
+	}()
 	deploymentMode := "local"
 	if listenerConfig.UnixSocket == "" {
 		deploymentMode = "remote"
@@ -56,12 +86,16 @@ func newManagedControlRuntime(config *Config, runtimeManager *runtimepkg.Manager
 		ServiceVersion: version,
 		DeploymentMode: deploymentMode,
 		Features: []string{
+			"auth_sessions",
 			"catalog_last_known_good",
 			"control_meta",
 			"control_read_models",
 			"idempotency",
 			"local_unix_socket",
+			"operation_events",
+			"persistent_operations",
 			"request_id",
+			"restart_recovery",
 			"resumable_sse",
 			"role_based_access",
 			"typed_errors",
@@ -81,7 +115,18 @@ func newManagedControlRuntime(config *Config, runtimeManager *runtimepkg.Manager
 			}
 		},
 	})
-	controlpkg.RegisterReadRoutes(api, newControlReadModel(runtimeManager, providerManager))
+	if secretStore == nil {
+		secretStore, err = newDaemonSecretStore(config, audit)
+		if err != nil {
+			return nil, err
+		}
+	}
+	readModel := newControlReadModel(runtimeManager, providerManager, operationManager, secretStore)
+	controlpkg.RegisterReadRoutes(api, readModel)
+	controlpkg.RegisterRoutingStatusRoutes(api, readModel)
+	controlpkg.RegisterOperationRoutes(api, operationManager, authSessionRunner{operations: operationManager, reloader: providerManager, secrets: secretStore})
+	controlpkg.RegisterSecretRoutes(api, secretStore)
+	controlpkg.RegisterMutationRoutes(api, mutationExecutor{reloader: providerManager})
 	localIdentity := controlpkg.Identity{Subject: "local:unix-socket", Role: controlpkg.RoleAdmin, Source: "unix_socket"}
 	localHandler := api.Handler(controlpkg.FixedAuthenticator(localIdentity))
 
@@ -100,12 +145,28 @@ func newManagedControlRuntime(config *Config, runtimeManager *runtimepkg.Manager
 	if err != nil {
 		return nil, err
 	}
+	closeOperations = false
 	return &managedControlRuntime{
 		service:       service,
 		audit:         audit,
+		operations:    operationManager,
 		unixSocket:    listenerConfig.UnixSocket,
 		remoteAddress: listenerConfig.RemoteAddress,
 	}, nil
+}
+
+func configuredOperationStatePath() (string, error) {
+	if custom := strings.TrimSpace(os.Getenv(operationStatePathEnv)); custom != "" {
+		if err := os.MkdirAll(filepath.Dir(custom), 0o700); err != nil {
+			return "", fmt.Errorf("create operation state directory: %w", err)
+		}
+		return custom, nil
+	}
+	configPath, err := getConfigPath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(configPath), "operations.json"), nil
 }
 
 func configuredControlListener(config *Config) (controlpkg.ListenerConfig, map[controlpkg.Role]string, map[string]controlpkg.Role, error) {
@@ -115,7 +176,7 @@ func configuredControlListener(config *Config) (controlpkg.ListenerConfig, map[c
 	}
 	socket := strings.TrimSpace(os.Getenv(controlSocketEnv))
 	if socket == "" {
-		socket = filepath.Join(filepath.Dir(configPath), "control.sock")
+		socket = controlSocketNextTo(configPath)
 	} else if strings.EqualFold(socket, "off") || strings.EqualFold(socket, "disabled") {
 		socket = ""
 	}
@@ -174,6 +235,13 @@ func configuredControlListener(config *Config) (controlpkg.ListenerConfig, map[c
 	return listener, tokens, subjectRoles, nil
 }
 
+// controlSocketNextTo returns the default control Unix socket path colocated
+// with the config file. The daemon listener and the ya client both derive the
+// default endpoint through this helper so they stay in sync.
+func controlSocketNextTo(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "control.sock")
+}
+
 func addSubjectRoles(destination map[string]controlpkg.Role, role controlpkg.Role, values string) {
 	for _, value := range strings.Split(values, ",") {
 		if subject := strings.TrimSpace(value); subject != "" {
@@ -228,6 +296,11 @@ func serveManagedServers(dataServer *http.Server, controlRuntime *managedControl
 		return fmt.Errorf("control runtime is required")
 	}
 	if err := controlRuntime.service.Start(); err != nil {
+		if controlRuntime.operations != nil {
+			shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = controlRuntime.operations.Close(shutdownContext)
+		}
 		return fmt.Errorf("start control service: %w", err)
 	}
 	dataErrors := make(chan error, 1)
@@ -262,6 +335,11 @@ func serveManagedServers(dataServer *http.Server, controlRuntime *managedControl
 	}
 	if err := controlRuntime.service.Shutdown(shutdownContext); err != nil && result == nil {
 		result = fmt.Errorf("shutdown control service: %w", err)
+	}
+	if controlRuntime.operations != nil {
+		if err := controlRuntime.operations.Close(shutdownContext); err != nil && result == nil {
+			result = fmt.Errorf("shutdown operation manager: %w", err)
+		}
 	}
 	return result
 }

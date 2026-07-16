@@ -19,6 +19,7 @@ const currentConfigVersion = 1
 type SecretReference = configschema.SecretReference
 type RoutingConfig = configschema.Routing
 type ModelMapEntry = configschema.ModelMapEntry
+type VirtualModelConfig = configschema.VirtualModel
 type CopilotAuthState = configschema.CopilotAuthState
 type CopilotAccount = configschema.CopilotAccount
 type CopilotProviderConfig = configschema.CopilotProvider
