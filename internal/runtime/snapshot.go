@@ -27,11 +27,13 @@ func newSnapshot(generation uint64, config *configschema.Config, providers []pro
 	effectiveConfig := configschema.Clone(config)
 	registry := provider.NewRegistry(providers...)
 	registry.Freeze()
+	router := routing.NewRouter(registry, effectiveConfig.Routing)
+	router.SetGeneration(generation)
 	return &Snapshot{
 		generation: generation,
 		config:     effectiveConfig,
 		providers:  registry,
-		router:     routing.NewRouter(registry, effectiveConfig.Routing),
+		router:     router,
 		drained:    make(chan struct{}),
 	}
 }

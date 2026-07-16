@@ -306,15 +306,27 @@ Blocking tests include:
 
 ## 18. Delivery backlog
 
-| Order | Issue | Outcome |
-|---:|---|---|
-| 1 | [#26](https://github.com/duvu/ya-router/issues/26) | Contract and configuration schema |
-| 2 | [#27](https://github.com/duvu/ya-router/issues/27) | Target availability snapshots |
-| 3 | [#28](https://github.com/duvu/ya-router/issues/28) | Deterministic priority selector |
-| 4 | [#29](https://github.com/duvu/ya-router/issues/29) | Data-plane and model-catalog integration |
-| 5 | [#30](https://github.com/duvu/ya-router/issues/30) | Observability and diagnostics |
-| 6 | [#31](https://github.com/duvu/ya-router/issues/31) | Control API, CLI, and TUI integration |
-| 7 | [#32](https://github.com/duvu/ya-router/issues/32) | Production and regression gates |
+| Order | Issue | Outcome | Status |
+|---:|---|---|---|
+| 1 | [#26](https://github.com/duvu/ya-router/issues/26) | Contract and configuration schema | Delivered |
+| 2 | [#27](https://github.com/duvu/ya-router/issues/27) | Target availability snapshots | Delivered |
+| 3 | [#28](https://github.com/duvu/ya-router/issues/28) | Deterministic priority selector | Delivered |
+| 4 | [#29](https://github.com/duvu/ya-router/issues/29) | Data-plane and model-catalog integration | Delivered |
+| 5 | [#30](https://github.com/duvu/ya-router/issues/30) | Observability and diagnostics | Delivered |
+| 6 | [#31](https://github.com/duvu/ya-router/issues/31) | Control API, CLI, and TUI integration | Blocked on YA-TUI foundations (#14, #15, #17) |
+| 7 | [#32](https://github.com/duvu/ya-router/issues/32) | Production and regression gates | Core static-config gates met; managed-mutation gates pending #31 |
+
+### Implementation map (Go runtime)
+
+| Concern | Location |
+|---|---|
+| Config schema + validation | `internal/config` (`types.go`, `clone.go`, `validate.go`) |
+| Availability contract | `internal/availability` |
+| Priority selector | `internal/routing/selector.go` |
+| Router integration + no-failover | `internal/routing/router.go` |
+| Diagnostics + metrics | `internal/routing/diagnostics.go`, `internal/routing/metrics.go` |
+| `/v1/models` exposure + decision logs | `src/models.go`, `src/umbrella_observability.go` |
+| Health diagnostics endpoint | `src/managed_runtime.go` (`/health/umbrella`) |
 
 ## 19. Architecture decisions
 

@@ -150,6 +150,21 @@ func modelsHandler(registry *ProviderRegistry, cfg *Config) http.HandlerFunc {
 			}
 		}
 
+		// 3. Expose each configured umbrella (virtual) model once, owned by
+		//    ya-router. The catalog does not claim it is a specific upstream
+		//    model; the router selects a concrete target per request.
+		for modelID := range cfg.Routing.VirtualModels {
+			if !seen[modelID] {
+				seen[modelID] = true
+				allModels = append(allModels, Model{
+					ID:      modelID,
+					Object:  "model",
+					Created: time.Now().Unix(),
+					OwnedBy: "ya-router",
+				})
+			}
+		}
+
 		resp := &ModelList{Object: "list", Data: allModels}
 		if allModels == nil {
 			resp.Data = []Model{}
