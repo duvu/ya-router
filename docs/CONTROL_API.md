@@ -150,6 +150,7 @@ The viewer role can inspect the complete redacted daemon read model:
 | `GET /control/v1/operations` | Stable polling collection; populated by the async-operation implementation |
 | `GET /control/v1/events?after=N` | Bounded lifecycle-event polling fallback |
 | `GET /control/v1/events/stream` | Resumable Server-Sent Events stream |
+| `GET /control/v1/secrets` | Redacted credential posture (slot, source, configured, read-only, version) — never secret values |
 
 Use `refresh=true` on the model resource to force an upstream refresh. A failed
 refresh records the generic `catalog_refresh_failed` state but does not discard
@@ -160,6 +161,41 @@ replaying retained history and de-duplicates by monotonic sequence, preventing
 an event gap between replay and live delivery. Clients that cannot maintain an
 SSE connection can poll `/events?after=<last sequence>` and persist
 `next_after`.
+
+## Revision-safe configuration mutations
+
+Operator-role clients apply online configuration changes through a single
+compare-and-swap endpoint. Each mutation carries an `expected_revision`; the
+daemon rejects a stale write with a typed `revision_conflict` (HTTP 409) so two
+writers cannot silently overwrite each other. `dry_run: true` validates and
+returns the diff (`changed_paths`, `restart_required`) without committing. A
+committed change is hot-reloaded by reconciling the provider runtime — never by
+invoking systemd, Docker, a shell, or a process self-restart. A rejected
+validation or conflict makes no effective data-plane change.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /control/v1/config/mutations` | Apply one revision-safe mutation (requires `Idempotency-Key`) |
+
+Supported mutation kinds: `provider_enabled`, `default_model`,
+`default_provider`, `allowed_models`, `model_map_set`, `model_map_delete`. A
+`model_map_set` key may not collide with a configured umbrella (virtual) model,
+preserving routing precedence.
+
+## The `ya` control client
+
+The installable `ya` binary is the scriptable client for the endpoints above. It
+speaks the local Unix socket by default (or HTTPS/mTLS via `--address`), works
+without a TTY, and supports `--json` on every command. Read commands: `meta`,
+`providers`, `accounts`, `models`, `config`, `operations`, `operation`,
+`events`, `secrets`. Mutation commands (require `--revision`, support
+`--dry-run`): `provider-enable`, `provider-disable`, `default-model`,
+`default-provider`, `allowed-models`, `model-map-set`, `model-map-delete`.
+
+Mutations send a generated `Idempotency-Key` that is reused across retries, so a
+retried mutation is deduplicated by the daemon rather than applied twice. Exit
+codes are stable: `0` ok, `2` usage, `3` connection, `4` auth, `5` forbidden,
+`6` not-found, `7` incompatible, `8` conflict, `9` server.
 
 ## Persistent operations and authentication sessions
 

@@ -232,20 +232,9 @@ func ExecuteDaemon(args []string) int {
 	}
 }
 
-// ExecuteClient provides the installable client binary boundary. Control API
-// commands and the TUI are intentionally delivered by YA-TUI-09 and -10.
+// ExecuteClient provides the installable client binary boundary. It dispatches
+// scriptable Control API read commands (YA-TUI-09). The interactive TUI
+// (YA-TUI-10) is delivered separately.
 func ExecuteClient(args []string) int {
-	if len(args) < 2 || args[1] == "help" || args[1] == "--help" || args[1] == "-h" {
-		fmt.Println("ya — ya-router control client")
-		fmt.Println()
-		fmt.Println("The client transport and TUI are not available in this foundation release.")
-		fmt.Println("Use ya-router for the compatibility command surface.")
-		return 0
-	}
-	if args[1] == "version" {
-		fmt.Printf("ya %s\n", version)
-		return 0
-	}
-	fmt.Printf("ya command %q is not available until the Control API client is implemented\n", args[1])
-	return 2
+	return runClientCLI(args)
 }

@@ -112,6 +112,9 @@ func newManagedControlRuntime(config *Config, runtimeManager *runtimepkg.Manager
 	})
 	controlpkg.RegisterReadRoutes(api, newControlReadModel(runtimeManager, providerManager, operationManager))
 	controlpkg.RegisterOperationRoutes(api, operationManager)
+	secretStore := newDaemonSecretStore(config, audit)
+	controlpkg.RegisterSecretRoutes(api, secretStore)
+	controlpkg.RegisterMutationRoutes(api, mutationExecutor{reloader: providerManager})
 	localIdentity := controlpkg.Identity{Subject: "local:unix-socket", Role: controlpkg.RoleAdmin, Source: "unix_socket"}
 	localHandler := api.Handler(controlpkg.FixedAuthenticator(localIdentity))
 
@@ -161,7 +164,7 @@ func configuredControlListener(config *Config) (controlpkg.ListenerConfig, map[c
 	}
 	socket := strings.TrimSpace(os.Getenv(controlSocketEnv))
 	if socket == "" {
-		socket = filepath.Join(filepath.Dir(configPath), "control.sock")
+		socket = controlSocketNextTo(configPath)
 	} else if strings.EqualFold(socket, "off") || strings.EqualFold(socket, "disabled") {
 		socket = ""
 	}
@@ -218,6 +221,13 @@ func configuredControlListener(config *Config) (controlpkg.ListenerConfig, map[c
 		return controlpkg.ListenerConfig{}, nil, nil, fmt.Errorf("mTLS control listener requires at least one certificate subject-to-role mapping")
 	}
 	return listener, tokens, subjectRoles, nil
+}
+
+// controlSocketNextTo returns the default control Unix socket path colocated
+// with the config file. The daemon listener and the ya client both derive the
+// default endpoint through this helper so they stay in sync.
+func controlSocketNextTo(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "control.sock")
 }
 
 func addSubjectRoles(destination map[string]controlpkg.Role, role controlpkg.Role, values string) {
