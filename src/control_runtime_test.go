@@ -12,6 +12,8 @@ func clearControlEnvironment(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{
 		controlSocketEnv,
+		controlSocketModeEnv,
+		controlSocketGroupEnv,
 		controlRemoteAddressEnv,
 		controlTLSCertEnv,
 		controlTLSKeyEnv,
@@ -46,6 +48,39 @@ func TestConfiguredControlListenerDefaultsToPrivateUnixSocket(t *testing.T) {
 	}
 	if len(tokens) != 0 || len(subjects) != 0 {
 		t.Fatalf("unexpected remote identities: tokens=%v subjects=%v", tokens, subjects)
+	}
+}
+
+func TestConfiguredControlListenerHonoursSocketModeAndGroupOverrides(t *testing.T) {
+	clearControlEnvironment(t)
+	oldOverride := configPathOverride
+	configPathOverride = filepath.Join(t.TempDir(), "config.json")
+	t.Cleanup(func() { configPathOverride = oldOverride })
+	t.Setenv(controlSocketModeEnv, "0660")
+	t.Setenv(controlSocketGroupEnv, "ya-router")
+
+	listener, _, _, err := configuredControlListener(defaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listener.UnixMode != 0o660 {
+		t.Fatalf("expected overridden mode 0660, got %o", listener.UnixMode)
+	}
+	if listener.UnixGroup != "ya-router" {
+		t.Fatalf("expected overridden group, got %q", listener.UnixGroup)
+	}
+}
+
+func TestConfiguredControlListenerRejectsInvalidSocketMode(t *testing.T) {
+	clearControlEnvironment(t)
+	oldOverride := configPathOverride
+	configPathOverride = filepath.Join(t.TempDir(), "config.json")
+	t.Cleanup(func() { configPathOverride = oldOverride })
+	t.Setenv(controlSocketModeEnv, "not-octal")
+
+	_, _, _, err := configuredControlListener(defaultConfig())
+	if err == nil || !strings.Contains(err.Error(), controlSocketModeEnv) {
+		t.Fatalf("expected invalid mode error, got %v", err)
 	}
 }
 

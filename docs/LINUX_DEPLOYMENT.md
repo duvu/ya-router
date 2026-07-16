@@ -85,6 +85,32 @@ The first command opens the keyboard-driven dashboard. Scriptable commands
 remain available without a terminal. The service's private socket is not
 published on TCP.
 
+### Optional: group access for a trusted operator group
+
+Running every `ya` command as `sudo -u ya-router` is the default, owner-only
+posture. An operator group can be granted socket access instead by adding
+`YA_ROUTER_CONTROL_SOCKET_GROUP` to `/etc/ya-router/ya-router.env` and adding
+members to that group:
+
+```bash
+sudo groupadd --system ya-router-ops
+sudo usermod -aG ya-router-ops "$USER"
+echo 'YA_ROUTER_CONTROL_SOCKET_GROUP=ya-router-ops' | \
+  sudo tee -a /etc/ya-router/ya-router.env
+sudo systemctl restart ya-router
+```
+
+Start a new login session to pick up the group membership, then run `ya`
+without `sudo -u ya-router`:
+
+```bash
+env YA_ROUTER_CONTROL_SOCKET=/run/ya-router/control.sock /usr/local/bin/ya providers
+```
+
+`YA_ROUTER_CONTROL_SOCKET_MODE` (default `0600`) can widen the file mode in the
+same file if the group also needs write access to the socket; the daemon fails
+to start if the configured group cannot be resolved.
+
 ## Provider and routing walkthrough
 
 Open the dashboard as `ya-router`, press `a`, select a provider with the arrow

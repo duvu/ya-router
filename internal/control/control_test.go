@@ -11,9 +11,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -262,6 +265,71 @@ func TestUnixSocketServiceLifecycle(t *testing.T) {
 	}
 	if _, err := os.Stat(socket); !os.IsNotExist(err) {
 		t.Fatalf("socket was not removed: %v", err)
+	}
+}
+
+func TestUnixSocketServiceAppliesGroupOverride(t *testing.T) {
+	currentUser, err := user.Current()
+	if err != nil {
+		t.Skip("cannot resolve current user in this environment")
+	}
+	group, err := user.LookupGroupId(currentUser.Gid)
+	if err != nil {
+		t.Skip("cannot resolve current group in this environment")
+	}
+
+	socket := filepath.Join(t.TempDir(), "control.sock")
+	api := newTestAPI(nil, "")
+	service, err := NewService(
+		ListenerConfig{UnixSocket: socket, UnixGroup: group.Name},
+		api.Handler(localAdmin()),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = service.Shutdown(shutdownContext)
+	}()
+
+	info, err := os.Stat(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skip("cannot inspect socket group ownership on this platform")
+	}
+	wantGid, err := strconv.Atoi(currentUser.Gid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int(stat.Gid) != wantGid {
+		t.Fatalf("expected socket gid %d, got %d", wantGid, stat.Gid)
+	}
+}
+
+func TestUnixSocketServiceRejectsUnknownGroup(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "control.sock")
+	api := newTestAPI(nil, "")
+	service, err := NewService(
+		ListenerConfig{UnixSocket: socket, UnixGroup: "definitely-not-a-real-group"},
+		api.Handler(localAdmin()),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Start(); err == nil {
+		t.Fatal("expected Start to fail for an unresolvable group")
+	}
+	if _, err := os.Stat(socket); !os.IsNotExist(err) {
+		t.Fatalf("socket should have been cleaned up after failed group resolution: %v", err)
 	}
 }
 

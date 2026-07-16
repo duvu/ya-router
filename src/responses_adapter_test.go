@@ -282,6 +282,52 @@ func TestAggregateSSEToCompletion(t *testing.T) {
 	}
 }
 
+func TestAggregateSSEToCompletionMergesTextDeltasWhenOutputEmpty(t *testing.T) {
+	stream := "event: response.output_text.delta\ndata: {\"delta\":\"Hel\"}\n\n" +
+		"event: response.output_text.delta\ndata: {\"delta\":\"lo\"}\n\n" +
+		"event: response.completed\ndata: {\"response\":{\"id\":\"r1\",\"output\":[]}}\n\n"
+	output, err := aggregateSSEToCompletion(strings.NewReader(stream))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(output), `"text":"Hello"`) {
+		t.Fatalf("expected accumulated delta text in output, got: %s", output)
+	}
+}
+
+func TestAggregateSSEToCompletionKeepsExistingOutputOverDeltas(t *testing.T) {
+	stream := "event: response.output_text.delta\ndata: {\"delta\":\"ignored\"}\n\n" +
+		"event: response.completed\ndata: {\"response\":{\"id\":\"r1\",\"output\":[{\"type\":\"message\"}]}}\n\n"
+	output, err := aggregateSSEToCompletion(strings.NewReader(stream))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(output), "ignored") {
+		t.Fatalf("delta text should not override a non-empty output array: %s", output)
+	}
+}
+
+func TestMergeAccumulatedTextSynthesizesOutputFromDeltas(t *testing.T) {
+	merged, err := mergeAccumulatedText([]byte(`{"id":"r1","output":[]}`), "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(merged), `"text":"hello"`) || !strings.Contains(string(merged), `"role":"assistant"`) {
+		t.Fatalf("expected synthesized assistant message, got: %s", merged)
+	}
+}
+
+func TestMergeAccumulatedTextNoopWhenTextEmpty(t *testing.T) {
+	original := []byte(`{"id":"r1","output":[]}`)
+	merged, err := mergeAccumulatedText(original, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(merged) != string(original) {
+		t.Fatalf("expected unchanged response when no delta text, got: %s", merged)
+	}
+}
+
 func TestAggregateSSEFailureIsNotSuccess(t *testing.T) {
 	stream := "event: response.failed\ndata: {\"error\":{\"message\":\"failed\"}}\n\n"
 	if _, err := aggregateSSEToCompletion(strings.NewReader(stream)); err == nil {
