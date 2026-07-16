@@ -1,9 +1,9 @@
 # Linux MVP deployment
 
 This is the supported MVP1 deployment path: a single `systemd` service on one
-Linux host. It installs the daemon as `ya-router`, keeps all mutable state in
-`/var/lib/ya-router`, and exposes the Control API only through the private
-`/run/ya-router/control.sock` Unix socket.
+Linux host. It installs the daemon under the `ya-router` service name, keeps all
+mutable state in `/var/lib/ya-router`, and exposes the Control API only through
+the private `/run/ya-router/control.sock` Unix socket.
 
 The data plane listens on `127.0.0.1:7071` by default. Keep it loopback-only
 unless `YA_ROUTER_API_KEY` is set and a separate TLS-terminating reverse proxy
@@ -31,7 +31,12 @@ Copy the verified artifact directory and the repository's `packaging/` files
 to the Linux host, then run:
 
 ```bash
-sudo useradd --system --home-dir /var/lib/ya-router --shell /usr/sbin/nologin ya-router
+getent passwd ya-router >/dev/null || \
+  sudo useradd --system \
+    --home-dir /var/lib/ya-router \
+    --shell /usr/sbin/nologin \
+    ya-router
+
 sudo install -d -o ya-router -g ya-router -m 0700 /var/lib/ya-router
 sudo install -d -o root -g ya-router -m 0750 /etc/ya-router
 sudo install -m 0755 ya-routerd ya /usr/local/bin/
@@ -48,12 +53,32 @@ supported place for optional process credentials such as `OPENAI_API_KEY` and
 `KILO_API_KEY`; it must not be world-readable. The unit does not accept
 credentials as command-line arguments.
 
-Connect as the service user because the Control socket is owner-only:
+The service unit exports `YA_ROUTER_CONTROL_SOCKET` to the daemon process, but
+an interactive operator shell does not inherit systemd service environment
+variables. Always provide the private socket explicitly when running `ya`.
+
+Open the dashboard:
 
 ```bash
-sudo -u ya-router /usr/local/bin/ya
-sudo -u ya-router /usr/local/bin/ya providers
-sudo -u ya-router /usr/local/bin/ya routing
+sudo -u ya-router -H \
+  env YA_ROUTER_CONTROL_SOCKET=/run/ya-router/control.sock \
+  /usr/local/bin/ya
+```
+
+Scriptable commands:
+
+```bash
+sudo -u ya-router -H \
+  env YA_ROUTER_CONTROL_SOCKET=/run/ya-router/control.sock \
+  /usr/local/bin/ya providers
+
+sudo -u ya-router -H \
+  env YA_ROUTER_CONTROL_SOCKET=/run/ya-router/control.sock \
+  /usr/local/bin/ya routing
+
+sudo -u ya-router -H \
+  env YA_ROUTER_CONTROL_SOCKET=/run/ya-router/control.sock \
+  /usr/local/bin/ya operations
 ```
 
 The first command opens the keyboard-driven dashboard. Scriptable commands
@@ -87,11 +112,15 @@ ordinary OpenAI-style request against the loopback listener:
 
 ```bash
 export YA_ROUTER_API_KEY='set-a-strong-service-key'
-curl --fail http://127.0.0.1:7071/v1/models -H "Authorization: Bearer $YA_ROUTER_API_KEY"
+
+curl --fail http://127.0.0.1:7071/v1/models \
+  -H "Authorization: Bearer $YA_ROUTER_API_KEY"
+
 curl --fail http://127.0.0.1:7071/v1/chat/completions \
   -H "Authorization: Bearer $YA_ROUTER_API_KEY" \
   -H 'Content-Type: application/json' \
   --data '{"model":"thiendu","messages":[{"role":"user","content":"hello"}]}'
+
 curl --no-buffer http://127.0.0.1:7071/v1/responses \
   -H "Authorization: Bearer $YA_ROUTER_API_KEY" \
   -H 'Content-Type: application/json' \
@@ -109,11 +138,14 @@ cooldown expires, the preferred eligible target can be selected again.
 ```bash
 curl --fail http://127.0.0.1:7071/health
 curl --fail http://127.0.0.1:7071/health/ready
-curl --unix-socket /run/ya-router/control.sock http://unix/control/v1/meta
+
+sudo -u ya-router -H \
+  curl --unix-socket /run/ya-router/control.sock \
+  http://unix/control/v1/meta
 ```
 
-Run the last command as `root` or `ya-router`; ordinary users cannot read the
-owner-only Control socket. `systemctl stop ya-router` sends `SIGTERM` and waits
+Run the Control API command as `root` or `ya-router`; ordinary users cannot
+read the owner-only socket. `systemctl stop ya-router` sends `SIGTERM` and waits
 up to 45 seconds for request draining before systemd escalates.
 
 ## Upgrade, rollback, backup, and restore
@@ -124,18 +156,25 @@ durable operation records.
 
 ```bash
 sudo systemctl stop ya-router
-sudo tar -C /var/lib -czf /var/backups/ya-router-$(date +%F-%H%M%S).tar.gz ya-router
+sudo install -d -m 0700 /var/backups/ya-router
+sudo tar -C /var/lib \
+  -czf "/var/backups/ya-router/ya-router-$(date +%F-%H%M%S).tar.gz" \
+  ya-router
+
 sudo install -m 0755 ya-routerd ya /usr/local/bin/
 sudo install -m 0755 ya-router /usr/local/bin/ya-router
 sudo systemctl start ya-router
-sudo -u ya-router /usr/local/bin/ya meta
+
+sudo -u ya-router -H \
+  env YA_ROUTER_CONTROL_SOCKET=/run/ya-router/control.sock \
+  /usr/local/bin/ya meta
 ```
 
 Rollback replaces only the binaries with the previously verified artifact and
 restarts the service; leave `/var/lib/ya-router` in place. To restore a backup,
-stop the service, extract the archive at `/`, ensure `/var/lib/ya-router` is
-owned by `ya-router:ya-router` with mode `0700`, then start the service and
-check `ya meta`, `ya operations`, and `/health/ready`.
+stop the service, extract the archive under `/var/lib`, ensure
+`/var/lib/ya-router` is owned by `ya-router:ya-router` with mode `0700`, then
+start the service and check `ya meta`, `ya operations`, and `/health/ready`.
 
 The normal restart, upgrade, rollback, and restore paths preserve the state
 directory. Do not copy individual secret or operation files while the daemon is
@@ -144,8 +183,17 @@ running.
 After any restart, confirm recovery before sending traffic:
 
 ```bash
-sudo -u ya-router /usr/local/bin/ya providers
-sudo -u ya-router /usr/local/bin/ya operations
-sudo -u ya-router /usr/local/bin/ya routing
+sudo -u ya-router -H \
+  env YA_ROUTER_CONTROL_SOCKET=/run/ya-router/control.sock \
+  /usr/local/bin/ya providers
+
+sudo -u ya-router -H \
+  env YA_ROUTER_CONTROL_SOCKET=/run/ya-router/control.sock \
+  /usr/local/bin/ya operations
+
+sudo -u ya-router -H \
+  env YA_ROUTER_CONTROL_SOCKET=/run/ya-router/control.sock \
+  /usr/local/bin/ya routing
+
 curl --fail http://127.0.0.1:7071/health/ready
 ```
