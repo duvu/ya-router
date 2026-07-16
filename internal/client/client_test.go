@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/duvu/ya-router/internal/control"
+	secretpkg "github.com/duvu/ya-router/internal/secret"
 )
 
 // newTestServer stands up the real control API over TCP with a fixed viewer
@@ -17,6 +18,7 @@ func newTestServer(t *testing.T, role control.Role) (*httptest.Server, *Client) 
 	t.Helper()
 	api := control.NewAPI(control.APIOptions{ServiceVersion: "test"})
 	control.RegisterReadRoutes(api, &stubReadModel{})
+	control.RegisterSecretRoutes(api, secretpkg.NewMemoryStore(nil))
 	identity := control.Identity{Subject: "test", Role: role, Source: "test"}
 	server := httptest.NewServer(api.Handler(control.FixedAuthenticator(identity)))
 	t.Cleanup(server.Close)
@@ -30,6 +32,18 @@ func newTestServer(t *testing.T, role control.Role) (*httptest.Server, *Client) 
 	cl.baseURL = server.URL
 	cl.http = server.Client()
 	return server, cl
+}
+
+func TestClientWritesCredentialWithoutReturningValue(t *testing.T) {
+	_, cl := newTestServer(t, control.RoleOperator)
+	const value = "client-secret-must-not-return"
+	metadata, err := cl.SetSecret(context.Background(), "kilo/api_key", value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.ID != "kilo/api_key" || !metadata.Configured {
+		t.Fatalf("metadata = %+v", metadata)
+	}
 }
 
 func TestClientMetaAndCompatibility(t *testing.T) {

@@ -14,7 +14,7 @@ import (
 	secretpkg "github.com/duvu/ya-router/internal/secret"
 )
 
-func emitText(command string, result any) int {
+func emitText(_ string, result any) int {
 	switch value := result.(type) {
 	case controlpkg.MetaResponse:
 		renderMeta(value)
@@ -26,6 +26,8 @@ func emitText(command string, result any) int {
 		renderModels(value)
 	case controlpkg.ConfigResource:
 		renderConfig(value)
+	case controlpkg.RoutingStatusResource:
+		renderRoutingStatus(value)
 	case []controlpkg.OperationResource:
 		renderOperations(value)
 	case controlpkg.OperationResource:
@@ -38,6 +40,23 @@ func emitText(command string, result any) int {
 		fmt.Printf("%v\n", value)
 	}
 	return clientExitOK
+}
+
+func renderRoutingStatus(status controlpkg.RoutingStatusResource) {
+	w := tabWriter()
+	fmt.Fprintf(w, "Public model:\t%s\n", status.PublicID)
+	fmt.Fprintf(w, "Config revision:\t%d\n", status.ConfigRevision)
+	fmt.Fprintf(w, "Runtime generation:\t%d\n", status.Generation)
+	fmt.Fprintln(w, "CAPABILITY\tACTIVE\tSELECTED TARGET\tTARGET\tROUTABLE\tREASON\tCOOLDOWN UNTIL\tCOOLDOWN REASON\tCATALOG FETCHED\tCATALOG STALE")
+	for _, capability := range status.Capabilities {
+		for _, target := range capability.Targets {
+			fmt.Fprintf(w, "%s\t%t\t%s\t%s\t%t\t%s\t%d\t%s\t%d\t%t\n", capability.Capability, capability.Active, capability.SelectedTarget, target.Target, target.Routable, target.Reason, target.CooldownUntil, target.CooldownReason, target.CatalogFetchedAt, target.CatalogStale)
+		}
+	}
+	for _, counter := range status.Counters {
+		fmt.Fprintf(w, "Counter:\t%s\t%v\n", counter.Name, counter.Labels)
+	}
+	_ = w.Flush()
 }
 
 func renderMeta(meta controlpkg.MetaResponse) {

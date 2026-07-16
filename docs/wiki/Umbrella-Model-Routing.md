@@ -1,6 +1,8 @@
 # Umbrella Model Routing
 
-> Status: planned. Runtime support is tracked by [epic #25](https://github.com/duvu/ya-router/issues/25) and is not implemented yet.
+> Status: implemented generic routing foundation. The current MVP public model
+> is `thiendu`; [epic #25](https://github.com/duvu/ya-router/issues/25) tracks
+> the preserved virtual-model engine and follow-up work.
 
 ## What is an umbrella model?
 
@@ -9,13 +11,15 @@ An umbrella model is one stable client-facing model ID that points to an ordered
 Example:
 
 ```text
-router/auto
+thiendu
   1. github/gpt-5-mini
   2. codex/gpt-5.4-mini
   3. kilo/kilo-auto/free
 ```
 
-When a request uses `router/auto`, `ya-router` selects the first target that is currently active for the requested endpoint capability.
+When a request uses `thiendu`, `ya-router` selects the first configured target
+that is currently active for the requested endpoint capability. The candidates
+belong to `routing.virtual_models`; they are not hard-coded in router logic.
 
 ## This is not cross-provider failover
 
@@ -25,13 +29,13 @@ If the selected target returns `401`, `403`, `429`, `5xx`, a timeout, or a trans
 
 A later request may select a different target if provider health or model availability has changed.
 
-## Planned configuration
+## Configuration
 
 ```json
 {
   "routing": {
     "virtual_models": {
-      "router/auto": {
+      "thiendu": {
         "strategy": "priority",
         "targets": [
           "github/gpt-5-mini",
@@ -66,7 +70,7 @@ Selection reads cached/atomic availability state. It does not make an upstream c
 
 ## Routing priority
 
-Planned routing order:
+Implemented routing order:
 
 1. exact `routing.model_map`;
 2. explicit `github/*`, `codex/*`, or `kilo/*` prefix;
@@ -76,17 +80,17 @@ Planned routing order:
 
 Explicit prefixed models never enter umbrella routing.
 
-## Backlog
+## Follow-up tracking
 
 | Order | Issue | Scope |
 |---:|---|---|
-| 1 | [#26](https://github.com/duvu/ya-router/issues/26) | Contract and configuration schema |
-| 2 | [#27](https://github.com/duvu/ya-router/issues/27) | Target availability snapshots |
-| 3 | [#28](https://github.com/duvu/ya-router/issues/28) | Deterministic priority selector |
-| 4 | [#29](https://github.com/duvu/ya-router/issues/29) | Data-plane and `/v1/models` integration |
-| 5 | [#30](https://github.com/duvu/ya-router/issues/30) | Observability and diagnostics |
-| 6 | [#31](https://github.com/duvu/ya-router/issues/31) | Control API, CLI, and TUI workflows |
-| 7 | [#32](https://github.com/duvu/ya-router/issues/32) | Production and regression gates |
+| Issue | Scope |
+|---:|---|
+| [#58](https://github.com/duvu/ya-router/issues/58) | Primary `thiendu` product contract |
+| [#60](https://github.com/duvu/ya-router/issues/60) | OpenAI-compatible routed conformance |
+| [#62](https://github.com/duvu/ya-router/issues/62) | Later-request cooldown feedback |
+| [#31](https://github.com/duvu/ya-router/issues/31) | Control API and client status |
+| [#59](https://github.com/duvu/ya-router/issues/59) | MVP walkthrough gate |
 
 ## Detailed documents
 

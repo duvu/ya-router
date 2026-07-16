@@ -47,14 +47,24 @@ type Router struct {
 	routing    configschema.Routing
 	generation uint64
 	metrics    *Metrics
+	cooldowns  *CooldownRegistry
 }
 
 // NewRouter builds an isolated model router over registry.
 func NewRouter(registry *provider.Registry, config configschema.Routing) *Router {
+	return NewRouterWithCooldowns(registry, config, nil)
+}
+
+// NewRouterWithCooldowns builds a router over a shared cooldown registry. A
+// runtime manager shares this registry across immutable snapshot publications.
+func NewRouterWithCooldowns(registry *provider.Registry, config configschema.Routing, cooldowns *CooldownRegistry) *Router {
 	if config.ModelMap == nil {
 		config.ModelMap = make(map[string]configschema.ModelMapEntry)
 	}
-	return &Router{registry: registry, routing: config, metrics: NewMetrics()}
+	if cooldowns == nil {
+		cooldowns = NewCooldownRegistry()
+	}
+	return &Router{registry: registry, routing: config, metrics: NewMetrics(), cooldowns: cooldowns}
 }
 
 // SetGeneration records the runtime generation this router serves so umbrella
@@ -204,6 +214,11 @@ func (r *Router) buildAvailabilitySnapshot(ctx context.Context) *availability.Sn
 		}
 		if reporter, ok := p.(allowlistReporter); ok {
 			view.AllowedModels = reporter.AllowedModelIDs()
+		}
+		cooldowns, expired := r.cooldowns.Cooldowns(p.ID())
+		view.Cooldowns = cooldowns
+		for _, cooldown := range expired {
+			r.metrics.RecordCooldownExit(AddModelPrefix(p.ID(), cooldown.Model), "expired")
 		}
 		if catalog, ok := p.(lastKnownCatalog); ok {
 			if models, fetchedAt, stale, present := catalog.LastKnownModels(); present {

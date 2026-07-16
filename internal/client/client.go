@@ -1,8 +1,3 @@
-// Package client is the single typed Control API client shared by scriptable
-// commands and (later) the TUI. It speaks the daemon-owned management protocol
-// over a local Unix socket by default, or over HTTPS with mTLS for remote
-// administration. It never reads or writes provider secrets: credential
-// material stays daemon-owned and is only ever referenced, never returned.
 package client
 
 import (

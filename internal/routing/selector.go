@@ -12,9 +12,10 @@ import (
 // SkippedTarget records why one umbrella target was not selected. It carries
 // only bounded, redacted data suitable for logs and diagnostics.
 type SkippedTarget struct {
-	Target string
-	Index  int
-	Reason availability.Reason
+	Target        string
+	Index         int
+	Reason        availability.Reason
+	CooldownUntil int64
 }
 
 // SelectionDecision is the sanitized result of umbrella selection. It contains
@@ -27,6 +28,7 @@ type SelectionDecision struct {
 	SelectedIndex    int
 	Generation       uint64
 	CatalogFetchedAt int64 // unix seconds; 0 when unknown
+	Capability       provider.Capability
 	Skipped          []SkippedTarget
 }
 
@@ -74,10 +76,15 @@ func SelectPriorityTarget(virtualModelID string, vm configschema.VirtualModel, c
 				SelectedIndex:    index,
 				Generation:       result.Generation,
 				CatalogFetchedAt: fetched,
+				Capability:       capability,
 				Skipped:          skipped,
 			}, nil
 		}
-		skipped = append(skipped, SkippedTarget{Target: target, Index: index, Reason: result.Reason})
+		cooldownUntil := int64(0)
+		if !result.CooldownUntil.IsZero() {
+			cooldownUntil = result.CooldownUntil.Unix()
+		}
+		skipped = append(skipped, SkippedTarget{Target: target, Index: index, Reason: result.Reason, CooldownUntil: cooldownUntil})
 	}
 	return nil, &NoActiveTargetError{VirtualModel: virtualModelID, Skipped: skipped}
 }

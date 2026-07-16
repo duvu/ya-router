@@ -25,17 +25,39 @@ type Metrics struct {
 	skipped map[string]uint64
 	// staleCatalog counts selections/skips that observed a stale catalog, by
 	// virtual model.
-	staleCatalog map[string]uint64
+	staleCatalog    map[string]uint64
+	cooldownEntries map[string]uint64
+	cooldownExits   map[string]uint64
 }
 
 // NewMetrics returns an empty metrics sink.
 func NewMetrics() *Metrics {
 	return &Metrics{
-		selections:     make(map[string]uint64),
-		noActiveTarget: make(map[string]uint64),
-		skipped:        make(map[string]uint64),
-		staleCatalog:   make(map[string]uint64),
+		selections:      make(map[string]uint64),
+		noActiveTarget:  make(map[string]uint64),
+		skipped:         make(map[string]uint64),
+		staleCatalog:    make(map[string]uint64),
+		cooldownEntries: make(map[string]uint64),
+		cooldownExits:   make(map[string]uint64),
 	}
+}
+
+func (m *Metrics) RecordCooldownEntry(target string, reason availability.CooldownReason) {
+	if m == nil || target == "" || reason == "" {
+		return
+	}
+	m.mu.Lock()
+	m.cooldownEntries[metricKey(target, string(reason))]++
+	m.mu.Unlock()
+}
+
+func (m *Metrics) RecordCooldownExit(target, reason string) {
+	if m == nil || target == "" || reason == "" {
+		return
+	}
+	m.mu.Lock()
+	m.cooldownExits[metricKey(target, reason)]++
+	m.mu.Unlock()
 }
 
 func metricKey(a, b string) string { return a + "\x00" + b }
@@ -103,6 +125,14 @@ func (m *Metrics) Snapshot() []Counter {
 	}
 	for vm, value := range m.staleCatalog {
 		out = append(out, Counter{Name: "umbrella_stale_catalog_total", Labels: map[string]string{"virtual_model": vm}, Value: value})
+	}
+	for key, value := range m.cooldownEntries {
+		target, reason := splitKey(key)
+		out = append(out, Counter{Name: "umbrella_cooldown_entries_total", Labels: map[string]string{"target": target, "reason": reason}, Value: value})
+	}
+	for key, value := range m.cooldownExits {
+		target, reason := splitKey(key)
+		out = append(out, Counter{Name: "umbrella_cooldown_exits_total", Labels: map[string]string{"target": target, "reason": reason}, Value: value})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Name != out[j].Name {

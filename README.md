@@ -59,38 +59,37 @@ build ya-router, ya-routerd, and ya
 ```
 
 `make build` retains the compatibility output `./ya-router`. `make build-all`
-also emits the service entrypoint `./ya-routerd` and the client foundation
-`./ya`. The client transport and TUI are delivered by later roadmap issues;
-the current `ya` binary intentionally exposes only help and version.
+also emits the daemon `./ya-routerd` and client `./ya`. Running `ya` with no
+subcommand opens the keyboard-driven daemon dashboard; its scriptable Control
+API commands remain available with `--json` for automation.
 
 ## Target managed-service architecture
 
 The production data-plane behavior remains available through the Go
-`ya-router` compatibility binary. Package and executable boundaries now also
-provide `ya-routerd` and `ya` foundations so the daemon-owned control plane and
-OS client can be delivered incrementally without changing the `/v1/*` contract:
+`ya-router` compatibility binary. `ya-routerd` owns the daemon Control API and
+`ya` is its local client without changing the `/v1/*` contract:
 
 - [Managed service and TUI architecture](docs/architecture/managed-service-and-tui.md)
 - [Managed service and TUI delivery roadmap](docs/roadmaps/managed-service-and-tui-roadmap.md)
 - [OpenSpec change](openspec/changes/add-managed-service-and-tui/proposal.md)
 
-These documents remain the ordered implementation plan. The executable
-foundations exist; the Control API and interactive TUI do not yet exist.
+See [MVP1 implementation status](docs/MVP1_STATUS.md) for delivered work,
+current ordering, and explicit deferrals.
 
 Data-plane handlers now use immutable, generation-tagged runtime snapshots.
 Provider changes are constructed and validated before atomic publication;
 in-flight requests retain their original snapshot while replaced instances
 drain for a bounded, observable duration. Compiled-in provider descriptors
-remain available independently from active instances, forming the lifecycle
-foundation for the future Control API and TUI.
+remain available independently from active instances and are shown through the
+redacted Control API and dashboard.
 
-## Planned umbrella model routing
+## Automatic `thiendu` routing
 
-Umbrella models are planned client-facing virtual model IDs such as
-`router/auto`. Each umbrella model contains an ordered list of canonical
-provider-prefixed targets. The router will select the first target that is
-active for the requested capability, then pin that provider/model for the full
-request.
+`thiendu` is the default simple public virtual model. Its targets are configured
+under the preserved generic `routing.virtual_models` engine, not hard-coded in
+routing code. A candidate list may span GitHub Copilot, Codex, Kilo, and future
+providers; the router selects the first target active for the request
+capability, then pins that provider/model for the full request.
 
 This is **selection before dispatch**, not cross-provider failover. If the
 selected target returns an auth, entitlement, rate-limit, upstream, timeout, or
@@ -100,16 +99,18 @@ after health or catalog state changes.
 
 The first version is intentionally narrow: priority order only, provider-prefixed
 targets only, and no nested umbrella models, weighted routing, prompt analysis,
-or cost/latency scoring.
+or cost/latency scoring. Explicit prefixes and `model_map` entries remain
+authoritative, provider catalogs follow virtual-model selection, and the default
+provider is used only when a request omitted its model.
 
 - [Umbrella model routing architecture](docs/architecture/umbrella-model-routing.md)
 - [Umbrella model routing roadmap](docs/roadmaps/umbrella-model-routing-roadmap.md)
 - [Wiki source: Umbrella Model Routing](docs/wiki/Umbrella-Model-Routing.md)
 - [Implementation epic #25](https://github.com/duvu/ya-router/issues/25)
 
-Runtime support is not implemented yet. Do not add `routing.virtual_models` to
-production configuration until the core implementation issues #26 through #29
-are accepted.
+The generic engine, configured `thiendu` default, pre-dispatch diagnostics, and
+cooldown behavior are implemented. The MVP intentionally omits generic routing
+policy CRUD from the TUI; it does not remove backend routing functionality.
 
 ## Quick start
 
@@ -369,6 +370,13 @@ docker run --rm \
 ```
 
 For non-loopback container exposure, set `YA_ROUTER_API_KEY` and place the service behind a TLS-terminating reverse proxy.
+
+## Linux service deployment
+
+The supported MVP1 single-host deployment is a `systemd` service with durable
+state and a private Control API socket. See
+[`docs/LINUX_DEPLOYMENT.md`](docs/LINUX_DEPLOYMENT.md) for artifact checksums,
+installation, health checks, client access, and backup/rollback instructions.
 
 ## Development workflow
 

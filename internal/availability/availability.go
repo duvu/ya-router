@@ -45,7 +45,31 @@ const (
 	// catalog is older than the acceptable freshness window; the conservative
 	// v1 policy treats a stale catalog as not routable.
 	ReasonCatalogStale Reason = "catalog_stale"
+	// ReasonCooldown indicates recent bounded feedback made a target temporarily
+	// unavailable for later automatic-routing requests.
+	ReasonCooldown Reason = "cooldown"
 )
+
+// CooldownReason classifies the bounded upstream outcome that started a
+// temporary target cooldown. It never contains an upstream error message.
+type CooldownReason string
+
+const (
+	CooldownRateLimited       CooldownReason = "rate_limited"
+	CooldownEntitlementDenied CooldownReason = "entitlement_denied"
+	CooldownAuthRequired      CooldownReason = "auth_required"
+	CooldownTransientFailure  CooldownReason = "transient_failure"
+	CooldownTimeout           CooldownReason = "timeout"
+)
+
+// Cooldown is one immutable, capability-scoped target cooldown supplied while
+// building an availability snapshot.
+type Cooldown struct {
+	Model      string
+	Capability provider.Capability
+	Until      time.Time
+	Reason     CooldownReason
+}
 
 // ProviderView is the immutable, redacted per-provider input used to build a
 // Snapshot. Callers derive it from the runtime registry, the health registry,
@@ -69,6 +93,7 @@ type ProviderView struct {
 	// CatalogModels lists bare (unprefixed) model IDs from the last-known-good
 	// catalog.
 	CatalogModels []string
+	Cooldowns     []Cooldown
 }
 
 type providerEntry struct {
@@ -81,6 +106,7 @@ type providerEntry struct {
 	catalogStale     bool
 	catalogFetchedAt time.Time
 	models           map[string]struct{}
+	cooldowns        map[string]Cooldown
 }
 
 // Snapshot is an immutable, atomically publishable availability view. All
@@ -98,6 +124,8 @@ type TargetResult struct {
 	Generation       uint64
 	CatalogFetchedAt time.Time
 	CatalogStale     bool
+	CooldownUntil    time.Time
+	CooldownReason   CooldownReason
 }
 
 // NewSnapshot builds an immutable availability snapshot from provider views.
@@ -114,12 +142,19 @@ func NewSnapshot(generation uint64, builtAt time.Time, views []ProviderView) *Sn
 			catalogStale:     view.CatalogStale,
 			catalogFetchedAt: view.CatalogFetchedAt,
 			models:           make(map[string]struct{}, len(view.CatalogModels)),
+			cooldowns:        make(map[string]Cooldown, len(view.Cooldowns)),
 		}
 		for _, capability := range view.Capabilities {
 			entry.capabilities[capability] = struct{}{}
 		}
 		for _, model := range view.CatalogModels {
 			entry.models[normalizeModel(model)] = struct{}{}
+		}
+		for _, cooldown := range view.Cooldowns {
+			if cooldown.Until.After(builtAt) {
+				cooldown.Model = normalizeModel(cooldown.Model)
+				entry.cooldowns[cooldownKey(cooldown.Model, cooldown.Capability)] = cooldown
+			}
 		}
 		if len(view.AllowedModels) > 0 {
 			entry.hasAllowlist = true
@@ -175,6 +210,11 @@ func (s *Snapshot) Evaluate(providerID provider.ID, bareModel string, capability
 		result.Reason = ReasonProviderNotReady
 	case !s.supportsCapability(entry, capability):
 		result.Reason = ReasonCapabilityUnsupported
+	case entry.cooldown(bareModel, capability, s.builtAt).Until.After(s.builtAt):
+		cooldown := entry.cooldown(bareModel, capability, s.builtAt)
+		result.Reason = ReasonCooldown
+		result.CooldownUntil = cooldown.Until
+		result.CooldownReason = cooldown.Reason
 	case entry.hasAllowlist && !entry.isAllowed(bareModel):
 		result.Reason = ReasonModelDisallowed
 	case !entry.catalogPresent || !entry.hasModel(bareModel):
@@ -186,6 +226,18 @@ func (s *Snapshot) Evaluate(providerID provider.ID, bareModel string, capability
 		result.Reason = ReasonRoutable
 	}
 	return result
+}
+
+func (entry providerEntry) cooldown(model string, capability provider.Capability, now time.Time) Cooldown {
+	cooldown := entry.cooldowns[cooldownKey(normalizeModel(model), capability)]
+	if !cooldown.Until.After(now) {
+		return Cooldown{}
+	}
+	return cooldown
+}
+
+func cooldownKey(model string, capability provider.Capability) string {
+	return string(capability) + "\x00" + normalizeModel(model)
 }
 
 func (s *Snapshot) supportsCapability(entry providerEntry, capability provider.Capability) bool {

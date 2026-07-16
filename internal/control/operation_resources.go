@@ -30,6 +30,10 @@ type OperationManager interface {
 	Subscribe(int) (<-chan operationpkg.Event, func())
 }
 
+type AuthSessionStarter interface {
+	StartAuthSession(operationpkg.Record) error
+}
+
 type operationCreateRequest struct {
 	Kind             string                      `json:"kind"`
 	Target           string                      `json:"target,omitempty"`
@@ -76,7 +80,11 @@ var allowedAuthMethods = map[providerpkg.ID]map[string]struct{}{
 // RegisterOperationRoutes adds persistent operation and provider-neutral auth
 // session resources. Provider-specific authentication execution is deliberately
 // deferred to YA-TUI-07; these resources own durable lifecycle and reconnect.
-func RegisterOperationRoutes(api *API, manager OperationManager) {
+func RegisterOperationRoutes(api *API, manager OperationManager, starters ...AuthSessionStarter) {
+	var starter AuthSessionStarter
+	if len(starters) > 0 {
+		starter = starters[0]
+	}
 	api.Handle(http.MethodPost, "/control/v1/operations", RoleOperator, false, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		createOperation(writer, request, manager)
 	}))
@@ -94,7 +102,7 @@ func RegisterOperationRoutes(api *API, manager OperationManager) {
 	}))
 
 	api.Handle(http.MethodPost, "/control/v1/auth-sessions", RoleOperator, false, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		createAuthSession(writer, request, manager)
+		createAuthSession(writer, request, manager, starter)
 	}))
 	api.HandlePrefix(http.MethodGet, "/control/v1/auth-sessions/", RoleViewer, false, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		getOperation(writer, request, manager, "/control/v1/auth-sessions/", true)
@@ -161,7 +169,7 @@ func createOperation(writer http.ResponseWriter, request *http.Request, manager 
 	writeJSON(writer, status, record)
 }
 
-func createAuthSession(writer http.ResponseWriter, request *http.Request, manager OperationManager) {
+func createAuthSession(writer http.ResponseWriter, request *http.Request, manager OperationManager, starter AuthSessionStarter) {
 	if manager == nil {
 		writeError(writer, request, http.StatusServiceUnavailable, "operation_manager_unavailable", "The operation manager is unavailable.", true, nil)
 		return
@@ -213,6 +221,12 @@ func createAuthSession(writer http.ResponseWriter, request *http.Request, manage
 	if err != nil {
 		writeOperationError(writer, request, err)
 		return
+	}
+	if created && starter != nil {
+		if err := starter.StartAuthSession(record); err != nil {
+			writeError(writer, request, http.StatusServiceUnavailable, "auth_session_start_failed", "The authentication session could not be started.", true, nil)
+			return
+		}
 	}
 	status := http.StatusOK
 	if created {

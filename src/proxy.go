@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -458,7 +459,7 @@ func proxyHandler(registry *ProviderRegistry, router *ModelRouter, cfg *Config) 
 
 // processProxyRequest resolves a route and delegates to the selected provider.
 func processProxyRequest(
-	registry *ProviderRegistry,
+	_ *ProviderRegistry,
 	router *ModelRouter,
 	cfg *Config,
 	w http.ResponseWriter,
@@ -506,10 +507,27 @@ func processProxyRequest(
 	log.Printf("[REQ] routing %s %s model=%q → provider=%s upstream_model=%q",
 		r.Method, r.URL.Path, requestedModel, route.Provider.ID(), route.ResolvedModel)
 
-	proxyErr := route.Provider.ProxyRequest(ctx, w, r, body, capability)
+	responseWriter := w
+	var virtualWriter *virtualModelResponseWriter
+	if route.Selection != nil {
+		virtualWriter = newVirtualModelResponseWriter(w, requestedModel)
+		responseWriter = virtualWriter
+	}
+	proxyErr := route.Provider.ProxyRequest(ctx, responseWriter, r, body, capability)
+	if virtualWriter != nil {
+		if commitErr := virtualWriter.Commit(); commitErr != nil && proxyErr == nil {
+			proxyErr = commitErr
+		}
+	}
 
-	elapsed := time.Since(reqStart)
 	status := responseStatus(w)
+	if proxyErr != nil && status == http.StatusOK {
+		status = providerErrorStatus(proxyErr)
+	}
+	if route.Selection != nil {
+		router.RecordOutcome(route.Selection, status, proxyErr, retryAfterDuration(w.Header().Get("Retry-After")))
+	}
+	elapsed := time.Since(reqStart)
 	if proxyErr != nil {
 		log.Printf("[REQ] completed %s %s model=%q provider=%s status=%d elapsed=%s error=%v",
 			r.Method, r.URL.Path, requestedModel, route.Provider.ID(), status, elapsed, proxyErr)
@@ -518,4 +536,16 @@ func processProxyRequest(
 			r.Method, r.URL.Path, requestedModel, route.Provider.ID(), status, elapsed)
 	}
 	return proxyErr
+}
+
+func retryAfterDuration(value string) time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || seconds <= 0 {
+		return 0
+	}
+	duration := time.Duration(seconds) * time.Second
+	if duration > 5*time.Minute {
+		return 5 * time.Minute
+	}
+	return duration
 }

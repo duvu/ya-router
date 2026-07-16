@@ -209,6 +209,31 @@ func TestBuildNativeResponsesRequests(t *testing.T) {
 	}
 }
 
+func TestBuildChatGPTNativeResponsesRequestNormalizesStringInputToList(t *testing.T) {
+	// Given
+	input := []byte(`{"model":"gpt-5.4","input":"hello"}`)
+
+	// When
+	output, _, err := buildChatGPTNativeResponsesRequest(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Then
+	var request struct {
+		Input []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(output, &request); err != nil {
+		t.Fatalf("decode normalized request: %v", err)
+	}
+	if len(request.Input) != 1 || request.Input[0].Role != "user" || request.Input[0].Content != "hello" {
+		t.Fatalf("input = %+v, want one user message", request.Input)
+	}
+}
+
 func TestBuildChatGPTNativeResponsesRequestRejectsUnknownField(t *testing.T) {
 	input := []byte(`{"model":"gpt-5.4","input":"hello","unknown":true}`)
 	if _, _, err := buildChatGPTNativeResponsesRequest(input); err == nil {

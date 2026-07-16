@@ -109,19 +109,20 @@ The prefix is removed before forwarding upstream. A model present in multiple pr
 
 When false, `/v1/models` hides providers that are not authenticated. Set true only for diagnostics.
 
-### `virtual_models` (umbrella models)
+### `virtual_models` (automatic virtual models)
 
-Umbrella models expose one client-facing ID (for example `router/auto`) that resolves to exactly one currently routable provider-prefixed target, selected deterministically before dispatch. This is selection-before-dispatch, not cross-provider failover: once a target is chosen and the upstream request begins, no other target receives that request.
+Virtual models expose one client-facing ID that resolves to exactly one currently routable provider-prefixed target, selected deterministically before dispatch. `thiendu` is the default simple public ID and is configured with GitHub Copilot, Codex, and Kilo candidates; it is not a hard-coded routing special case. This is selection-before-dispatch, not cross-provider failover: once a target is chosen and the upstream request begins, no other target receives that request.
 
 ```json
 {
   "routing": {
     "virtual_models": {
-      "router/auto": {
+      "thiendu": {
         "strategy": "priority",
         "targets": [
           "github/gpt-5-mini",
-          "codex/gpt-5.4-mini"
+          "codex/gpt-5.4-mini",
+          "kilo/kilo-auto/free"
         ]
       }
     }
@@ -131,7 +132,7 @@ Umbrella models expose one client-facing ID (for example `router/auto`) that res
 
 Validation rules (enforced at config load, not request time):
 
-- The virtual model ID must be non-empty and must not collide with a provider prefix (`github/`, `codex/`, `kilo/`) or shadow an explicit `model_map` key. The `router/` namespace is recommended.
+- The virtual model ID must be non-empty and must not collide with a provider prefix (`github/`, `codex/`, `kilo/`) or shadow an explicit `model_map` key.
 - `strategy` must be `priority` (the only strategy in v1); target order is the priority order.
 - At least one target is required; targets must be unique and each must use a known provider prefix.
 - A target cannot reference another virtual model (no nesting).
@@ -374,7 +375,7 @@ curl http://127.0.0.1:7071/health/providers
 curl http://127.0.0.1:7071/health/umbrella
 ```
 
-`/health/umbrella` reports, for each configured umbrella model, its strategy, the currently selected target (if any), and each target's readiness as a stable reason code (`routable`, `provider_not_ready`, `capability_unsupported`, `model_disallowed`, `model_not_in_catalog`, `catalog_stale`, `target_disabled`, `provider_not_registered`). It also exposes bounded routing counters (`umbrella_selections_total`, `umbrella_no_active_target_total`, `umbrella_skipped_targets_total`, `umbrella_stale_catalog_total`) whose labels are limited to configured virtual-model/target IDs and reason codes.
+`/health/umbrella` reports, for each configured umbrella model, its strategy, the currently selected target (if any), and each target's readiness as a stable reason code (`routable`, `provider_not_ready`, `capability_unsupported`, `model_disallowed`, `model_not_in_catalog`, `catalog_stale`, `cooldown`, `target_disabled`, `provider_not_registered`). It also exposes bounded routing counters (`umbrella_selections_total`, `umbrella_no_active_target_total`, `umbrella_skipped_targets_total`, `umbrella_stale_catalog_total`, `umbrella_cooldown_entries_total`, `umbrella_cooldown_exits_total`) whose labels are limited to configured virtual-model/target IDs and reason codes.
 
 Selection is computed from the network-free availability snapshot; the endpoint sends no upstream model request. Every request that resolves through an umbrella model also emits a structured `[umbrella] decision …` log line recording the selected target, target index, runtime generation, and skipped-target reason codes. These logs and metrics describe **selection before dispatch only** — ya-router never retries a request against another target after dispatch, and no log implies cross-provider failover. Prompts, completions, tokens, secrets, raw account IDs, and upstream error bodies never appear in umbrella logs or metrics.
 

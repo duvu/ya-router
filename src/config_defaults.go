@@ -74,6 +74,7 @@ func defaultConfig() *Config {
 	cfg := &Config{Port: 7071, ConfigVersion: currentConfigVersion}
 	cfg.Routing.DefaultModel = "gpt-5-mini"
 	cfg.Routing.DefaultProvider = string(ProviderCopilot)
+	cfg.Routing.VirtualModels = defaultVirtualModels()
 	cfg.Providers.Copilot.Enabled = true
 	cfg.Providers.Copilot.Auth.Mode = "device_code"
 	cfg.Providers.Codex.Enabled = false
@@ -94,6 +95,9 @@ func applyConfigDefaults(cfg *Config) {
 	if cfg.Routing.DefaultProvider == "" {
 		cfg.Routing.DefaultProvider = string(ProviderCopilot)
 	}
+	if cfg.Routing.VirtualModels == nil {
+		cfg.Routing.VirtualModels = defaultVirtualModels()
+	}
 	if cfg.Providers.Codex.Auth.Mode == "" {
 		cfg.Providers.Codex.Auth.Mode = "device_code"
 	}
@@ -106,6 +110,19 @@ func applyConfigDefaults(cfg *Config) {
 	}
 	normalizeCodexAccounts(&cfg.Providers.Codex)
 	setDefaultTimeouts(cfg)
+}
+
+func defaultVirtualModels() map[string]VirtualModelConfig {
+	return map[string]VirtualModelConfig{
+		"thiendu": {
+			Strategy: "priority",
+			Targets: []string{
+				"github/gpt-5-mini",
+				"codex/gpt-5.4-mini",
+				"kilo/kilo-auto/free",
+			},
+		},
+	}
 }
 
 func normalizeCopilotAccounts(provider *CopilotProviderConfig) {

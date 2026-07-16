@@ -1,13 +1,16 @@
 # Umbrella Model Routing Delivery Roadmap
 
-Status: proposed execution roadmap  
+Status: historical delivery roadmap; the generic routing foundation is implemented
 Architecture: [`docs/architecture/umbrella-model-routing.md`](../architecture/umbrella-model-routing.md)  
 Epic: [#25](https://github.com/duvu/ya-router/issues/25)  
 Last updated: 2026-07-15
 
 ## 1. Outcome
 
-Deliver a simple, production-capable virtual-model feature in which a client sends one stable umbrella model ID and `ya-router` chooses the first currently active canonical provider/model target.
+The delivered foundation lets a client send one stable virtual model ID and
+`ya-router` chooses the first currently active canonical provider/model target.
+`thiendu` is the configured MVP public ID; generic `routing.virtual_models`
+remains supported.
 
 The feature must preserve one strict invariant:
 
@@ -55,7 +58,7 @@ The feature must preserve one strict invariant:
 
 ## 4. Milestones
 
-### M0 — Architecture and backlog
+### M0 — Architecture and backlog (completed)
 
 Deliverables:
 
@@ -70,9 +73,10 @@ Exit criteria:
 
 - maintainers agree that umbrella routing is exact pre-dispatch selection;
 - V1 policy remains priority-only with prefixed, non-nested targets;
-- docs do not claim the runtime feature already exists.
+- docs distinguish delivered routing behavior from remaining MVP conformance
+  and post-MVP hardening work.
 
-### M1 — Configuration and availability foundation
+### M1 — Configuration and availability foundation (completed)
 
 Issues: #26 and #27.
 
@@ -91,7 +95,7 @@ Exit criteria:
 - selectors can inspect availability without network calls or provider mutation;
 - race tests cover refresh/read publication.
 
-### M2 — Core selector
+### M2 — Core selector (completed)
 
 Issue: #28.
 
@@ -108,7 +112,7 @@ Exit criteria:
 - selection returns at most one target;
 - selector performs no I/O and contains no provider implementation knowledge.
 
-### M3 — Usable static-config data plane
+### M3 — Usable static-config data plane (completed)
 
 Issue: #29.
 
@@ -122,14 +126,14 @@ Deliverables:
 
 Exit criteria:
 
-- a client can call `router/auto` from Chat Completions or Responses when target capabilities permit;
+- a client can call `thiendu` from Chat Completions or Responses when target capabilities permit;
 - an upstream failure results in one provider invocation only;
 - a later request may select a different target after availability changes;
 - all existing routing behavior remains green.
 
 This is the first independently useful release slice.
 
-### M4 — Operability
+### M4 — Operability (completed)
 
 Issue: #30.
 
@@ -146,7 +150,7 @@ Exit criteria:
 - diagnostics clearly state that no cross-provider failover occurred;
 - metric cardinality is bounded by configuration.
 
-### M5 — Managed configuration and TUI
+### M5 — Managed configuration and TUI (completed MVP subset)
 
 Issue: #31.
 
@@ -166,7 +170,7 @@ Exit criteria:
 - failed apply leaves the old effective runtime active;
 - dry run performs no upstream inference request.
 
-### M6 — Production acceptance
+### M6 — MVP acceptance evidence
 
 Issue: #32.
 

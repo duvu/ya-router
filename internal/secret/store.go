@@ -111,6 +111,13 @@ type entry struct {
 	updatedAt time.Time
 }
 
+type persistedEntry struct {
+	ID        string    `json:"id"`
+	Value     string    `json:"value"`
+	Version   uint64    `json:"version"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // MemoryStore is an in-memory SecretStore suitable for the daemon runtime and
 // tests. Environment and official-store sources are registered read-only.
 type MemoryStore struct {
@@ -118,6 +125,7 @@ type MemoryStore struct {
 	entries map[string]*entry
 	audit   AuditSink
 	now     func() time.Time
+	persist func([]persistedEntry) error
 }
 
 // NewMemoryStore builds an empty store. audit may be nil.
@@ -158,7 +166,13 @@ func (store *MemoryStore) Set(actor, id, value string) (Metadata, error) {
 		version = existing.version + 1
 	}
 	now := store.now().UTC()
-	store.entries[id] = &entry{value: value, source: SourceManaged, version: version, updatedAt: now}
+	next := cloneEntries(store.entries)
+	next[id] = &entry{value: value, source: SourceManaged, version: version, updatedAt: now}
+	if err := store.persistManagedLocked(next); err != nil {
+		store.mu.Unlock()
+		return Metadata{}, err
+	}
+	store.entries = next
 	store.mu.Unlock()
 
 	store.emit(AuditEvent{Action: "set", SecretID: id, Source: SourceManaged, Version: version, Actor: actor, Timestamp: now})
@@ -177,7 +191,13 @@ func (store *MemoryStore) Delete(actor, id string) error {
 		store.mu.Unlock()
 		return fmt.Errorf("%w: %q is provided by %s", ErrReadOnly, id, existing.source)
 	}
-	delete(store.entries, id)
+	next := cloneEntries(store.entries)
+	delete(next, id)
+	if err := store.persistManagedLocked(next); err != nil {
+		store.mu.Unlock()
+		return err
+	}
+	store.entries = next
 	version := existing.version
 	store.mu.Unlock()
 
@@ -238,4 +258,33 @@ func (store *MemoryStore) emit(event AuditEvent) {
 	if store.audit != nil {
 		store.audit.Record(event)
 	}
+}
+
+func cloneEntries(entries map[string]*entry) map[string]*entry {
+	cloned := make(map[string]*entry, len(entries))
+	for id, existing := range entries {
+		copy := *existing
+		cloned[id] = &copy
+	}
+	return cloned
+}
+
+func (store *MemoryStore) persistManagedLocked(entries map[string]*entry) error {
+	if store.persist == nil {
+		return nil
+	}
+	persisted := make([]persistedEntry, 0, len(entries))
+	for id, existing := range entries {
+		if existing.readOnly {
+			continue
+		}
+		persisted = append(persisted, persistedEntry{
+			ID:        id,
+			Value:     existing.value,
+			Version:   existing.version,
+			UpdatedAt: existing.updatedAt,
+		})
+	}
+	sort.Slice(persisted, func(i, j int) bool { return persisted[i].ID < persisted[j].ID })
+	return store.persist(persisted)
 }

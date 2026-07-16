@@ -11,6 +11,7 @@ import (
 	"time"
 
 	runtimepkg "github.com/duvu/ya-router/internal/runtime"
+	secretpkg "github.com/duvu/ya-router/internal/secret"
 )
 
 func printUsage() {
@@ -441,7 +442,14 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 	if err != nil {
 		return fmt.Errorf("create runtime manager: %w", err)
 	}
-	providerManager, err := newProviderManager(cfg, runtimeManager)
+	secretStore, err := newDaemonSecretStore(cfg, nil)
+	if err != nil {
+		shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = runtimeManager.Close(shutdownContext)
+		return fmt.Errorf("open daemon secret store: %w", err)
+	}
+	providerManager, err := newProviderManagerWithAuth(cfg, runtimeManager, secretpkg.NewStoreController(secretStore, nil))
 	if err != nil {
 		shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -497,7 +505,7 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 		WriteTimeout: time.Duration(cfg.Timeouts.ServerWrite) * time.Second,
 		IdleTimeout:  time.Duration(cfg.Timeouts.ServerIdle) * time.Second,
 	}
-	controlRuntime, err := newManagedControlRuntime(cfg, runtimeManager, providerManager)
+	controlRuntime, err := newManagedControlRuntimeWithSecretStore(cfg, runtimeManager, providerManager, secretStore)
 	if err != nil {
 		return fmt.Errorf("configure control service: %w", err)
 	}

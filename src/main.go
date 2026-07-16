@@ -232,9 +232,8 @@ func ExecuteDaemon(args []string) int {
 	}
 }
 
-// ExecuteClient provides the installable client binary boundary. It dispatches
-// scriptable Control API read commands (YA-TUI-09). The interactive TUI
-// (YA-TUI-10) is delivered separately.
+// ExecuteClient provides the installable client binary boundary for both the
+// interactive dashboard and scriptable control commands.
 func ExecuteClient(args []string) int {
 	return runClientCLI(args)
 }

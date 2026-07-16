@@ -73,6 +73,12 @@ func (c *Client) Configuration(ctx context.Context) (control.ConfigResource, err
 	return out, err
 }
 
+func (c *Client) RoutingStatus(ctx context.Context) (control.RoutingStatusResource, error) {
+	var out control.RoutingStatusResource
+	err := c.doJSON(ctx, "GET", "/control/v1/routing/thiendu", nil, &out)
+	return out, err
+}
+
 // Operations returns the recorded async operations.
 func (c *Client) Operations(ctx context.Context) ([]control.OperationResource, error) {
 	var out listEnvelope[control.OperationResource]
@@ -92,15 +98,38 @@ func (c *Client) Operation(ctx context.Context, id string) (control.OperationRes
 	return out, err
 }
 
+type AuthSessionRequest struct {
+	ProviderID       string `json:"provider_id"`
+	AccountID        string `json:"account_id,omitempty"`
+	Method           string `json:"method"`
+	ExpiresInSeconds int    `json:"expires_in_seconds,omitempty"`
+}
+
+func (c *Client) CreateAuthSession(ctx context.Context, request AuthSessionRequest) (control.OperationResource, error) {
+	var out control.OperationResource
+	err := c.doJSON(ctx, "POST", "/control/v1/auth-sessions", request, &out)
+	return out, err
+}
+
+func (c *Client) CancelAuthSession(ctx context.Context, id string) (control.OperationResource, error) {
+	var out control.OperationResource
+	if id == "" {
+		return out, fmt.Errorf("auth session id is required")
+	}
+	err := c.doJSON(ctx, "DELETE", "/control/v1/auth-sessions/"+escapePath(id), nil, &out)
+	return out, err
+}
+
 // MutationResult mirrors the daemon's redacted mutation outcome.
 type MutationResult struct {
-	DryRun          bool     `json:"dry_run"`
-	Applied         bool     `json:"applied"`
-	CurrentRevision uint64   `json:"current_revision"`
-	NextRevision    uint64   `json:"next_revision"`
-	Changed         bool     `json:"changed"`
-	ChangedPaths    []string `json:"changed_paths,omitempty"`
-	RestartRequired []string `json:"restart_required,omitempty"`
+	DryRun           bool     `json:"dry_run"`
+	Applied          bool     `json:"applied"`
+	RuntimePublished bool     `json:"runtime_published"`
+	CurrentRevision  uint64   `json:"current_revision"`
+	NextRevision     uint64   `json:"next_revision"`
+	Changed          bool     `json:"changed"`
+	ChangedPaths     []string `json:"changed_paths,omitempty"`
+	RestartRequired  []string `json:"restart_required,omitempty"`
 }
 
 // ApplyMutation submits a revision-safe configuration mutation. The mutation is
@@ -122,6 +151,23 @@ func (c *Client) Secrets(ctx context.Context) ([]secret.Metadata, error) {
 		return nil, err
 	}
 	return out.Data, nil
+}
+
+type secretWriteRequest struct {
+	Slot  string `json:"slot"`
+	Value string `json:"value"`
+}
+
+func (c *Client) SetSecret(ctx context.Context, slot, value string) (secret.Metadata, error) {
+	var out secret.Metadata
+	err := c.doJSON(ctx, "PUT", "/control/v1/secrets", secretWriteRequest{Slot: slot, Value: value}, &out)
+	return out, err
+}
+
+func (c *Client) DeleteSecret(ctx context.Context, slot string) error {
+	return c.doJSON(ctx, "DELETE", "/control/v1/secrets", struct {
+		Slot string `json:"slot"`
+	}{Slot: slot}, nil)
 }
 
 // Events returns a bounded page of lifecycle events after the given cursor.

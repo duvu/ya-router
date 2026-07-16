@@ -19,13 +19,21 @@ import (
 
 // MutationResult is the redacted outcome of a mutation preview or apply.
 type MutationResult struct {
-	DryRun          bool     `json:"dry_run"`
-	Applied         bool     `json:"applied"`
-	CurrentRevision uint64   `json:"current_revision"`
-	NextRevision    uint64   `json:"next_revision"`
-	Changed         bool     `json:"changed"`
-	ChangedPaths    []string `json:"changed_paths,omitempty"`
-	RestartRequired []string `json:"restart_required,omitempty"`
+	DryRun           bool     `json:"dry_run"`
+	Applied          bool     `json:"applied"`
+	RuntimePublished bool     `json:"runtime_published"`
+	CurrentRevision  uint64   `json:"current_revision"`
+	NextRevision     uint64   `json:"next_revision"`
+	Changed          bool     `json:"changed"`
+	ChangedPaths     []string `json:"changed_paths,omitempty"`
+	RestartRequired  []string `json:"restart_required,omitempty"`
+}
+
+func (result MutationResult) ErrorDetails() map[string]any {
+	return map[string]any{
+		"current_revision":  result.CurrentRevision,
+		"runtime_published": result.RuntimePublished,
+	}
 }
 
 // mutationReloader hot-reloads the provider runtime after a committed config
@@ -84,15 +92,23 @@ func applyManagedMutation(request controlpkg.MutationRequest, actor string, relo
 	result.Applied = true
 	result.NextRevision = applied.Revision
 
-	// Hot reload: reconcile providers to the new effective configuration. A
-	// reconcile failure is reported but the config revision is already durably
-	// committed; the next request observes the new snapshot.
 	if reloader != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if _, reloadErr := reloader.Reconcile(ctx, desiredProviders(applied.Effective)); reloadErr != nil {
-			return result, fmt.Errorf("configuration committed at revision %d but provider reload failed: %w", applied.Revision, reloadErr)
+			restored, restoreErr := manager.Apply(applied.Revision, snapshot.Desired, snapshot.Effective, actor, false)
+			if restoreErr != nil {
+				return result, fmt.Errorf("reconcile configuration at revision %d: %w; restore prior configuration: %v", applied.Revision, reloadErr, restoreErr)
+			}
+			result.Applied = false
+			result.CurrentRevision = restored.Revision
+			result.NextRevision = restored.Revision
+			result.Changed = false
+			result.ChangedPaths = nil
+			result.RestartRequired = nil
+			return result, &recoveredMutationError{cause: fmt.Errorf("reconcile configuration at revision %d: %w", applied.Revision, reloadErr)}
 		}
+		result.RuntimePublished = true
 	}
 	return result, nil
 }
@@ -104,8 +120,18 @@ func mutationHTTPStatus(err error) (int, string) {
 	if errors.As(err, &conflict) {
 		return 409, "revision_conflict"
 	}
+	var recovered *recoveredMutationError
+	if errors.As(err, &recovered) {
+		return 503, "runtime_reconcile_failed"
+	}
 	return 400, "invalid_mutation"
 }
+
+type recoveredMutationError struct{ cause error }
+
+func (err *recoveredMutationError) Error() string { return err.cause.Error() }
+
+func (err *recoveredMutationError) Unwrap() error { return err.cause }
 
 // mutationExecutor adapts applyManagedMutation to control.MutationExecutor.
 type mutationExecutor struct {
@@ -116,6 +142,10 @@ func (executor mutationExecutor) Execute(request controlpkg.MutationRequest, act
 	result, err := applyManagedMutation(request, actor, executor.reloader)
 	if err != nil {
 		status, code := mutationHTTPStatus(err)
+		var recovered *recoveredMutationError
+		if errors.As(err, &recovered) {
+			return result, status, code, err
+		}
 		return nil, status, code, err
 	}
 	return result, 200, "", nil

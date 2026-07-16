@@ -24,6 +24,14 @@
       }
     },
     "virtual_models": {
+      "thiendu": {
+        "strategy": "priority",
+        "targets": [
+          "github/gpt-5-mini",
+          "codex/gpt-5.4-mini",
+          "kilo/kilo-auto/free"
+        ]
+      },
       "router/auto": {
         "strategy": "priority",
         "targets": [
