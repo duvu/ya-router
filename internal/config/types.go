@@ -15,6 +15,9 @@ type Routing struct {
 	DefaultProvider       string                   `json:"default_provider"`
 	ShowUnavailableModels bool                     `json:"show_unavailable_models"`
 	ModelMap              map[string]ModelMapEntry `json:"model_map,omitempty"`
+	// ClaudeAliases projects Claude Code-discoverable model IDs onto canonical
+	// ya-router provider-prefixed models without changing the OpenAI catalog.
+	ClaudeAliases map[string]string `json:"claude_aliases,omitempty"`
 	// VirtualModels defines umbrella/virtual model IDs (for example
 	// "router/auto") that resolve to exactly one active provider-prefixed
 	// target selected deterministically before dispatch. This is

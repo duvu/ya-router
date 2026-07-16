@@ -241,6 +241,19 @@ func managedProxyHandler(manager *runtimepkg.Manager) http.HandlerFunc {
 	}
 }
 
+func managedAnthropicHandler(manager *runtimepkg.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		lease, err := manager.Acquire()
+		if err != nil {
+			writeAnthropicError(w, http.StatusServiceUnavailable, err)
+			return
+		}
+		defer lease.Release()
+		snapshot := lease.Snapshot()
+		anthropicHandler(snapshot.Providers(), snapshot.Router(), snapshot.Config()).ServeHTTP(w, r)
+	}
+}
+
 func managedModelsHandler(manager *runtimepkg.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		lease, err := manager.Acquire()

@@ -23,6 +23,9 @@
         "upstream_model": "kilo-auto/free"
       }
     },
+    "claude_aliases": {
+      "claude-ya-codex-gpt-5-4": "codex/gpt-5.4"
+    },
     "virtual_models": {
       "thiendu": {
         "strategy": "priority",
