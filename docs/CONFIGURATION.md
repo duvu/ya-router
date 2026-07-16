@@ -109,6 +109,35 @@ The prefix is removed before forwarding upstream. A model present in multiple pr
 
 When false, `/v1/models` hides providers that are not authenticated. Set true only for diagnostics.
 
+### `virtual_models` (umbrella models)
+
+Umbrella models expose one client-facing ID (for example `router/auto`) that resolves to exactly one currently routable provider-prefixed target, selected deterministically before dispatch. This is selection-before-dispatch, not cross-provider failover: once a target is chosen and the upstream request begins, no other target receives that request.
+
+```json
+{
+  "routing": {
+    "virtual_models": {
+      "router/auto": {
+        "strategy": "priority",
+        "targets": [
+          "github/gpt-5-mini",
+          "codex/gpt-5.4-mini"
+        ]
+      }
+    }
+  }
+}
+```
+
+Validation rules (enforced at config load, not request time):
+
+- The virtual model ID must be non-empty and must not collide with a provider prefix (`github/`, `codex/`, `kilo/`) or shadow an explicit `model_map` key. The `router/` namespace is recommended.
+- `strategy` must be `priority` (the only strategy in v1); target order is the priority order.
+- At least one target is required; targets must be unique and each must use a known provider prefix.
+- A target cannot reference another virtual model (no nesting).
+
+Umbrella IDs are added to the routing resolution order below, after explicit prefixes and before catalog discovery. See [Umbrella Model Routing architecture](architecture/umbrella-model-routing.md) for the full contract.
+
 ## GitHub Copilot provider
 
 ```json
@@ -338,6 +367,16 @@ curl http://127.0.0.1:7071/health/providers
 ```
 
 `/health/providers` returns only provider ID, name, authentication state, refreshability, and capabilities. It does not return tokens or account IDs.
+
+### Inspecting umbrella-routing decisions
+
+```bash
+curl http://127.0.0.1:7071/health/umbrella
+```
+
+`/health/umbrella` reports, for each configured umbrella model, its strategy, the currently selected target (if any), and each target's readiness as a stable reason code (`routable`, `provider_not_ready`, `capability_unsupported`, `model_disallowed`, `model_not_in_catalog`, `catalog_stale`, `target_disabled`, `provider_not_registered`). It also exposes bounded routing counters (`umbrella_selections_total`, `umbrella_no_active_target_total`, `umbrella_skipped_targets_total`, `umbrella_stale_catalog_total`) whose labels are limited to configured virtual-model/target IDs and reason codes.
+
+Selection is computed from the network-free availability snapshot; the endpoint sends no upstream model request. Every request that resolves through an umbrella model also emits a structured `[umbrella] decision …` log line recording the selected target, target index, runtime generation, and skipped-target reason codes. These logs and metrics describe **selection before dispatch only** — ya-router never retries a request against another target after dispatch, and no log implies cross-provider failover. Prompts, completions, tokens, secrets, raw account IDs, and upstream error bodies never appear in umbrella logs or metrics.
 
 ## Migration notes
 

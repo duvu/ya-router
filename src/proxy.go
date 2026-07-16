@@ -18,6 +18,7 @@ import (
 	"time"
 
 	requestproxy "github.com/duvu/ya-router/internal/proxy"
+	routingpkg "github.com/duvu/ya-router/internal/routing"
 )
 
 const (
@@ -483,8 +484,18 @@ func processProxyRequest(
 
 	route, err := router.Resolve(ctx, requestedModel, capability)
 	if err != nil {
+		var noTarget *routingpkg.NoActiveTargetError
+		if errors.As(err, &noTarget) {
+			logUmbrellaNoTarget(requestedModel, noTarget)
+			return newProviderError("", ProviderErrorModelUnavailable, http.StatusServiceUnavailable, false,
+				"no active target is available for model %q", requestedModel)
+		}
 		log.Printf("[REQ] %s %s model=%q → routing failed: %v", r.Method, r.URL.Path, requestedModel, err)
 		return newProviderError("", ProviderErrorInvalidRequest, http.StatusBadRequest, false, "routing: %v", err)
+	}
+
+	if route.Selection != nil {
+		logUmbrellaSelection(route.Selection, route.Provider.ID())
 	}
 
 	if route.ResolvedModel != requestedModel {

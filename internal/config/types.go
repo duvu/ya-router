@@ -15,12 +15,28 @@ type Routing struct {
 	DefaultProvider       string                   `json:"default_provider"`
 	ShowUnavailableModels bool                     `json:"show_unavailable_models"`
 	ModelMap              map[string]ModelMapEntry `json:"model_map,omitempty"`
+	// VirtualModels defines umbrella/virtual model IDs (for example
+	// "router/auto") that resolve to exactly one active provider-prefixed
+	// target selected deterministically before dispatch. This is
+	// selection-before-dispatch, not cross-provider failover.
+	VirtualModels map[string]VirtualModel `json:"virtual_models,omitempty"`
 }
 
 // ModelMapEntry explicitly maps a model name to a provider and optional upstream alias.
 type ModelMapEntry struct {
 	Provider      string `json:"provider"`
 	UpstreamModel string `json:"upstream_model,omitempty"`
+}
+
+// VirtualModelStrategyPriority selects the first routable target in configured
+// order. It is the only strategy supported in v1.
+const VirtualModelStrategyPriority = "priority"
+
+// VirtualModel is one umbrella model. In v1 it carries a single strategy and an
+// ordered list of canonical provider-prefixed target model IDs.
+type VirtualModel struct {
+	Strategy string   `json:"strategy"`
+	Targets  []string `json:"targets"`
 }
 
 // CopilotAuthState holds persisted Copilot authentication state. Direct secret

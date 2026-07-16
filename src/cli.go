@@ -472,8 +472,8 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 	mux.HandleFunc("/v1/chat/completions/", managedProxyHandler(runtimeManager))
 	mux.HandleFunc("/v1/responses", managedProxyHandler(runtimeManager))
 	mux.HandleFunc("/v1/responses/", managedProxyHandler(runtimeManager))
-	mux.HandleFunc("/health", managedHealthHandler(providerManager))
-	mux.HandleFunc("/health/", managedHealthHandler(providerManager))
+	mux.HandleFunc("/health", managedHealthHandler(providerManager, runtimeManager))
+	mux.HandleFunc("/health/", managedHealthHandler(providerManager, runtimeManager))
 	if cfg.EnablePprof {
 		mux.HandleFunc("/debug/pprof/", http.DefaultServeMux.ServeHTTP)
 		mux.HandleFunc("/debug/pprof/cmdline", http.DefaultServeMux.ServeHTTP)

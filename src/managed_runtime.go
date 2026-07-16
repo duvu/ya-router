@@ -245,7 +245,7 @@ func managedModelsHandler(manager *runtimepkg.Manager) http.HandlerFunc {
 	}
 }
 
-func managedHealthHandler(providerManager *providerpkg.Manager) http.HandlerFunc {
+func managedHealthHandler(providerManager *providerpkg.Manager, runtimeManager *runtimepkg.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimSuffix(r.URL.Path, "/")
 		if path == "/health" {
@@ -254,6 +254,10 @@ func managedHealthHandler(providerManager *providerpkg.Manager) http.HandlerFunc
 				"service":   "ya-router",
 				"timestamp": time.Now().Unix(),
 			})
+			return
+		}
+		if path == "/health/umbrella" {
+			writeManagedUmbrellaDiagnostics(w, runtimeManager)
 			return
 		}
 		providerManager.RefreshHealth(r.Context())
@@ -273,6 +277,25 @@ func managedHealthHandler(providerManager *providerpkg.Manager) http.HandlerFunc
 			writeJSON(w, http.StatusOK, map[string]interface{}{"status": "ok"})
 		}
 	}
+}
+
+// writeManagedUmbrellaDiagnostics reports redacted virtual-model readiness for
+// chat capability and bounded routing metrics. It performs no network I/O: the
+// readiness view is computed from the network-free availability snapshot.
+func writeManagedUmbrellaDiagnostics(w http.ResponseWriter, runtimeManager *runtimepkg.Manager) {
+	lease, err := runtimeManager.Acquire()
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"status": "unavailable"})
+		return
+	}
+	defer lease.Release()
+	router := lease.Snapshot().Router()
+	snapshot := router.AvailabilitySnapshot()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":         "ok",
+		"virtual_models": router.VirtualModelReadinessFor(CapabilityChat, snapshot),
+		"metrics":        router.Metrics().Snapshot(),
+	})
 }
 
 func writeManagedReadiness(w http.ResponseWriter, statuses []providerpkg.ProviderStatus) {
