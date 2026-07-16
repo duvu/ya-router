@@ -21,9 +21,21 @@ A private Unix socket is enabled by default next to the configured state file:
 ```
 
 The socket is created with mode `0600`. A systemd package may override the path
-with `YA_ROUTER_CONTROL_SOCKET=/run/ya-router/control.sock` and manage group
-access in the unit/package layer. Set the variable to `off` only when a valid
-remote listener is configured; disabling every control listener fails startup.
+with `YA_ROUTER_CONTROL_SOCKET=/run/ya-router/control.sock`. Set the variable to
+`off` only when a valid remote listener is configured; disabling every control
+listener fails startup.
+
+Two optional variables widen access without loosening the owner-only default:
+
+| Environment variable | Default | Purpose |
+|---|---|---|
+| `YA_ROUTER_CONTROL_SOCKET_MODE` | `0600` | Octal file mode applied to the socket |
+| `YA_ROUTER_CONTROL_SOCKET_GROUP` | empty | Group (name or numeric GID) granted access via `chown`; owning user is unchanged |
+
+`YA_ROUTER_CONTROL_SOCKET_GROUP` lets a trusted group (for example, an
+operator group managed by the systemd unit) reach the socket without running
+as the `ya-router` service account. Startup fails if the named group cannot be
+resolved.
 
 Local socket access maps to the `admin` role because filesystem ownership and
 socket permissions form the trust boundary. The Control API still rejects an

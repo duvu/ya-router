@@ -22,6 +22,8 @@ import (
 
 const (
 	controlSocketEnv           = "YA_ROUTER_CONTROL_SOCKET"
+	controlSocketModeEnv       = "YA_ROUTER_CONTROL_SOCKET_MODE"
+	controlSocketGroupEnv      = "YA_ROUTER_CONTROL_SOCKET_GROUP"
 	controlRemoteAddressEnv    = "YA_ROUTER_CONTROL_LISTEN_ADDRESS"
 	controlTLSCertEnv          = "YA_ROUTER_CONTROL_TLS_CERT"
 	controlTLSKeyEnv           = "YA_ROUTER_CONTROL_TLS_KEY"
@@ -212,10 +214,20 @@ func configuredControlListener(config *Config) (controlpkg.ListenerConfig, map[c
 			requireMTLS = true
 		}
 	}
+	socketMode := os.FileMode(0o600)
+	if raw := strings.TrimSpace(os.Getenv(controlSocketModeEnv)); raw != "" {
+		parsed, parseErr := strconv.ParseUint(raw, 8, 32)
+		if parseErr != nil {
+			return controlpkg.ListenerConfig{}, nil, nil, fmt.Errorf("%s: invalid octal mode %q: %w", controlSocketModeEnv, raw, parseErr)
+		}
+		socketMode = os.FileMode(parsed)
+	}
+	socketGroup := strings.TrimSpace(os.Getenv(controlSocketGroupEnv))
 	timeouts := config.Timeouts
 	listener := controlpkg.ListenerConfig{
 		UnixSocket:               socket,
-		UnixMode:                 0o600,
+		UnixMode:                 socketMode,
+		UnixGroup:                socketGroup,
 		RemoteAddress:            remoteAddress,
 		TLSCertFile:              strings.TrimSpace(os.Getenv(controlTLSCertEnv)),
 		TLSKeyFile:               strings.TrimSpace(os.Getenv(controlTLSKeyEnv)),

@@ -8,8 +8,33 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/user"
+	"strconv"
+	"strings"
 	"sync"
 )
+
+// chownSocketGroup changes the group owner of the control socket to the named
+// group (numeric GID or group name), leaving the owning user unchanged. It lets
+// an operator widen access to a trusted group without loosening the default
+// owner-only posture.
+func chownSocketGroup(path, group string) error {
+	gid, err := strconv.Atoi(group)
+	if err != nil {
+		lookup, lookupErr := user.LookupGroup(group)
+		if lookupErr != nil {
+			return fmt.Errorf("resolve group %q: %w", group, lookupErr)
+		}
+		gid, err = strconv.Atoi(lookup.Gid)
+		if err != nil {
+			return fmt.Errorf("parse gid for group %q: %w", group, err)
+		}
+	}
+	if err := os.Chown(path, -1, gid); err != nil {
+		return err
+	}
+	return nil
+}
 
 // Service owns isolated local and optional remote control listeners.
 type Service struct {
@@ -63,6 +88,13 @@ func (service *Service) Start() error {
 			_ = listener.Close()
 			_ = os.Remove(service.config.UnixSocket)
 			return fmt.Errorf("set control Unix socket permissions: %w", err)
+		}
+		if group := strings.TrimSpace(service.config.UnixGroup); group != "" {
+			if err := chownSocketGroup(service.config.UnixSocket, group); err != nil {
+				_ = listener.Close()
+				_ = os.Remove(service.config.UnixSocket)
+				return fmt.Errorf("set control Unix socket group: %w", err)
+			}
 		}
 		server := service.newHTTPServer(service.localHandler)
 		service.servers = append(service.servers, server)

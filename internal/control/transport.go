@@ -15,6 +15,7 @@ import (
 type ListenerConfig struct {
 	UnixSocket               string
 	UnixMode                 os.FileMode
+	UnixGroup                string
 	RemoteAddress            string
 	TLSCertFile              string
 	TLSKeyFile               string
