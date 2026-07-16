@@ -28,6 +28,11 @@ The current Go runtime includes:
 
 The automated test suite uses mock upstreams and does not require live provider credentials. Real GitHub Copilot, Codex, and Kilo smoke tests remain an operator/release-environment responsibility.
 
+Application logs are written to stderr and to `logs/ya-router.log` by default.
+The local file rotates at 5 MiB and retains two files in total; see
+[Configuration](docs/CONFIGURATION.md#application-log-files) for the file path
+and rotation settings.
+
 See [MVP1 implementation status](docs/MVP1_STATUS.md) for the detailed delivery state and explicit deferrals.
 
 ## Architecture

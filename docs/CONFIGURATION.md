@@ -17,6 +17,25 @@ Start from `config.example.json` and run:
 ./ya-router status
 ```
 
+## Application log files
+
+The shared application logger always writes to stderr and also writes to the
+configured file. The default configuration retains bounded local history:
+
+```json
+"logging": {
+  "file_path": "logs/ya-router.log",
+  "max_file_size_mib": 5,
+  "retained_files": 2
+}
+```
+
+The parent directory is created at startup. `max_file_size_mib` rotates the
+active log when it reaches the threshold; `retained_files` includes the active
+file and is fixed at `2` to preserve the bounded two-file policy. The defaults
+therefore retain at most two 5 MiB files. If the file cannot be initialized,
+ya-router reports the error to stderr and continues with console logging.
+
 ## Server security environment
 
 Server exposure is intentionally controlled outside the JSON credential file.
@@ -55,6 +74,11 @@ The service refuses to start on a non-loopback address when `YA_ROUTER_API_KEY` 
   "port": 7071,
   "config_version": 1,
   "enable_pprof": false,
+  "logging": {
+    "file_path": "logs/ya-router.log",
+    "max_file_size_mib": 5,
+    "retained_files": 2
+  },
   "routing": {},
   "providers": {},
   "timeouts": {}

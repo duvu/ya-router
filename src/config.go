@@ -29,6 +29,7 @@ type CodexProviderConfig = configschema.CodexProvider
 type KiloProviderConfig = configschema.KiloProvider
 type ProvidersConfig = configschema.Providers
 type TimeoutsConfig = configschema.Timeouts
+type LoggingConfig = configschema.Logging
 type Config = configschema.Config
 
 // legacyV0Config is used only for reading and migrating pre-V1 config files.

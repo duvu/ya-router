@@ -431,6 +431,8 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
+	closeLog := setupLogging(cfg.Logging)
+	defer closeLog()
 	initializeTimeouts(cfg)
 	if cfg.Providers.Codex.Enabled && ensureCodexModelMap(cfg) {
 		if err := saveConfig(cfg); err != nil {
@@ -469,8 +471,6 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 		_, _ = providerManager.Reconcile(shutdownContext, nil)
 		_ = runtimeManager.Close(shutdownContext)
 	}()
-	setupLogging()
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", managedModelsHandler(runtimeManager))
 	mux.HandleFunc("/v1/models/", managedModelsHandler(runtimeManager))

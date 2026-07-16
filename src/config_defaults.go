@@ -7,6 +7,12 @@ import (
 	"strings"
 )
 
+const (
+	defaultLogFilePath      = "logs/ya-router.log"
+	defaultLogFileSizeMiB   = 5
+	defaultRetainedLogFiles = 2
+)
+
 func migrateV0ToV1(v0 *legacyV0Config) *Config {
 	cfg := defaultConfig()
 	if v0.Port != 0 {
@@ -81,6 +87,7 @@ func defaultConfig() *Config {
 	cfg.Providers.Codex.Auth.Mode = "device_code"
 	cfg.Providers.Kilo.Enabled = false
 	cfg.Providers.Kilo.AllowAnonymous = true
+	setDefaultLogging(cfg)
 	setDefaultTimeouts(cfg)
 	return cfg
 }
@@ -109,7 +116,20 @@ func applyConfigDefaults(cfg *Config) {
 		cfg.Providers.Codex.AccountCooldownSeconds = 300
 	}
 	normalizeCodexAccounts(&cfg.Providers.Codex)
+	setDefaultLogging(cfg)
 	setDefaultTimeouts(cfg)
+}
+
+func setDefaultLogging(cfg *Config) {
+	if strings.TrimSpace(cfg.Logging.FilePath) == "" {
+		cfg.Logging.FilePath = defaultLogFilePath
+	}
+	if cfg.Logging.MaxFileSizeMiB <= 0 {
+		cfg.Logging.MaxFileSizeMiB = defaultLogFileSizeMiB
+	}
+	if cfg.Logging.RetainedFiles <= 0 {
+		cfg.Logging.RetainedFiles = defaultRetainedLogFiles
+	}
 }
 
 func defaultVirtualModels() map[string]VirtualModelConfig {

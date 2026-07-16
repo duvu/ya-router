@@ -136,11 +136,19 @@ type Timeouts struct {
 	IdleConnTimeout int `json:"idle_conn_timeout"`
 }
 
+// Logging controls the shared application log outputs and local retention.
+type Logging struct {
+	FilePath       string `json:"file_path"`
+	MaxFileSizeMiB int    `json:"max_file_size_mib"`
+	RetainedFiles  int    `json:"retained_files"`
+}
+
 // Config is the top-level application configuration (V1 schema).
 type Config struct {
 	Port          int       `json:"port"`
 	ConfigVersion int       `json:"config_version"`
 	EnablePprof   bool      `json:"enable_pprof"`
+	Logging       Logging   `json:"logging"`
 	Routing       Routing   `json:"routing"`
 	Providers     Providers `json:"providers"`
 	Timeouts      Timeouts  `json:"timeouts"`

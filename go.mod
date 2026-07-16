@@ -2,7 +2,10 @@ module github.com/duvu/ya-router
 
 go 1.22
 
-require github.com/charmbracelet/bubbletea v1.3.4
+require (
+	github.com/charmbracelet/bubbletea v1.3.4
+	gopkg.in/natefinch/lumberjack.v2 v2.0.0
+)
 
 require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect

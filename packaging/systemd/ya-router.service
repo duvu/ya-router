@@ -7,6 +7,7 @@ After=network-online.target
 Type=simple
 User=ya-router
 Group=ya-router
+WorkingDirectory=/var/lib/ya-router
 EnvironmentFile=-/etc/ya-router/ya-router.env
 Environment=YA_ROUTER_CONFIG_DIR=/var/lib/ya-router
 Environment=YA_ROUTER_CONFIG_PATH=/var/lib/ya-router/config.json
