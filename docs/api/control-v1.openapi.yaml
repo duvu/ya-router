@@ -404,8 +404,9 @@ paths:
     post:
       operationId: createAuthSession
       summary: Create a provider-neutral persistent authentication session
-      description: Creates lifecycle state only. Secret input and provider-specific
-        execution are delivered separately and raw secrets are rejected by this endpoint.
+      description: Starts a durable provider-specific authentication workflow.
+        API-key values are supplied only through the write-only secret resource;
+        raw secrets are rejected by this endpoint.
       security: *id002
       parameters:
       - *id003

@@ -80,6 +80,12 @@ func TestClientProfileResolutionPrecedence(t *testing.T) {
 	}
 }
 
+func TestClientSecretSetRequiresStdin(t *testing.T) {
+	if got := runClientSecretCommand("secret-set", []string{"--slot", "kilo/api_key"}); got != clientExitUsage {
+		t.Fatalf("exit code = %d, want %d", got, clientExitUsage)
+	}
+}
+
 // clientTestReadModel is a minimal control.ReadModel for the CLI transport test.
 type clientTestReadModel struct{}
 

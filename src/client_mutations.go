@@ -161,6 +161,7 @@ func renderMutationResult(result clientpkg.MutationResult) {
 		action = "no change"
 	}
 	fmt.Fprintf(w, "Outcome:\t%s\n", action)
+	fmt.Fprintf(w, "Runtime published:\t%t\n", result.RuntimePublished)
 	fmt.Fprintf(w, "Current revision:\t%d\n", result.CurrentRevision)
 	fmt.Fprintf(w, "Next revision:\t%d\n", result.NextRevision)
 	fmt.Fprintf(w, "Changed:\t%t\n", result.Changed)

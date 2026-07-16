@@ -54,6 +54,42 @@ func TestModelsEndpointExposesUmbrellaModel(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigExposesThreeProviderThienduRoute(t *testing.T) {
+	cfg := defaultConfig()
+	thiendu, ok := cfg.Routing.VirtualModels["thiendu"]
+	if !ok {
+		t.Fatal("default configuration does not define thiendu")
+	}
+	if thiendu.Strategy != "priority" {
+		t.Fatalf("thiendu strategy = %q", thiendu.Strategy)
+	}
+	want := []string{"github/gpt-5-mini", "codex/gpt-5.4-mini", "kilo/kilo-auto/free"}
+	if strings.Join(thiendu.Targets, ",") != strings.Join(want, ",") {
+		t.Fatalf("thiendu targets = %v, want %v", thiendu.Targets, want)
+	}
+}
+
+func TestModelsEndpointExposesDefaultThiendu(t *testing.T) {
+	registry := NewProviderRegistry()
+	cfg := defaultConfig()
+	handler := modelsHandler(registry, cfg)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var models ModelList
+	if err := json.NewDecoder(rec.Body).Decode(&models); err != nil {
+		t.Fatal(err)
+	}
+	for _, model := range models.Data {
+		if model.ID == "thiendu" && model.OwnedBy == "ya-router" {
+			return
+		}
+	}
+	t.Fatalf("thiendu was absent from models: %+v", models.Data)
+}
+
 // TestProxyUmbrellaRewritesBodyAndDispatchesOnce drives a full HTTP request
 // through the proxy handler and proves the outbound body model is rewritten to
 // the selected bare target and only the selected provider is called.
@@ -117,6 +153,104 @@ func TestProxyUmbrellaRewritesBodyAndDispatchesOnce(t *testing.T) {
 	}
 	if !strings.Contains(copilotBody, `"gpt-5-mini"`) || strings.Contains(copilotBody, "router/auto") {
 		t.Fatalf("outbound body not rewritten to bare target: %s", copilotBody)
+	}
+}
+
+func TestProxyThienduPreservesExternalModelIdentity(t *testing.T) {
+	registry := NewProviderRegistry()
+	registry.Register(&mockProvider{
+		id: ProviderCopilot, name: "Copilot", caps: []Capability{CapabilityChat},
+		health:    ProviderHealth{Authenticated: true},
+		lastKnown: []string{"gpt-5-mini"},
+		proxyFunc: func(_ context.Context, w http.ResponseWriter, _ *http.Request, _ []byte, _ Capability) error {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"chatcmpl-test","model":"gpt-5-mini","choices":[]}`))
+			return nil
+		},
+	})
+	cfg := defaultConfig()
+	handler := proxyHandler(registry, NewModelRouter(registry, cfg.Routing), cfg)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"thiendu","messages":[]}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Model != "thiendu" {
+		t.Fatalf("response model = %q, want thiendu", response.Model)
+	}
+}
+
+func TestProxyThienduStreamingPreservesExternalModelIdentity(t *testing.T) {
+	registry := NewProviderRegistry()
+	registry.Register(&mockProvider{
+		id: ProviderCopilot, name: "Copilot", caps: []Capability{CapabilityChat},
+		health:    ProviderHealth{Authenticated: true},
+		lastKnown: []string{"gpt-5-mini"},
+		proxyFunc: func(_ context.Context, w http.ResponseWriter, _ *http.Request, _ []byte, _ Capability) error {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"model\":\"gpt-5-mini\",\"choices\":[]}\n\ndata: [DONE]\n\n"))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			return nil
+		},
+	})
+	cfg := defaultConfig()
+	handler := proxyHandler(registry, NewModelRouter(registry, cfg.Routing), cfg)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"thiendu","stream":true,"messages":[]}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `"model":"thiendu"`) || strings.Contains(body, `"model":"gpt-5-mini"`) {
+		t.Fatalf("streamed model identity = %s", body)
+	}
+}
+
+func TestProxyUmbrellaCooldownOnlyAffectsLaterRequest(t *testing.T) {
+	var copilotCalls, codexCalls int
+	registry := NewProviderRegistry()
+	registry.Register(&mockProvider{
+		id: ProviderCopilot, name: "Copilot", caps: []Capability{CapabilityChat},
+		health:    ProviderHealth{Authenticated: true},
+		lastKnown: []string{"gpt-5-mini"},
+		proxyFunc: func(_ context.Context, w http.ResponseWriter, _ *http.Request, _ []byte, _ Capability) error {
+			copilotCalls++
+			w.WriteHeader(http.StatusTooManyRequests)
+			return nil
+		},
+	})
+	registry.Register(&mockProvider{
+		id: ProviderCodex, name: "Codex", caps: []Capability{CapabilityChat},
+		health:    ProviderHealth{Authenticated: true},
+		lastKnown: []string{"gpt-5.4-mini"},
+		proxyFunc: func(_ context.Context, w http.ResponseWriter, _ *http.Request, _ []byte, _ Capability) error {
+			codexCalls++
+			w.WriteHeader(http.StatusOK)
+			return nil
+		},
+	})
+	cfg := defaultConfig()
+	cfg.Routing.VirtualModels = map[string]VirtualModelConfig{
+		"thiendu": {Strategy: "priority", Targets: []string{"github/gpt-5-mini", "codex/gpt-5.4-mini"}},
+	}
+	handler := proxyHandler(registry, NewModelRouter(registry, cfg.Routing), cfg)
+
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"thiendu","messages":[]}`)))
+	if first.Code != http.StatusTooManyRequests || copilotCalls != 1 || codexCalls != 0 {
+		t.Fatalf("first request status=%d copilot=%d codex=%d", first.Code, copilotCalls, codexCalls)
+	}
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"thiendu","messages":[]}`)))
+	if second.Code != http.StatusOK || copilotCalls != 1 || codexCalls != 1 {
+		t.Fatalf("second request status=%d copilot=%d codex=%d", second.Code, copilotCalls, codexCalls)
 	}
 }
 

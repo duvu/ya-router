@@ -11,10 +11,14 @@ import (
 // TargetReadiness is the redacted readiness of one umbrella target for one
 // capability. It contains only configured target IDs and stable reason codes.
 type TargetReadiness struct {
-	Target   string              `json:"target"`
-	Index    int                 `json:"index"`
-	Routable bool                `json:"routable"`
-	Reason   availability.Reason `json:"reason"`
+	Target           string                      `json:"target"`
+	Index            int                         `json:"index"`
+	Routable         bool                        `json:"routable"`
+	Reason           availability.Reason         `json:"reason"`
+	CooldownUntil    int64                       `json:"cooldown_until,omitempty"`
+	CooldownReason   availability.CooldownReason `json:"cooldown_reason,omitempty"`
+	CatalogFetchedAt int64                       `json:"catalog_fetched_at,omitempty"`
+	CatalogStale     bool                        `json:"catalog_stale"`
 }
 
 // VirtualModelReadiness summarizes one umbrella model's current selection state.
@@ -57,6 +61,24 @@ func (r *Router) VirtualModelReadinessFor(capability provider.Capability, snapsh
 				result := snapshot.Evaluate(providerID, bare, capability)
 				reason = result.Reason
 				routable = result.Routable
+				cooldownUntil := int64(0)
+				if !result.CooldownUntil.IsZero() {
+					cooldownUntil = result.CooldownUntil.Unix()
+				}
+				catalogFetchedAt := int64(0)
+				if !result.CatalogFetchedAt.IsZero() {
+					catalogFetchedAt = result.CatalogFetchedAt.Unix()
+				}
+				summary.Targets = append(summary.Targets, TargetReadiness{
+					Target: target, Index: index, Routable: routable, Reason: reason,
+					CooldownUntil: cooldownUntil, CooldownReason: result.CooldownReason,
+					CatalogFetchedAt: catalogFetchedAt, CatalogStale: result.CatalogStale,
+				})
+				if routable && !summary.Active {
+					summary.Active = true
+					summary.SelectedTarget = target
+				}
+				continue
 			}
 			summary.Targets = append(summary.Targets, TargetReadiness{
 				Target:   target,

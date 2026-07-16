@@ -1,6 +1,11 @@
 package control
 
 import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	configschema "github.com/duvu/ya-router/internal/config"
@@ -116,5 +121,37 @@ func TestApplyMutationUnsupportedKind(t *testing.T) {
 func TestApplyMutationDefaultModelRequiresValue(t *testing.T) {
 	if _, err := ApplyMutation(baseConfig(), MutationRequest{Kind: MutationDefaultModel}); err == nil {
 		t.Fatal("expected empty default model rejection")
+	}
+}
+
+type recoveredMutationResult struct{}
+
+func (recoveredMutationResult) ErrorDetails() map[string]any {
+	return map[string]any{"current_revision": uint64(3), "runtime_published": false}
+}
+
+type failedMutationExecutor struct{}
+
+func (failedMutationExecutor) Execute(MutationRequest, string) (any, int, string, error) {
+	return recoveredMutationResult{}, http.StatusBadRequest, "runtime_reconcile_failed", errors.New("provider reload failed")
+}
+
+func TestMutationFailureIncludesRecoveredState(t *testing.T) {
+	api := newTestAPI(nil, "")
+	RegisterMutationRoutes(api, failedMutationExecutor{})
+	request := httptest.NewRequest(http.MethodPost, "/control/v1/config/mutations", strings.NewReader(`{"kind":"provider_enabled","expected_revision":1}`))
+	request.Header.Set(ClientVersionHeader, CurrentClientVersion)
+	request.Header.Set(IdempotencyKeyHeader, "recovered-mutation")
+	response := httptest.NewRecorder()
+	api.Handler(localAdmin()).ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	var envelope ErrorEnvelope
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error.Details["current_revision"] != float64(3) || envelope.Error.Details["runtime_published"] != false {
+		t.Fatalf("recovery details = %+v", envelope.Error.Details)
 	}
 }

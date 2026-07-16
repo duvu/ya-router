@@ -1,15 +1,16 @@
 # Control API foundation
 
 `ya-routerd` serves management traffic separately from the OpenAI-compatible
-data plane. The initial Control API exposes only discovery and negotiation:
+data plane. The Control API exposes discovery, redacted provider/account/model/
+config/routing state, durable operations, write-only secret posture, auth
+sessions, and revision-safe supported mutations:
 
 ```text
 GET /control/v1/meta
 ```
 
-Provider, model, operation, authentication, and configuration resources are
-added by the later managed-service roadmap issues. The current endpoint is the
-stable foundation for those resources.
+All resources remain version-negotiated and use the same private local socket
+by default.
 
 ## Local transport
 
@@ -125,7 +126,7 @@ All responses include `X-Request-ID`. Errors use a stable envelope:
 
 ## Idempotency framework
 
-Future mutation routes are registered as idempotent and require an
+Mutation and operation-creation routes are registered as idempotent and require an
 `Idempotency-Key` header. The service serializes concurrent duplicates,
 replays the first response for an identical payload, and returns `409` if the
 same key is reused with a different payload. Request bodies are bounded and a
@@ -147,6 +148,7 @@ The viewer role can inspect the complete redacted daemon read model:
 | `GET /control/v1/accounts` | Daemon-owned account IDs, labels, priority, and credential-source metadata without tokens or upstream account IDs |
 | `GET /control/v1/models` | Per-provider prefixed model catalogs with availability, freshness, and last-known-good refresh state |
 | `GET /control/v1/config` | Redacted desired/effective configuration, revision, digests, and restart-required paths |
+| `GET /control/v1/routing/thiendu` | Capability-specific configured candidates, selected target, stable skip reasons, cooldowns, and bounded counters |
 | `GET /control/v1/operations` | Stable polling collection; populated by the async-operation implementation |
 | `GET /control/v1/events?after=N` | Bounded lifecycle-event polling fallback |
 | `GET /control/v1/events/stream` | Resumable Server-Sent Events stream |
@@ -184,13 +186,21 @@ preserving routing precedence.
 
 ## The `ya` control client
 
-The installable `ya` binary is the scriptable client for the endpoints above. It
-speaks the local Unix socket by default (or HTTPS/mTLS via `--address`), works
-without a TTY, and supports `--json` on every command. Read commands: `meta`,
-`providers`, `accounts`, `models`, `config`, `operations`, `operation`,
-`events`, `secrets`. Mutation commands (require `--revision`, support
-`--dry-run`): `provider-enable`, `provider-disable`, `default-model`,
-`default-provider`, `allowed-models`, `model-map-set`, `model-map-delete`.
+The installable `ya` binary opens the keyboard-driven daemon dashboard when
+called without a subcommand. It speaks the local Unix socket by default (or
+HTTPS/mTLS via `--address`) and never owns daemon lifecycle. The dashboard
+shows daemon readiness, providers, `thiendu` routing/cooldowns, catalogs,
+operations, and lifecycle events; its palette can authenticate providers,
+write masked API keys, refresh catalogs, cancel auth operations, and apply
+revision-safe provider enable/disable changes.
+
+Scriptable commands work without a TTY and support `--json`: `meta`,
+`providers`, `accounts`, `models`, `config`, `routing`, `operations`,
+`operation`, `events`, and `secrets`. Mutation commands require `--revision`
+and support `--dry-run`: `provider-enable`, `provider-disable`,
+`default-model`, `default-provider`, `allowed-models`, `model-map-set`, and
+`model-map-delete`. `auth-start`, `auth-cancel`, `secret-set --stdin`, and
+`secret-delete` cover the corresponding write-only control paths.
 
 Mutations send a generated `Idempotency-Key` that is reused across retries, so a
 retried mutation is deduplicated by the daemon rather than applied twice. Exit

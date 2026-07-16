@@ -23,11 +23,15 @@ type Snapshot struct {
 	drainOnce sync.Once
 }
 
-func newSnapshot(generation uint64, config *configschema.Config, providers []provider.Provider) *Snapshot {
+func newSnapshot(generation uint64, config *configschema.Config, providers []provider.Provider, cooldownRegistries ...*routing.CooldownRegistry) *Snapshot {
 	effectiveConfig := configschema.Clone(config)
 	registry := provider.NewRegistry(providers...)
 	registry.Freeze()
-	router := routing.NewRouter(registry, effectiveConfig.Routing)
+	var cooldowns *routing.CooldownRegistry
+	if len(cooldownRegistries) > 0 {
+		cooldowns = cooldownRegistries[0]
+	}
+	router := routing.NewRouterWithCooldowns(registry, effectiveConfig.Routing, cooldowns)
 	router.SetGeneration(generation)
 	return &Snapshot{
 		generation: generation,

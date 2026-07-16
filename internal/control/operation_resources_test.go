@@ -35,6 +35,35 @@ func operationHandler(manager OperationManager, identity Identity) http.Handler 
 	return api.Handler(FixedAuthenticator(identity))
 }
 
+type recordingAuthSessionStarter struct {
+	records []operationpkg.Record
+}
+
+func (starter *recordingAuthSessionStarter) StartAuthSession(record operationpkg.Record) error {
+	starter.records = append(starter.records, record)
+	return nil
+}
+
+func TestAuthSessionCreationStartsDaemonWork(t *testing.T) {
+	now := time.Unix(1000, 0).UTC()
+	manager := openControlOperationManager(t, filepath.Join(t.TempDir(), "operations.json"), &now)
+	starter := &recordingAuthSessionStarter{}
+	api := NewAPI(APIOptions{})
+	RegisterOperationRoutes(api, manager, starter)
+	handler := api.Handler(FixedAuthenticator(Identity{Subject: "operator", Role: RoleOperator, Source: "test"}))
+
+	request := httptest.NewRequest(http.MethodPost, "/control/v1/auth-sessions", strings.NewReader(`{"provider_id":"kilo","method":"anonymous"}`))
+	request.Header.Set(IdempotencyKeyHeader, "start-auth-work")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	if len(starter.records) != 1 || starter.records[0].Kind != "auth_session" {
+		t.Fatalf("started records = %+v", starter.records)
+	}
+}
+
 func TestAuthSessionCreationIsPersistentAndIdempotent(t *testing.T) {
 	now := time.Unix(1000, 0).UTC()
 	path := filepath.Join(t.TempDir(), "operations.json")

@@ -13,9 +13,14 @@ import (
 	configschema "github.com/duvu/ya-router/internal/config"
 	providerpkg "github.com/duvu/ya-router/internal/provider"
 	runtimepkg "github.com/duvu/ya-router/internal/runtime"
+	secretpkg "github.com/duvu/ya-router/internal/secret"
 )
 
 func newProviderManager(config *Config, runtimeManager *runtimepkg.Manager) (*providerpkg.Manager, error) {
+	return newProviderManagerWithAuth(config, runtimeManager, nil)
+}
+
+func newProviderManagerWithAuth(config *Config, runtimeManager *runtimepkg.Manager, auth secretpkg.AuthController) (*providerpkg.Manager, error) {
 	health := providerpkg.NewHealthRegistry()
 	events := providerpkg.NewEventBus(256)
 	manager, err := providerpkg.NewManager(runtimeManager, health, events, providerpkg.ManagerOptions{
@@ -25,7 +30,7 @@ func newProviderManager(config *Config, runtimeManager *runtimepkg.Manager) (*pr
 	if err != nil {
 		return nil, err
 	}
-	for _, factory := range compiledProviderFactories() {
+	for _, factory := range compiledProviderFactoriesWithAuth(auth) {
 		if err := manager.RegisterFactory(factory); err != nil {
 			return nil, err
 		}
@@ -45,6 +50,10 @@ func providerDrainTimeout(config *Config) time.Duration {
 }
 
 func compiledProviderFactories() []providerpkg.Factory {
+	return compiledProviderFactoriesWithAuth(nil)
+}
+
+func compiledProviderFactoriesWithAuth(auth secretpkg.AuthController) []providerpkg.Factory {
 	return []providerpkg.Factory{
 		providerpkg.FactoryFuncs{
 			ProviderDescriptor: providerpkg.Descriptor{
@@ -65,7 +74,7 @@ func compiledProviderFactories() []providerpkg.Factory {
 			ValidateConfigFunc: validateRuntimeConfig,
 			BuildFunc: func(_ context.Context, value any) (Provider, error) {
 				config := configschema.Clone(value.(*Config))
-				return NewCopilotProvider(config), nil
+				return NewCopilotProviderWithAuth(config, auth), nil
 			},
 			ValidateFunc: validateBuiltProvider,
 		},
@@ -90,7 +99,7 @@ func compiledProviderFactories() []providerpkg.Factory {
 			ValidateConfigFunc: validateRuntimeConfig,
 			BuildFunc: func(_ context.Context, value any) (Provider, error) {
 				config := configschema.Clone(value.(*Config))
-				return NewCodexProvider(config), nil
+				return NewCodexProviderWithAuth(config, auth), nil
 			},
 			ValidateFunc: validateBuiltProvider,
 		},
@@ -113,7 +122,7 @@ func compiledProviderFactories() []providerpkg.Factory {
 			ValidateConfigFunc: validateRuntimeConfig,
 			BuildFunc: func(_ context.Context, value any) (Provider, error) {
 				config := configschema.Clone(value.(*Config))
-				registered := NewKiloProvider(config)
+				registered := NewKiloProviderWithAuth(config, auth)
 				if _, err := registered.baseURL(); err != nil {
 					return nil, err
 				}

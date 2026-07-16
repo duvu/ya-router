@@ -31,7 +31,11 @@ func RegisterMutationRoutes(api *API, executor MutationExecutor) {
 		result, status, code, err := executor.Execute(mutation, identity.Subject)
 		if err != nil {
 			retryable := status == http.StatusConflict
-			writeError(writer, request, status, code, err.Error(), retryable, nil)
+			var details map[string]any
+			if detailed, ok := result.(interface{ ErrorDetails() map[string]any }); ok {
+				details = detailed.ErrorDetails()
+			}
+			writeError(writer, request, status, code, err.Error(), retryable, details)
 			return
 		}
 		writeJSON(writer, http.StatusOK, result)

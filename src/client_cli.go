@@ -50,8 +50,7 @@ const (
 
 func runClientCLI(args []string) int {
 	if len(args) < 2 {
-		printClientUsage()
-		return clientExitOK
+		return clientDashboardRunner(clientCommonFlags{})
 	}
 	switch args[1] {
 	case "help", "--help", "-h":
@@ -66,11 +65,17 @@ func runClientCLI(args []string) int {
 	rest := args[2:]
 
 	switch command {
-	case "meta", "providers", "accounts", "models", "config", "operations", "operation", "events", "secrets":
+	case "dashboard":
+		return runClientDashboardCommand(rest)
+	case "meta", "providers", "accounts", "models", "config", "routing", "operations", "operation", "events", "secrets":
 		return runClientReadCommand(command, rest)
 	case "provider-enable", "provider-disable", "default-model", "default-provider",
 		"allowed-models", "model-map-set", "model-map-delete":
 		return runClientMutationCommand(command, rest)
+	case "auth-start", "auth-cancel":
+		return runClientAuthCommand(command, rest)
+	case "secret-set", "secret-delete":
+		return runClientSecretCommand(command, rest)
 	default:
 		fmt.Fprintf(os.Stderr, "ya: unknown command %q\n", command)
 		printClientUsage()
@@ -182,6 +187,8 @@ func dispatchClientRead(ctx context.Context, cl *clientpkg.Client, command strin
 		return cl.Models(ctx, common.refresh)
 	case "config":
 		return cl.Configuration(ctx)
+	case "routing":
+		return cl.RoutingStatus(ctx)
 	case "operations":
 		return cl.Operations(ctx)
 	case "operation":
@@ -290,14 +297,16 @@ func emitJSON(result any) int {
 func printClientUsage() {
 	fmt.Println("ya — ya-router control client")
 	fmt.Println()
-	fmt.Println("Usage: ya <command> [flags]")
+	fmt.Println("Usage: ya [dashboard] [flags] | ya <command> [flags]")
 	fmt.Println()
 	fmt.Println("Read commands:")
+	fmt.Println("  dashboard    Open the keyboard-driven daemon dashboard (default)")
 	fmt.Println("  meta         Show daemon control metadata and version compatibility")
 	fmt.Println("  providers    List providers and health")
 	fmt.Println("  accounts     List provider accounts (redacted credential posture)")
 	fmt.Println("  models       Show the model catalog (--refresh to re-fetch)")
 	fmt.Println("  config       Show the revisioned configuration")
+	fmt.Println("  routing      Show `thiendu` automatic-routing status")
 	fmt.Println("  operations   List async operations")
 	fmt.Println("  operation    Show one operation (--id)")
 	fmt.Println("  events       List lifecycle events (--after cursor)")
@@ -311,6 +320,10 @@ func printClientUsage() {
 	fmt.Println("  allowed-models    --provider ID --models a,b,c")
 	fmt.Println("  model-map-set     --model ID --provider ID [--upstream-model ID]")
 	fmt.Println("  model-map-delete  --model ID")
+	fmt.Println("  secret-set        --slot ID --stdin")
+	fmt.Println("  secret-delete     --slot ID")
+	fmt.Println("  auth-start        --provider ID --method ID [--account ID]")
+	fmt.Println("  auth-cancel       --id ID")
 	fmt.Println()
 	fmt.Println("Common flags:")
 	fmt.Println("  --json             Machine-readable JSON output")

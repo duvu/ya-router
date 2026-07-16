@@ -17,6 +17,7 @@ import (
 	operationpkg "github.com/duvu/ya-router/internal/operation"
 	providerpkg "github.com/duvu/ya-router/internal/provider"
 	runtimepkg "github.com/duvu/ya-router/internal/runtime"
+	secretpkg "github.com/duvu/ya-router/internal/secret"
 )
 
 const (
@@ -44,6 +45,10 @@ type managedControlRuntime struct {
 }
 
 func newManagedControlRuntime(config *Config, runtimeManager *runtimepkg.Manager, providerManager *providerpkg.Manager) (*managedControlRuntime, error) {
+	return newManagedControlRuntimeWithSecretStore(config, runtimeManager, providerManager, nil)
+}
+
+func newManagedControlRuntimeWithSecretStore(config *Config, runtimeManager *runtimepkg.Manager, providerManager *providerpkg.Manager, secretStore *secretpkg.MemoryStore) (*managedControlRuntime, error) {
 	listenerConfig, tokens, subjectRoles, err := configuredControlListener(config)
 	if err != nil {
 		return nil, err
@@ -110,9 +115,16 @@ func newManagedControlRuntime(config *Config, runtimeManager *runtimepkg.Manager
 			}
 		},
 	})
-	controlpkg.RegisterReadRoutes(api, newControlReadModel(runtimeManager, providerManager, operationManager))
-	controlpkg.RegisterOperationRoutes(api, operationManager)
-	secretStore := newDaemonSecretStore(config, audit)
+	if secretStore == nil {
+		secretStore, err = newDaemonSecretStore(config, audit)
+		if err != nil {
+			return nil, err
+		}
+	}
+	readModel := newControlReadModel(runtimeManager, providerManager, operationManager, secretStore)
+	controlpkg.RegisterReadRoutes(api, readModel)
+	controlpkg.RegisterRoutingStatusRoutes(api, readModel)
+	controlpkg.RegisterOperationRoutes(api, operationManager, authSessionRunner{operations: operationManager, reloader: providerManager, secrets: secretStore})
 	controlpkg.RegisterSecretRoutes(api, secretStore)
 	controlpkg.RegisterMutationRoutes(api, mutationExecutor{reloader: providerManager})
 	localIdentity := controlpkg.Identity{Subject: "local:unix-socket", Role: controlpkg.RoleAdmin, Source: "unix_socket"}

@@ -2,6 +2,7 @@ package secret
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -86,6 +87,32 @@ func TestManagedSetRotateDelete(t *testing.T) {
 	}
 	if len(events) != 3 {
 		t.Fatalf("expected 3 audit events, got %d", len(events))
+	}
+}
+
+func TestFileStorePersistsManagedSecretsWithoutPersistingReadOnlySources(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	store, err := OpenFileStore(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RegisterReadOnly("codex/api_key", "environment-value", SourceEnvironment); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Set("operator", "kilo/api_key", "managed-value"); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenFileStore(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, source, ok := reopened.Resolve("kilo/api_key")
+	if !ok || value != "managed-value" || source != SourceManaged {
+		t.Fatalf("managed secret after restart = %q, %s, %t", value, source, ok)
+	}
+	if _, _, ok := reopened.Resolve("codex/api_key"); ok {
+		t.Fatal("read-only source must not be persisted")
 	}
 }
 

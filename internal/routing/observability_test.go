@@ -89,8 +89,8 @@ func TestVirtualModelReadinessRedacted(t *testing.T) {
 	router.SetGeneration(4)
 
 	snap := availability.NewSnapshot(4, time.Unix(2000, 0), []availability.ProviderView{
-		{ID: provider.Copilot, Ready: false, Capabilities: []provider.Capability{provider.CapabilityChat}, CatalogPresent: true, CatalogModels: []string{"gpt-5-mini"}},
-		{ID: provider.Codex, Ready: true, Capabilities: []provider.Capability{provider.CapabilityChat}, CatalogPresent: true, CatalogModels: []string{"gpt-5.4-mini"}},
+		{ID: provider.Copilot, Ready: false, Capabilities: []provider.Capability{provider.CapabilityChat}, CatalogPresent: true, CatalogFetchedAt: time.Unix(1000, 0), CatalogModels: []string{"gpt-5-mini"}},
+		{ID: provider.Codex, Ready: true, Capabilities: []provider.Capability{provider.CapabilityChat}, CatalogPresent: true, CatalogFetchedAt: time.Unix(1000, 0), CatalogModels: []string{"gpt-5.4-mini"}},
 	})
 
 	summaries := router.VirtualModelReadinessFor(provider.CapabilityChat, snap)
@@ -109,6 +109,9 @@ func TestVirtualModelReadinessRedacted(t *testing.T) {
 	}
 	if summary.Targets[0].Reason != availability.ReasonProviderNotReady {
 		t.Fatalf("first target reason = %q", summary.Targets[0].Reason)
+	}
+	if summary.Targets[1].CatalogFetchedAt != 1000 || summary.Targets[1].CatalogStale {
+		t.Fatalf("catalog posture = %+v", summary.Targets[1])
 	}
 	// Reason codes must be one of the known stable set (no upstream strings).
 	for _, tr := range summary.Targets {
