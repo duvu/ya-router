@@ -139,6 +139,29 @@ Validation rules (enforced at config load, not request time):
 
 Umbrella IDs are added to the routing resolution order below, after explicit prefixes and before catalog discovery. See [Umbrella Model Routing architecture](architecture/umbrella-model-routing.md) for the full contract.
 
+### `claude_aliases`
+
+`claude_aliases` is a separate Claude Code discovery projection. Each key must
+begin with `claude` or `anthropic`; each value is a canonical provider-prefixed
+model that already appears in the Responses-capable catalog. It does not change
+the OpenAI model ID, routing precedence, allowlists, or provider credentials.
+
+```json
+{
+  "routing": {
+    "claude_aliases": {
+      "claude-ya-codex-gpt-5-4": "codex/gpt-5.4"
+    }
+  }
+}
+```
+
+The configured alias is added to `GET /v1/models` only while its target is
+discoverable and supports native Responses. Claude Code sends the alias to
+`POST /v1/messages`; ya-router resolves the configured target exactly once.
+See [Anthropic and Claude Code compatibility](ANTHROPIC_COMPATIBILITY.md) for
+the protocol contract.
+
 ## GitHub Copilot provider
 
 ```json

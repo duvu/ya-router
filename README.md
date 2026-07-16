@@ -63,52 +63,14 @@ The repository builds three binaries:
 
 | Binary | Purpose |
 |---|---|
-| `ya-router` | Compatibility CLI/server with direct `auth`, `models`, `status`, and `run` commands |
-| `ya-routerd` | Long-running managed service |
-| `ya` | Keyboard-driven dashboard and scriptable Control API client |
-
-## Provider capabilities
-
-| Surface | GitHub Copilot | Codex API-key | Codex ChatGPT | Kilo |
-|---|---|---|---|---|
-| Chat Completions JSON/SSE | Supported | Supported | Supported through Responses translation | Supported |
-| Native Responses JSON/SSE | Not declared | Supported | Supported | Supported |
-| Embeddings | Supported | Supported | Not declared | Not declared |
-| Authentication | GitHub device code | `OPENAI_API_KEY` or write-only input | ChatGPT device code / read-only official store import | Anonymous/free or API key |
-
-A provider that does not declare an endpoint capability is skipped before dispatch for automatic routes.
-
-## Automatic `thiendu` routing
-
-`thiendu` is the default public virtual model. Its targets are ordinary configuration, not a separate hard-coded router implementation.
-
-Default configuration:
-
-```json
-{
-  "routing": {
-    "virtual_models": {
-      "thiendu": {
-        "strategy": "priority",
-        "targets": [
-          "github/gpt-5-mini",
-          "codex/gpt-5.4-mini",
-          "kilo/kilo-auto/free"
-        ]
-      }
-    }
-  }
-}
-```
-
-Selection considers:
-
-- provider registration and enablement;
-- authentication/readiness;
-- endpoint capability;
-- configured model allowlists;
-- last-known-good provider catalogs and freshness;
-- bounded target cooldown after rate limits or transient failures.
+| `GET /v1/models` | Aggregated, provider-prefixed model catalog |
+| `POST /v1/chat/completions` | Chat Completions compatibility API |
+| `POST /v1/responses` | Native Responses API path |
+| `POST /v1/messages` | Anthropic Messages facade for Claude Code |
+| `POST /v1/embeddings` | Embeddings through providers that support them |
+| `GET /health` or `/health/live` | Process liveness |
+| `GET /health/ready` | Readiness; returns `503` if no provider is authenticated |
+| `GET /health/providers` | Redacted provider health and capabilities |
 
 Resolution order is:
 
@@ -132,7 +94,15 @@ Selection happens before dispatch and remains pinned for the complete request. A
 - Secret values are accepted through environment variables, stdin, or masked TUI input; they are never returned by the Control API.
 - Prompt, completion, credential, and raw upstream error bodies are excluded from routing diagnostics.
 
-## Build on Ubuntu
+## Claude Code gateway
+
+Claude Code can use the Anthropic Messages facade through `ANTHROPIC_BASE_URL`.
+Configure an explicit `claude-*` alias for a Responses-capable canonical model,
+then point Claude Code at the local gateway. The full request/streaming contract,
+supported content blocks, capability limits, and troubleshooting guidance are in
+[Anthropic and Claude Code compatibility](docs/ANTHROPIC_COMPATIBILITY.md).
+
+## Build and validate
 
 ### Requirements
 
