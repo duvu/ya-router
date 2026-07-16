@@ -480,6 +480,15 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 	mux.HandleFunc("/v1/chat/completions/", managedProxyHandler(runtimeManager))
 	mux.HandleFunc("/v1/responses", managedProxyHandler(runtimeManager))
 	mux.HandleFunc("/v1/responses/", managedProxyHandler(runtimeManager))
+	mux.HandleFunc("/v1/messages", managedAnthropicHandler(runtimeManager))
+	mux.HandleFunc("/v1/messages/", managedAnthropicHandler(runtimeManager))
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	})
 	mux.HandleFunc("/health", managedHealthHandler(providerManager, runtimeManager))
 	mux.HandleFunc("/health/", managedHealthHandler(providerManager, runtimeManager))
 	if cfg.EnablePprof {
@@ -513,6 +522,7 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 	fmt.Println("  /v1/models              → aggregated from all providers")
 	fmt.Println("  /v1/chat/completions    → Chat Completions compatibility")
 	fmt.Println("  /v1/responses           → native Responses API")
+	fmt.Println("  /v1/messages            → Anthropic Messages compatibility")
 	fmt.Println("  /v1/embeddings          → API-key-capable providers only")
 	fmt.Printf("Starting local control API on unix://%s\n", controlRuntime.unixSocket)
 	if controlRuntime.remoteAddress != "" {

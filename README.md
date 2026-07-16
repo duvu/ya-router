@@ -30,6 +30,7 @@ ChatGPT-backed Codex uses a first-party-style OAuth/device flow and the ChatGPT 
 | `GET /v1/models` | Aggregated, provider-prefixed model catalog |
 | `POST /v1/chat/completions` | Chat Completions compatibility API |
 | `POST /v1/responses` | Native Responses API path |
+| `POST /v1/messages` | Anthropic Messages facade for Claude Code |
 | `POST /v1/embeddings` | Embeddings through providers that support them |
 | `GET /health` or `/health/live` | Process liveness |
 | `GET /health/ready` | Readiness; returns `503` if no provider is authenticated |
@@ -38,6 +39,14 @@ ChatGPT-backed Codex uses a first-party-style OAuth/device flow and the ChatGPT 
 ChatGPT-authenticated Codex supports chat and native Responses. Embeddings require OpenAI Platform API-key mode; the router fails explicitly rather than sending a ChatGPT token to a Platform endpoint.
 
 Kilo Gateway supports Chat Completions and native Responses passthrough. Its public model catalog is discovered dynamically. Without `KILO_API_KEY`, ya-router exposes only anonymous/free Kilo models.
+
+## Claude Code gateway
+
+Claude Code can use the Anthropic Messages facade through `ANTHROPIC_BASE_URL`.
+Configure an explicit `claude-*` alias for a Responses-capable canonical model,
+then point Claude Code at the local gateway. The full request/streaming contract,
+supported content blocks, capability limits, and troubleshooting guidance are in
+[Anthropic and Claude Code compatibility](docs/ANTHROPIC_COMPATIBILITY.md).
 
 ## Build and validate
 
