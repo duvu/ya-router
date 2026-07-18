@@ -68,7 +68,7 @@ The repository builds three binaries:
 
 | Binary | Purpose |
 |---|---|
-| `GET /v1/models` | Aggregated, provider-prefixed model catalog |
+| `GET /v1/models` | Model catalog; by default only `thiendu` and required compatibility aliases (set `routing.expose_internal_models: true` to also list provider-prefixed catalog entries) |
 | `POST /v1/chat/completions` | Chat Completions compatibility API |
 | `POST /v1/responses` | Native Responses API path |
 | `POST /v1/messages` | Anthropic Messages facade for Claude Code |

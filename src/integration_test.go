@@ -55,6 +55,7 @@ func TestModelsEndpointConsistency(t *testing.T) {
 	})
 
 	cfg := defaultConfig()
+	cfg.Routing.ExposeInternalModels = true
 	cfg.Providers.Copilot.AllowedModels = []string{
 		"gpt-4", "gpt-4.1", "gpt-5-mini",
 	}
@@ -117,6 +118,7 @@ func TestModelsEndpointAggregatesMultipleProviders(t *testing.T) {
 
 	cfg := defaultConfig()
 	cfg.Routing.VirtualModels = map[string]VirtualModelConfig{}
+	cfg.Routing.ExposeInternalModels = true
 	handler := modelsHandler(registry, cfg)
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
@@ -439,6 +441,7 @@ func TestModelsEndpointKeepsModelMapVisibleWhenProviderUnavailable(t *testing.T)
 
 	cfg := defaultConfig()
 	cfg.Routing.VirtualModels = map[string]VirtualModelConfig{}
+	cfg.Routing.ExposeInternalModels = true
 	cfg.Routing.ModelMap = map[string]ModelMapEntry{
 		"gpt-5.4": {Provider: string(ProviderCodex)},
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -300,6 +301,134 @@ func TestProxyUmbrellaNoActiveTargetReturns503(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("provider calls = %d, want 0", calls)
+	}
+}
+
+// TestModelsEndpointHidesInternalModelsByDefault proves a fresh managed
+// config's /v1/models discovery lists only thiendu (and required
+// compatibility aliases), not provider-prefixed catalog entries or model_map
+// aliases (issue #87).
+func TestModelsEndpointHidesInternalModelsByDefault(t *testing.T) {
+	registry := NewProviderRegistry()
+	registry.Register(&mockProvider{
+		id:     ProviderCopilot,
+		name:   "Copilot",
+		caps:   []Capability{CapabilityChat},
+		health: ProviderHealth{Authenticated: true},
+		models: &ModelList{Object: "list", Data: []Model{{ID: "gpt-5-mini", Object: "model"}}},
+	})
+	cfg := defaultConfig()
+	if cfg.Routing.ExposeInternalModels {
+		t.Fatal("fresh managed config must default expose_internal_models to false")
+	}
+	cfg.Routing.ModelMap = map[string]ModelMapEntry{
+		"research": {Provider: string(ProviderCopilot), UpstreamModel: "gpt-5-mini"},
+	}
+
+	handler := modelsHandler(registry, cfg)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+
+	var ml ModelList
+	if err := json.NewDecoder(rec.Body).Decode(&ml); err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]bool{}
+	for _, m := range ml.Data {
+		ids[m.ID] = true
+	}
+	if !ids["thiendu"] {
+		t.Fatalf("thiendu missing from hidden-discovery response: %v", ids)
+	}
+	if ids["github/gpt-5-mini"] || ids["research"] {
+		t.Fatalf("internal models leaked into hidden discovery: %v", ids)
+	}
+}
+
+// TestModelsEndpointExposesInternalModelsWhenEnabled proves setting
+// expose_internal_models=true restores full provider-prefixed and model_map
+// discovery.
+func TestModelsEndpointExposesInternalModelsWhenEnabled(t *testing.T) {
+	registry := NewProviderRegistry()
+	registry.Register(&mockProvider{
+		id:     ProviderCopilot,
+		name:   "Copilot",
+		caps:   []Capability{CapabilityChat},
+		health: ProviderHealth{Authenticated: true},
+		models: &ModelList{Object: "list", Data: []Model{{ID: "gpt-5-mini", Object: "model"}}},
+	})
+	cfg := defaultConfig()
+	cfg.Routing.ExposeInternalModels = true
+
+	handler := modelsHandler(registry, cfg)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+
+	var ml ModelList
+	if err := json.NewDecoder(rec.Body).Decode(&ml); err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]bool{}
+	for _, m := range ml.Data {
+		ids[m.ID] = true
+	}
+	if !ids["thiendu"] || !ids["github/gpt-5-mini"] {
+		t.Fatalf("expected both thiendu and github/gpt-5-mini visible, got %v", ids)
+	}
+}
+
+// TestModelsEndpointHiddenDiscoveryStillResolvesExplicitProviderRoute proves
+// hiding a model from /v1/models discovery does not stop it from resolving:
+// only normal discovery is affected, not explicit provider-prefixed routing.
+func TestModelsEndpointHiddenDiscoveryStillResolvesExplicitProviderRoute(t *testing.T) {
+	registry := NewProviderRegistry()
+	registry.Register(&mockProvider{
+		id: ProviderCopilot, name: "Copilot", caps: []Capability{CapabilityChat},
+		health:    ProviderHealth{Authenticated: true},
+		lastKnown: []string{"gpt-5-mini"},
+		models:    &ModelList{Object: "list", Data: []Model{{ID: "gpt-5-mini", Object: "model"}}},
+		proxyFunc: func(_ context.Context, w http.ResponseWriter, _ *http.Request, _ []byte, _ Capability) error {
+			w.WriteHeader(http.StatusOK)
+			return nil
+		},
+	})
+	cfg := defaultConfig()
+	if cfg.Routing.ExposeInternalModels {
+		t.Fatal("expected hidden discovery by default")
+	}
+	router := NewModelRouter(registry, cfg.Routing)
+	handler := proxyHandler(registry, router, cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"github/gpt-5-mini","messages":[]}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("explicit provider-prefixed route failed despite hidden discovery: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestUpgradedConfigPreservesExistingDiscoveryBehavior proves a pre-#87 saved
+// config (with no explicit expose_internal_models field) keeps showing every
+// model on load, matching its behavior before the setting existed.
+func TestUpgradedConfigPreservesExistingDiscoveryBehavior(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := tempDir + "/config.json"
+	raw := `{
+		"port": 7071,
+		"config_version": 1,
+		"routing": {"default_model": "gpt-5-mini", "default_provider": "copilot"},
+		"providers": {"copilot": {"enabled": true, "auth": {"mode": "device_code"}, "allowed_models": []}}
+	}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadConfigFromPath(configPath)
+	if err != nil {
+		t.Fatalf("loadConfigFromPath: %v", err)
+	}
+	if !cfg.Routing.ExposeInternalModels {
+		t.Fatal("pre-existing config without expose_internal_models must keep showing internal models on upgrade")
 	}
 }
 

@@ -465,7 +465,9 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 		}
 	}
 	providerManager.RefreshHealth(ctx)
+	stopCatalogRefresher := startCatalogRefresher(ctx, providerManager.ActiveProviders)
 	defer func() {
+		stopCatalogRefresher()
 		shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_, _ = providerManager.Reconcile(shutdownContext, nil)

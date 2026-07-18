@@ -19,6 +19,7 @@ func TestModelsHandler_exposesDiscoverableClaudeAlias(t *testing.T) {
 	})
 	cfg := defaultConfig()
 	cfg.Routing.VirtualModels = nil
+	cfg.Routing.ExposeInternalModels = true
 	cfg.Routing.ClaudeAliases = map[string]string{"claude-ya-codex-gpt-5-4": "codex/gpt-5.4"}
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/v1/models?limit=1000", nil)

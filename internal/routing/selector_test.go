@@ -110,7 +110,10 @@ func TestSelectPriorityCapabilityMismatch(t *testing.T) {
 	}
 }
 
-func TestSelectPriorityStaleCatalogSkipped(t *testing.T) {
+// TestSelectPriorityStaleCatalogStillRoutable proves crossing the catalog
+// refresh TTL does not remove an otherwise healthy target: a stale-but-present
+// last-known-good catalog remains selectable (see issue #93).
+func TestSelectPriorityStaleCatalogStillRoutable(t *testing.T) {
 	snap := availability.NewSnapshot(9, time.Unix(2000, 0), []availability.ProviderView{{
 		ID:             provider.Copilot,
 		Ready:          true,
@@ -119,13 +122,12 @@ func TestSelectPriorityStaleCatalogSkipped(t *testing.T) {
 		CatalogStale:   true,
 		CatalogModels:  []string{"gpt-5-mini"},
 	}})
-	_, err := SelectPriorityTarget("router/auto", priorityVM("github/gpt-5-mini"), provider.CapabilityChat, snap)
-	var noTarget *NoActiveTargetError
-	if !errors.As(err, &noTarget) {
-		t.Fatalf("expected NoActiveTargetError, got %v", err)
+	decision, err := SelectPriorityTarget("router/auto", priorityVM("github/gpt-5-mini"), provider.CapabilityChat, snap)
+	if err != nil {
+		t.Fatalf("stale catalog made target unroutable: %v", err)
 	}
-	if noTarget.Skipped[0].Reason != availability.ReasonCatalogStale {
-		t.Fatalf("reason = %q, want catalog_stale", noTarget.Skipped[0].Reason)
+	if decision.SelectedTarget != "github/gpt-5-mini" {
+		t.Fatalf("selected target = %q", decision.SelectedTarget)
 	}
 }
 

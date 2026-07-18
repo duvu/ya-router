@@ -17,7 +17,7 @@ func logUmbrellaSelection(decision *routingpkg.SelectionDecision, finalProvider 
 	if decision == nil {
 		return
 	}
-	log.Printf("[umbrella] decision virtual_model=%q strategy=%q selected_target=%q target_index=%d provider=%s generation=%d catalog_fetched_at=%d skipped=[%s]",
+	log.Printf("[umbrella] decision virtual_model=%q strategy=%q selected_target=%q target_index=%d provider=%s generation=%d catalog_fetched_at=%d catalog_stale=%t skipped=[%s]",
 		decision.VirtualModel,
 		decision.Strategy,
 		decision.SelectedTarget,
@@ -25,6 +25,7 @@ func logUmbrellaSelection(decision *routingpkg.SelectionDecision, finalProvider 
 		finalProvider,
 		decision.Generation,
 		decision.CatalogFetchedAt,
+		decision.CatalogStale,
 		formatSkipped(decision.Skipped),
 	)
 }

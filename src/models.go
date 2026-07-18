@@ -100,11 +100,17 @@ func modelsHandler(registry *ProviderRegistry, cfg *Config) http.HandlerFunc {
 		}
 
 		seen := make(map[string]bool)
-		var allModels []Model
+		var internalModels []Model // provider-prefixed catalog + model_map entries
+		var publicModels []Model   // always shown regardless of expose_internal_models
 
 		// 1. Collect models from each provider's upstream API and apply prefix.
 		//    Call EnsureAuthenticated first to give providers a chance
-		//    to refresh expired tokens before we check Health.
+		//    to refresh expired tokens before we check Health. These entries
+		//    are always resolved (so Claude alias discovery in step 4 still
+		//    works) but are only included in the response below when
+		//    expose_internal_models is set; explicit provider-prefixed/
+		//    model_map requests keep resolving either way (see
+		//    internal/routing.Router.Resolve).
 		for _, p := range registry.All() {
 			if err := p.EnsureAuthenticated(ctx); err != nil {
 				log.Printf("modelsHandler: provider %s auth: %v", p.ID(), err)
@@ -124,7 +130,7 @@ func modelsHandler(registry *ProviderRegistry, cfg *Config) http.HandlerFunc {
 					prefixedID := AddModelPrefix(p.ID(), m.ID)
 					if !seen[prefixedID] {
 						seen[prefixedID] = true
-						allModels = append(allModels, Model{
+						internalModels = append(internalModels, Model{
 							ID:      prefixedID,
 							Object:  m.Object,
 							Created: m.Created,
@@ -141,7 +147,7 @@ func modelsHandler(registry *ProviderRegistry, cfg *Config) http.HandlerFunc {
 			if !seen[modelID] {
 				seen[modelID] = true
 				ownedBy := ProviderOwnedBy(ProviderID(entry.Provider))
-				allModels = append(allModels, Model{
+				internalModels = append(internalModels, Model{
 					ID:      modelID,
 					Object:  "model",
 					Created: time.Now().Unix(),
@@ -156,7 +162,7 @@ func modelsHandler(registry *ProviderRegistry, cfg *Config) http.HandlerFunc {
 		for modelID := range cfg.Routing.VirtualModels {
 			if !seen[modelID] {
 				seen[modelID] = true
-				allModels = append(allModels, Model{
+				publicModels = append(publicModels, Model{
 					ID:      modelID,
 					Object:  "model",
 					Created: time.Now().Unix(),
@@ -167,7 +173,12 @@ func modelsHandler(registry *ProviderRegistry, cfg *Config) http.HandlerFunc {
 
 		for _, alias := range discoverClaudeAliases(registry, cfg.Routing.ClaudeAliases, seen) {
 			seen[alias.ID] = true
-			allModels = append(allModels, alias)
+			publicModels = append(publicModels, alias)
+		}
+
+		allModels := publicModels
+		if cfg.Routing.ExposeInternalModels {
+			allModels = append(append([]Model(nil), internalModels...), publicModels...)
 		}
 
 		resp := &ModelList{Object: "list", Data: allModels}

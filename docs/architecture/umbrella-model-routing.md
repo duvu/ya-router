@@ -136,11 +136,10 @@ A target is active for a request capability only when all conditions are satisfi
 2. The provider supports the requested capability.
 3. The provider health snapshot is `ready`.
 4. The last-known-good model catalog includes the target's bare model ID.
-5. The catalog state is accepted by the configured freshness policy.
-6. Existing provider allowlist, entitlement, and anonymous/free rules permit the target.
-7. The target is not disabled by configuration.
+5. Existing provider allowlist, entitlement, and anonymous/free rules permit the target.
+6. The target is not disabled by configuration.
 
-The first release is conservative: degraded providers and unacceptable stale catalogs are skipped unless a later accepted configuration contract explicitly permits them.
+A catalog that is present but older than the refresh TTL (`catalog_stale`) does not, by itself, remove a target from selection: a missing catalog still fails closed, but a stale one remains routable so a slow or failed background refresh cannot outage an otherwise healthy target (see issue #93). The daemon runs one background refresh loop per provider at half the catalog TTL to keep catalogs fresh under normal operation; staleness is still reported for diagnostics even when it does not block routing.
 
 ## 9. Availability snapshots
 
@@ -153,7 +152,7 @@ Umbrella selection must not trigger network calls. The request hot path reads an
 - catalog fetched timestamp and stale state;
 - stable target rejection reason codes.
 
-Catalog refresh remains provider/cache owned. A refresh failure retains last-known-good data but marks its freshness state. Readers never observe a partially refreshed catalog.
+Catalog refresh is owned by a daemon-level background loop that reuses each provider's existing single-flight `ModelCache`; it does not depend on client traffic or dashboard/`/v1/models` calls. A refresh failure retains last-known-good data but marks its freshness state. Readers never observe a partially refreshed catalog.
 
 Recommended reason codes:
 

@@ -184,6 +184,63 @@ func TestResolveUmbrellaReselectionAfterStateChange(t *testing.T) {
 	}
 }
 
+// TestResolveUmbrellaSurvivesCatalogTTLBoundary reproduces the outage from
+// issue #93: a target with a successfully-fetched-but-now-stale catalog
+// (crossed the ModelCache TTL) must remain routable rather than failing
+// closed with catalog_stale -> no_active_target.
+func TestResolveUmbrellaSurvivesCatalogTTLBoundary(t *testing.T) {
+	kilo := &umbrellaProvider{id: provider.Kilo, authenticated: true, hasCatalog: true, catalog: []string{"kilo-auto"}}
+	registry := provider.NewRegistry(kilo)
+	router := NewRouter(registry, umbrellaRouting("kilo/kilo-auto"))
+
+	// t0: catalog freshly fetched, request succeeds (the observed HTTP 200).
+	first, err := router.Resolve(context.Background(), "router/auto", provider.CapabilityChat)
+	if err != nil {
+		t.Fatalf("initial fresh-catalog request failed: %v", err)
+	}
+	if first.Provider.ID() != provider.Kilo {
+		t.Fatalf("initial selection = %s, want kilo", first.Provider.ID())
+	}
+
+	// t0+TTL+30s: the same catalog is now stale (no refresh happened yet).
+	// Before issue #93's fix this crossed into ReasonCatalogStale and the
+	// target was rejected; it must now remain routable.
+	kilo.catalogStale = true
+	second, err := router.Resolve(context.Background(), "router/auto", provider.CapabilityChat)
+	if err != nil {
+		t.Fatalf("stale-but-present catalog must stay routable past the TTL boundary, got: %v", err)
+	}
+	if second.Provider.ID() != provider.Kilo {
+		t.Fatalf("post-TTL selection = %s, want kilo", second.Provider.ID())
+	}
+}
+
+// TestResolveOmittedModelUsesConfiguredDefaultVirtualModel proves an
+// omitted-model request resolves through the exact same umbrella path as an
+// explicit request for the configured default virtual model (issue #86).
+func TestResolveOmittedModelUsesConfiguredDefaultVirtualModel(t *testing.T) {
+	copilot := &umbrellaProvider{id: provider.Copilot, authenticated: true, hasCatalog: true, catalog: []string{"gpt-5-mini"}}
+	registry := provider.NewRegistry(copilot)
+	routing := umbrellaRouting("github/gpt-5-mini")
+	routing.DefaultModel = "router/auto"
+	router := NewRouter(registry, routing)
+
+	omitted, err := router.Resolve(context.Background(), "", provider.CapabilityChat)
+	if err != nil {
+		t.Fatalf("omitted-model resolve failed: %v", err)
+	}
+	explicit, err := router.Resolve(context.Background(), "router/auto", provider.CapabilityChat)
+	if err != nil {
+		t.Fatalf("explicit default-model resolve failed: %v", err)
+	}
+	if omitted.Provider.ID() != explicit.Provider.ID() || omitted.ResolvedModel != explicit.ResolvedModel {
+		t.Fatalf("omitted=%+v explicit=%+v, want identical resolution", omitted, explicit)
+	}
+	if omitted.Selection == nil {
+		t.Fatal("expected omitted-model resolution to carry umbrella selection metadata")
+	}
+}
+
 // TestResolveExplicitRoutesUnaffected proves umbrella config does not change
 // model_map, prefix, or bare-discovery routing.
 func TestResolveExplicitRoutesUnaffected(t *testing.T) {

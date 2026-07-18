@@ -92,12 +92,13 @@ func TestEvaluateReasonCodes(t *testing.T) {
 			wantReason: ReasonModelNotInCatalog,
 		},
 		{
-			name:       "catalog stale",
+			name:       "catalog stale but still routable",
 			mutate:     func(v *ProviderView) { v.CatalogStale = true },
 			providerID: provider.Copilot,
 			model:      "gpt-5-mini",
 			capability: provider.CapabilityChat,
-			wantReason: ReasonCatalogStale,
+			wantReason: ReasonRoutable,
+			wantRoute:  true,
 		},
 		{
 			name:       "allowlist permits model",

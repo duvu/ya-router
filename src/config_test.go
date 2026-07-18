@@ -18,8 +18,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.ConfigVersion != 1 {
 		t.Errorf("ConfigVersion = %d, want 1", cfg.ConfigVersion)
 	}
-	if cfg.Routing.DefaultModel != "gpt-5-mini" {
-		t.Errorf("DefaultModel = %q, want gpt-5-mini", cfg.Routing.DefaultModel)
+	if cfg.Routing.DefaultModel != "thiendu" {
+		t.Errorf("DefaultModel = %q, want thiendu", cfg.Routing.DefaultModel)
 	}
 	if cfg.Routing.DefaultProvider != "copilot" {
 		t.Errorf("DefaultProvider = %q, want copilot", cfg.Routing.DefaultProvider)
@@ -127,6 +127,47 @@ func TestGetConfigPath_UsesConfigDirEnv(t *testing.T) {
 	}
 }
 
+func TestResolveDefaultConfigPath_UsesDefaultDirWhenAccessible(t *testing.T) {
+	tempHome := t.TempDir()
+
+	got, err := resolveDefaultConfigPath(tempHome)
+	if err != nil {
+		t.Fatalf("resolveDefaultConfigPath: %v", err)
+	}
+	want := filepath.Join(tempHome, configDirName, configFileName)
+	if got != want {
+		t.Fatalf("config path = %q, want %q", got, want)
+	}
+}
+
+func TestResolveDefaultConfigPath_FallsBackWhenPreferredPathIsNotWritable(t *testing.T) {
+	tempHome := t.TempDir()
+	preferredDir := filepath.Join(tempHome, configDirName)
+	preferredConfig := filepath.Join(preferredDir, configFileName)
+
+	if err := os.MkdirAll(preferredDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(preferredConfig, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(preferredDir, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(preferredDir, 0o700)
+	})
+
+	got, err := resolveDefaultConfigPath(tempHome)
+	if err != nil {
+		t.Fatalf("resolveDefaultConfigPath: %v", err)
+	}
+	want := filepath.Join(tempHome, configDirFallbackName, configFileName)
+	if got != want {
+		t.Fatalf("config path = %q, want fallback %q", got, want)
+	}
+}
+
 func TestApplyConfigDefaults_FillsZeros(t *testing.T) {
 	cfg := &Config{}
 	applyConfigDefaults(cfg)
@@ -134,8 +175,8 @@ func TestApplyConfigDefaults_FillsZeros(t *testing.T) {
 	if cfg.Port != 7071 {
 		t.Errorf("Port = %d, want 7071", cfg.Port)
 	}
-	if cfg.Routing.DefaultModel != "gpt-5-mini" {
-		t.Errorf("DefaultModel = %q, want gpt-5-mini", cfg.Routing.DefaultModel)
+	if cfg.Routing.DefaultModel != "thiendu" {
+		t.Errorf("DefaultModel = %q, want thiendu", cfg.Routing.DefaultModel)
 	}
 	if cfg.Providers.Codex.Auth.Mode != "device_code" {
 		t.Errorf("Codex auth mode = %q, want device_code", cfg.Providers.Codex.Auth.Mode)

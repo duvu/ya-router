@@ -23,6 +23,12 @@ type Routing struct {
 	// target selected deterministically before dispatch. This is
 	// selection-before-dispatch, not cross-provider failover.
 	VirtualModels map[string]VirtualModel `json:"virtual_models,omitempty"`
+	// ExposeInternalModels controls whether GET /v1/models lists every
+	// provider-prefixed model and model_map entry, or only virtual models and
+	// required compatibility aliases. Explicit provider-prefixed/model_map
+	// requests keep working either way; this only affects normal discovery.
+	// Defaults to false for fresh managed configs.
+	ExposeInternalModels bool `json:"expose_internal_models"`
 }
 
 // ModelMapEntry explicitly maps a model name to a provider and optional upstream alias.

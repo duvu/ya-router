@@ -98,7 +98,7 @@ Enables `/debug/pprof/`. The endpoints are still covered by the inbound access p
 ```json
 {
   "routing": {
-    "default_model": "gpt-5-mini",
+    "default_model": "thiendu",
     "default_provider": "copilot",
     "show_unavailable_models": false,
     "model_map": {
@@ -127,11 +127,28 @@ Explicit prefixes are authoritative:
 | `codex/` | OpenAI Codex |
 | `kilo/` | Kilo AI Gateway |
 
-The prefix is removed before forwarding upstream. A model present in multiple providers requires a prefix or `model_map` rule. Unknown explicit bare model names fail. The default provider is used only when the request omitted the model.
+The prefix is removed before forwarding upstream. A model present in multiple providers requires a prefix or `model_map` rule. Unknown explicit bare model names fail. A request that omits `model` resolves through `routing.default_model`, which is `thiendu` for fresh managed configs — the same umbrella-routing path as an explicit `"model": "thiendu"` request. The default provider is used only as a last resort if the resolved model has no other match.
 
 ### `show_unavailable_models`
 
 When false, `/v1/models` hides providers that are not authenticated. Set true only for diagnostics.
+
+### `expose_internal_models`
+
+Controls whether `GET /v1/models` lists every provider-prefixed model and `model_map` entry, or only virtual models (`thiendu`) and required compatibility aliases.
+
+```json
+{
+  "routing": {
+    "expose_internal_models": false
+  }
+}
+```
+
+- Defaults to `false` for fresh managed configs: normal discovery shows only `thiendu` and compatibility aliases, steering clients toward automatic routing.
+- A config saved before this setting existed loads with it implicitly `true`, preserving its previous discovery behavior; set it to `false` explicitly to opt into hidden discovery.
+- This setting only affects what `/v1/models` advertises. Explicit provider-prefixed (`github/…`, `codex/…`, `kilo/…`) and `model_map` requests still resolve normally either way — nothing is rejected.
+- `ya models` and routing diagnostics (`/health/umbrella`, Control API routing resources) always show the full internal catalog and routing state regardless of this setting.
 
 ### `virtual_models` (automatic virtual models)
 
@@ -422,7 +439,7 @@ curl http://127.0.0.1:7071/health/providers
 curl http://127.0.0.1:7071/health/umbrella
 ```
 
-`/health/umbrella` reports, for each configured umbrella model, its strategy, the currently selected target (if any), and each target's readiness as a stable reason code (`routable`, `provider_not_ready`, `capability_unsupported`, `model_disallowed`, `model_not_in_catalog`, `catalog_stale`, `cooldown`, `target_disabled`, `provider_not_registered`). It also exposes bounded routing counters (`umbrella_selections_total`, `umbrella_no_active_target_total`, `umbrella_skipped_targets_total`, `umbrella_stale_catalog_total`, `umbrella_cooldown_entries_total`, `umbrella_cooldown_exits_total`) whose labels are limited to configured virtual-model/target IDs and reason codes.
+`/health/umbrella` reports, for each configured umbrella model, its strategy, the currently selected target (if any), and each target's readiness as a stable reason code (`routable`, `provider_not_ready`, `capability_unsupported`, `model_disallowed`, `model_not_in_catalog`, `cooldown`, `target_disabled`, `provider_not_registered`). Each target also carries a separate `catalog_stale` flag and `catalog_fetched_at` timestamp: a catalog older than the refresh TTL is flagged stale for diagnostics but does not by itself make the target unroutable, so a slow or failed background refresh cannot outage an otherwise healthy target (see issue #93). It also exposes bounded routing counters (`umbrella_selections_total`, `umbrella_no_active_target_total`, `umbrella_skipped_targets_total`, `umbrella_cooldown_entries_total`, `umbrella_cooldown_exits_total`) whose labels are limited to configured virtual-model/target IDs and reason codes.
 
 Selection is computed from the network-free availability snapshot; the endpoint sends no upstream model request. Every request that resolves through an umbrella model also emits a structured `[umbrella] decision …` log line recording the selected target, target index, runtime generation, and skipped-target reason codes. These logs and metrics describe **selection before dispatch only** — ya-router never retries a request against another target after dispatch, and no log implies cross-provider failover. Prompts, completions, tokens, secrets, raw account IDs, and upstream error bodies never appear in umbrella logs or metrics.
 

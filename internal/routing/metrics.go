@@ -71,6 +71,9 @@ func (m *Metrics) RecordSelection(decision *SelectionDecision) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.selections[metricKey(decision.VirtualModel, decision.SelectedTarget)]++
+	if decision.CatalogStale {
+		m.staleCatalog[decision.VirtualModel]++
+	}
 	for _, skip := range decision.Skipped {
 		m.skipped[metricKey(skip.Target, string(skip.Reason))]++
 		if skip.Reason == availability.ReasonCatalogStale {

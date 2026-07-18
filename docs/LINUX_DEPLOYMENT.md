@@ -180,6 +180,22 @@ Before replacing a binary, stop the service and archive its full state
 directory. The directory contains the revisioned config, managed secrets, and
 durable operation records.
 
+### Scripted localhost upgrade
+
+For an existing localhost installation, use the checked-in deployment script
+with a release directory whose `checksums.txt` has already been verified:
+
+```bash
+sudo ./scripts/deploy-systemd-localhost.sh /path/to/linux-amd64-release
+```
+
+The script requires root, backs up the existing binaries and complete state
+directory under `/var/backups/ya-router/`, preserves the environment file and
+existing systemd unit, adds only the logging working-directory drop-in, and
+rolls back the binaries and drop-in if startup or verification fails. It then
+checks both health endpoints and confirms a request record was written to
+`/var/lib/ya-router/logs/ya-router.log`.
+
 ```bash
 sudo systemctl stop ya-router
 sudo install -d -m 0700 /var/backups/ya-router

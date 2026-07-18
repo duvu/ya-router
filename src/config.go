@@ -3,6 +3,7 @@ package yarouter
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -67,10 +68,11 @@ const (
 )
 
 const (
-	configDirName  = ".local/share/github-copilot-svcs"
-	configFileName = "config.json"
-	configPathEnv  = "YA_ROUTER_CONFIG_PATH"
-	configDirEnv   = "YA_ROUTER_CONFIG_DIR"
+	configDirName         = ".local/share/github-copilot-svcs"
+	configDirFallbackName = ".config/ya-router"
+	configFileName        = "config.json"
+	configPathEnv         = "YA_ROUTER_CONFIG_PATH"
+	configDirEnv          = "YA_ROUTER_CONFIG_DIR"
 )
 
 // configPathOverride lets tests redirect config I/O to a temp path.
@@ -85,15 +87,15 @@ func getConfigPath() (string, error) {
 		return configPathOverride, nil
 	}
 	if customPath := strings.TrimSpace(os.Getenv(configPathEnv)); customPath != "" {
-		if err := os.MkdirAll(filepath.Dir(customPath), 0o700); err != nil {
-			return "", err
+		if err := validateConfigPathCandidate(customPath); err != nil {
+			return "", fmt.Errorf("invalid %s: %w", configPathEnv, err)
 		}
 		return customPath, nil
 	}
 	if customDir := strings.TrimSpace(os.Getenv(configDirEnv)); customDir != "" {
 		path := filepath.Join(customDir, configFileName)
-		if err := os.MkdirAll(customDir, 0o700); err != nil {
-			return "", err
+		if err := validateConfigPathCandidate(path); err != nil {
+			return "", fmt.Errorf("invalid %s: %w", configDirEnv, err)
 		}
 		return path, nil
 	}
@@ -101,11 +103,71 @@ func getConfigPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(usr.HomeDir, configDirName)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
+	return resolveDefaultConfigPath(usr.HomeDir)
+}
+
+func resolveDefaultConfigPath(homeDir string) (string, error) {
+	preferred := filepath.Join(homeDir, configDirName, configFileName)
+	preferredErr := validateConfigPathCandidate(preferred)
+	if preferredErr == nil {
+		return preferred, nil
 	}
-	return filepath.Join(dir, configFileName), nil
+	if !isPermissionError(preferredErr) {
+		return "", preferredErr
+	}
+
+	fallback := filepath.Join(homeDir, configDirFallbackName, configFileName)
+	if fallbackErr := validateConfigPathCandidate(fallback); fallbackErr != nil {
+		return "", fmt.Errorf("resolve config path: preferred %q is not usable: %v; fallback %q is not usable: %v", preferred, preferredErr, fallback, fallbackErr)
+	}
+	return fallback, nil
+}
+
+func validateConfigPathCandidate(configPath string) error {
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	if err := verifyConfigDirectoryWritable(filepath.Dir(configPath)); err != nil {
+		return err
+	}
+	if fileInfo, err := os.Stat(configPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read config path: %w", err)
+	} else if fileInfo.Mode().IsRegular() {
+		file, err := os.Open(configPath)
+		if err != nil {
+			return fmt.Errorf("open config path: %w", err)
+		}
+		_ = file.Close()
+	}
+	return nil
+}
+
+func verifyConfigDirectoryWritable(dir string) error {
+	marker, err := os.CreateTemp(dir, ".ya-router-config-write-")
+	if err != nil {
+		return fmt.Errorf("test config directory writeability: %w", err)
+	}
+	if err := marker.Close(); err != nil {
+		_ = os.Remove(marker.Name())
+		return err
+	}
+	if err := os.Remove(marker.Name()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func isPermissionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, os.ErrPermission) || os.IsPermission(err) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "permission denied")
 }
 
 // loadConfig returns the daemon-owned desired configuration when managed state
@@ -129,6 +191,9 @@ func loadConfigFromPath(path string) (*Config, error) {
 		if os.IsNotExist(err) {
 			return defaultConfig(), nil
 		}
+		if os.IsPermission(err) {
+			return nil, fmt.Errorf("open config: %w (ensure YA_ROUTER_CONFIG_DIR or YA_ROUTER_CONFIG_PATH points to a writable location)", err)
+		}
 		return nil, fmt.Errorf("open config: %w", err)
 	}
 	defer file.Close()
@@ -139,6 +204,9 @@ func loadConfigFromPath(path string) (*Config, error) {
 	}
 	var probe struct {
 		Version int `json:"config_version"`
+		Routing struct {
+			ExposeInternalModels *bool `json:"expose_internal_models"`
+		} `json:"routing"`
 	}
 	_ = json.Unmarshal(raw, &probe)
 	if probe.Version >= 1 {
@@ -147,6 +215,12 @@ func loadConfigFromPath(path string) (*Config, error) {
 			return nil, err
 		}
 		applyConfigDefaults(&cfg)
+		if probe.Routing.ExposeInternalModels == nil {
+			// An existing config predating issue #87 has no explicit setting;
+			// preserve its current /v1/models discovery behavior rather than
+			// silently hiding models an operator never opted to hide.
+			cfg.Routing.ExposeInternalModels = true
+		}
 		return &cfg, nil
 	}
 	var legacy legacyV0Config

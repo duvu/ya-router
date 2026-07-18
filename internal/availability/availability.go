@@ -41,9 +41,12 @@ const (
 	// ReasonModelNotInCatalog indicates the last-known-good catalog does not
 	// contain the target model.
 	ReasonModelNotInCatalog Reason = "model_not_in_catalog"
-	// ReasonCatalogStale indicates the model exists in the catalog but the
-	// catalog is older than the acceptable freshness window; the conservative
-	// v1 policy treats a stale catalog as not routable.
+	// ReasonCatalogStale is never returned by Evaluate: a catalog older than
+	// the freshness window remains routable so a periodic refresh failure or
+	// TTL crossing cannot outage an otherwise healthy target. Staleness is
+	// still reported out-of-band via TargetResult.CatalogStale for
+	// diagnostics. The constant is retained for callers that still match on
+	// historical reason strings.
 	ReasonCatalogStale Reason = "catalog_stale"
 	// ReasonCooldown indicates recent bounded feedback made a target temporarily
 	// unavailable for later automatic-routing requests.
@@ -219,8 +222,6 @@ func (s *Snapshot) Evaluate(providerID provider.ID, bareModel string, capability
 		result.Reason = ReasonModelDisallowed
 	case !entry.catalogPresent || !entry.hasModel(bareModel):
 		result.Reason = ReasonModelNotInCatalog
-	case entry.catalogStale:
-		result.Reason = ReasonCatalogStale
 	default:
 		result.Routable = true
 		result.Reason = ReasonRoutable

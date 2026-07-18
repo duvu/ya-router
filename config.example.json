@@ -8,7 +8,7 @@
     "retained_files": 2
   },
   "routing": {
-    "default_model": "gpt-5-mini",
+    "default_model": "thiendu",
     "default_provider": "copilot",
     "show_unavailable_models": false,
     "model_map": {

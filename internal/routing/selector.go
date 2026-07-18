@@ -28,8 +28,13 @@ type SelectionDecision struct {
 	SelectedIndex    int
 	Generation       uint64
 	CatalogFetchedAt int64 // unix seconds; 0 when unknown
-	Capability       provider.Capability
-	Skipped          []SkippedTarget
+	// CatalogStale reports whether the selected target's last-known-good
+	// catalog was older than the refresh TTL at selection time. A stale
+	// catalog does not prevent selection (see issue #93); this field exists so
+	// diagnostics/metrics can still observe staleness.
+	CatalogStale bool
+	Capability   provider.Capability
+	Skipped      []SkippedTarget
 }
 
 // NoActiveTargetError is returned when no target in an umbrella model is
@@ -76,6 +81,7 @@ func SelectPriorityTarget(virtualModelID string, vm configschema.VirtualModel, c
 				SelectedIndex:    index,
 				Generation:       result.Generation,
 				CatalogFetchedAt: fetched,
+				CatalogStale:     result.CatalogStale,
 				Capability:       capability,
 				Skipped:          skipped,
 			}, nil

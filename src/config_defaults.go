@@ -11,10 +11,19 @@ const (
 	defaultLogFilePath      = "logs/ya-router.log"
 	defaultLogFileSizeMiB   = 5
 	defaultRetainedLogFiles = 2
+
+	// defaultRoutingModel is the default model for fresh managed configs and
+	// for requests that omit "model". It resolves through the same umbrella
+	// (virtual-model) path as an explicit "model": "thiendu" request.
+	defaultRoutingModel = "thiendu"
 )
 
 func migrateV0ToV1(v0 *legacyV0Config) *Config {
 	cfg := defaultConfig()
+	// A pre-V1 config predates issue #87's expose_internal_models setting;
+	// preserve its current /v1/models discovery behavior (show everything)
+	// rather than silently hiding models on an automatic migration.
+	cfg.Routing.ExposeInternalModels = true
 	if v0.Port != 0 {
 		cfg.Port = v0.Port
 	}
@@ -78,7 +87,7 @@ func setLegacyTimeouts(dst *TimeoutsConfig, httpClient, serverRead, serverWrite,
 
 func defaultConfig() *Config {
 	cfg := &Config{Port: 7071, ConfigVersion: currentConfigVersion}
-	cfg.Routing.DefaultModel = "gpt-5-mini"
+	cfg.Routing.DefaultModel = defaultRoutingModel
 	cfg.Routing.DefaultProvider = string(ProviderCopilot)
 	cfg.Routing.VirtualModels = defaultVirtualModels()
 	cfg.Providers.Copilot.Enabled = true
@@ -97,7 +106,7 @@ func applyConfigDefaults(cfg *Config) {
 		cfg.Port = 7071
 	}
 	if cfg.Routing.DefaultModel == "" {
-		cfg.Routing.DefaultModel = "gpt-5-mini"
+		cfg.Routing.DefaultModel = defaultRoutingModel
 	}
 	if cfg.Routing.DefaultProvider == "" {
 		cfg.Routing.DefaultProvider = string(ProviderCopilot)
