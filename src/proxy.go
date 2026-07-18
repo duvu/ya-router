@@ -500,6 +500,10 @@ func processProxyRequest(
 		logUmbrellaSelection(route.Selection, route.Provider.ID())
 	}
 
+	if observer := routeObserverFromContext(ctx); observer != nil {
+		observer(route.Provider.ID(), route.ResolvedModel)
+	}
+
 	if route.ResolvedModel != requestedModel {
 		log.Printf("[REQ] model rewritten: %q → %q", requestedModel, route.ResolvedModel)
 		body = patchBodyModel(body, route.ResolvedModel)

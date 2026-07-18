@@ -137,7 +137,7 @@ func newManagedControlRuntimeWithSecretStore(config *Config, runtimeManager *run
 	controlpkg.RegisterSecretRoutes(api, secretStore)
 	controlpkg.RegisterMutationRoutes(api, mutationExecutor{reloader: providerManager})
 	stateHub := controlpkg.NewStateHub(readModel)
-	wsHandler := controlpkg.StateAwareWSHandler{Reader: readModel}
+	wsHandler := controlpkg.StateAwareWSHandler{Reader: readModel, Chat: newWSChatHandler(runtimeManager)}
 	controlpkg.RegisterWSRoute(api, wsHandler, stateHub, version, func() uint64 {
 		manager := currentConfigState()
 		if manager == nil {
