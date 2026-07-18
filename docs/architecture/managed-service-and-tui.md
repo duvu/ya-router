@@ -486,7 +486,7 @@ The feature is not production-ready until all of the following pass:
 |---|---|---|
 | AD-01 | Daemon is the only state writer | Prevents TUI/CLI/service write races and runtime drift |
 | AD-02 | Separate data and control listeners | Keeps model-client credentials and admin authority isolated |
-| AD-03 | REST/JSON plus SSE | Simple to inspect, automate, and extend without a WebSocket/gRPC-only client |
+| AD-03 | REST/JSON plus SSE for scriptable/automatable resources; one local WebSocket (`/control/v1/ws`) added for interactive TUI chat and live state (issue #74) | REST/SSE remain simple to inspect, automate, and extend for scriptable commands and mutations; a single local WebSocket over the existing trusted Unix socket avoids full-resource REST polling for chat/status without requiring a WebSocket/gRPC-only client for anything else |
 | AD-04 | Immutable runtime snapshots | Allows safe hot reload without mutating providers serving requests |
 | AD-05 | Provider descriptors drive clients | New providers do not require hard-coded TUI protocols |
 | AD-06 | Async operation resources | Authentication and refresh survive client disconnects |

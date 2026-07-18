@@ -102,6 +102,7 @@ func newManagedControlRuntimeWithSecretStore(config *Config, runtimeManager *run
 			"role_based_access",
 			"typed_errors",
 			"remote_tls",
+			"local_websocket",
 		},
 		DataPlaneAPIKey: strings.TrimSpace(os.Getenv(inboundAPIKeyEnv)),
 		Audit:           controlpkg.MultiAuditSink{audit, controlpkg.LogAuditSink{}},
@@ -129,6 +130,13 @@ func newManagedControlRuntimeWithSecretStore(config *Config, runtimeManager *run
 	controlpkg.RegisterOperationRoutes(api, operationManager, authSessionRunner{operations: operationManager, reloader: providerManager, secrets: secretStore})
 	controlpkg.RegisterSecretRoutes(api, secretStore)
 	controlpkg.RegisterMutationRoutes(api, mutationExecutor{reloader: providerManager})
+	controlpkg.RegisterWSRoute(api, controlpkg.NoopWSHandler{}, version, func() uint64 {
+		manager := currentConfigState()
+		if manager == nil {
+			return 0
+		}
+		return manager.Snapshot().Revision
+	})
 	localIdentity := controlpkg.Identity{Subject: "local:unix-socket", Role: controlpkg.RoleAdmin, Source: "unix_socket"}
 	localHandler := api.Handler(controlpkg.FixedAuthenticator(localIdentity))
 

@@ -1,8 +1,11 @@
 package control
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -116,6 +119,17 @@ func (recorder *statusRecorder) Flush() {
 	if flusher, ok := recorder.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
+}
+
+// Hijack forwards to the underlying ResponseWriter so middleware wrapping
+// never breaks a WebSocket upgrade (see ws_server.go), which hijacks the
+// connection instead of writing a normal HTTP response.
+func (recorder *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := recorder.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("underlying ResponseWriter does not support hijacking")
+	}
+	return hijacker.Hijack()
 }
 
 func auditMiddleware(sink AuditSink, now func() time.Time, next http.Handler) http.Handler {
