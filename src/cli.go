@@ -12,6 +12,7 @@ import (
 
 	runtimepkg "github.com/duvu/ya-router/internal/runtime"
 	secretpkg "github.com/duvu/ya-router/internal/secret"
+	telemetrypkg "github.com/duvu/ya-router/internal/telemetry"
 )
 
 func printUsage() {
@@ -434,6 +435,7 @@ func handleRunWithMigration(migrationMode ConfigMigrationMode) error {
 	closeLog := setupLogging(cfg.Logging)
 	defer closeLog()
 	initializeTimeouts(cfg)
+	setTelemetryRecorder(telemetrypkg.NewRecorder())
 	if cfg.Providers.Codex.Enabled && ensureCodexModelMap(cfg) {
 		if err := saveConfig(cfg); err != nil {
 			fmt.Printf("Warning: failed to persist Codex model map: %v\n", err)

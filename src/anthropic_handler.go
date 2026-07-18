@@ -9,6 +9,7 @@ import (
 	"time"
 
 	routingpkg "github.com/duvu/ya-router/internal/routing"
+	telemetrypkg "github.com/duvu/ya-router/internal/telemetry"
 )
 
 func anthropicHandler(registry *ProviderRegistry, router *ModelRouter, cfg *Config) http.HandlerFunc {
@@ -45,9 +46,11 @@ func anthropicHandler(registry *ProviderRegistry, router *ModelRouter, cfg *Conf
 		}
 		nativeBody := patchBodyModel(translated.Body, route.ResolvedModel)
 		nativeRequest := nativeResponsesRequest(r, ctx, nativeBody)
+		telemetryHandle := currentTelemetryRecorder().Begin(string(route.Provider.ID()), route.ResolvedModel)
 		if translated.Stream {
 			stream := newAnthropicSSEWriter(w, translated.Model)
-			proxyErr := route.Provider.ProxyRequest(ctx, stream, nativeRequest, nativeBody, CapabilityResponses)
+			sniffer := newUsageSniffWriter(stream)
+			proxyErr := route.Provider.ProxyRequest(ctx, sniffer, nativeRequest, nativeBody, CapabilityResponses)
 			if proxyErr == nil {
 				proxyErr = stream.Finish()
 			}
@@ -55,6 +58,13 @@ func anthropicHandler(registry *ProviderRegistry, router *ModelRouter, cfg *Conf
 			if route.Selection != nil {
 				router.RecordOutcome(route.Selection, status, proxyErr, retryAfterDuration(stream.Header().Get("Retry-After")))
 			}
+			success := proxyErr == nil && status < http.StatusBadRequest
+			telemetryHandle.Finish(telemetrypkg.Outcome{
+				Success:         success,
+				ErrorCategory:   classifyErrorCategory(status, proxyErr),
+				ProducedMessage: success,
+				Usage:           sniffer.Usage(),
+			})
 			if proxyErr != nil && !stream.Started() {
 				writeAnthropicError(w, providerErrorStatus(proxyErr), proxyErr)
 			}
@@ -67,11 +77,16 @@ func anthropicHandler(registry *ProviderRegistry, router *ModelRouter, cfg *Conf
 			if route.Selection != nil {
 				router.RecordOutcome(route.Selection, providerErrorStatus(proxyErr), proxyErr, retryAfterDuration(capture.Header().Get("Retry-After")))
 			}
+			telemetryHandle.Finish(telemetrypkg.Outcome{ErrorCategory: classifyErrorCategory(providerErrorStatus(proxyErr), proxyErr)})
 			copyAnthropicSafeHeaders(w.Header(), capture.Header())
 			writeAnthropicError(w, providerErrorStatus(proxyErr), proxyErr)
 			return
 		}
 		if status >= http.StatusBadRequest {
+			if route.Selection != nil {
+				router.RecordOutcome(route.Selection, status, nil, retryAfterDuration(capture.Header().Get("Retry-After")))
+			}
+			telemetryHandle.Finish(telemetrypkg.Outcome{ErrorCategory: classifyErrorCategory(status, nil)})
 			copyAnthropicSafeHeaders(w.Header(), capture.Header())
 			writeAnthropicError(w, status, newProviderError(route.Provider.ID(), classifyUpstreamStatus(status), status, status >= 500, "upstream request failed"))
 			return
@@ -81,9 +96,11 @@ func anthropicHandler(registry *ProviderRegistry, router *ModelRouter, cfg *Conf
 		}
 		message, err := responsesToAnthropicMessage(capture.Body(), translated.Model)
 		if err != nil {
+			telemetryHandle.Finish(telemetrypkg.Outcome{ErrorCategory: telemetrypkg.ErrorCategoryTransport})
 			writeAnthropicError(w, http.StatusBadGateway, newProviderError(route.Provider.ID(), ProviderErrorTransport, http.StatusBadGateway, true, "%v", err))
 			return
 		}
+		telemetryHandle.Finish(telemetrypkg.Outcome{Success: true, ProducedMessage: true, Usage: sniffUsageJSON(capture.Body())})
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(message)

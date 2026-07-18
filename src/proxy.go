@@ -20,6 +20,7 @@ import (
 
 	requestproxy "github.com/duvu/ya-router/internal/proxy"
 	routingpkg "github.com/duvu/ya-router/internal/routing"
+	telemetrypkg "github.com/duvu/ya-router/internal/telemetry"
 )
 
 const (
@@ -507,13 +508,16 @@ func processProxyRequest(
 	log.Printf("[REQ] routing %s %s model=%q → provider=%s upstream_model=%q",
 		r.Method, r.URL.Path, requestedModel, route.Provider.ID(), route.ResolvedModel)
 
+	telemetryHandle := currentTelemetryRecorder().Begin(string(route.Provider.ID()), route.ResolvedModel)
+
 	responseWriter := w
 	var virtualWriter *virtualModelResponseWriter
 	if route.Selection != nil {
 		virtualWriter = newVirtualModelResponseWriter(w, requestedModel)
 		responseWriter = virtualWriter
 	}
-	proxyErr := route.Provider.ProxyRequest(ctx, responseWriter, r, body, capability)
+	usageWriter := newUsageSniffWriter(responseWriter)
+	proxyErr := route.Provider.ProxyRequest(ctx, usageWriter, r, body, capability)
 	if virtualWriter != nil {
 		if commitErr := virtualWriter.Commit(); commitErr != nil && proxyErr == nil {
 			proxyErr = commitErr
@@ -527,6 +531,13 @@ func processProxyRequest(
 	if route.Selection != nil {
 		router.RecordOutcome(route.Selection, status, proxyErr, retryAfterDuration(w.Header().Get("Retry-After")))
 	}
+	telemetrySuccess := proxyErr == nil && status < http.StatusBadRequest
+	telemetryHandle.Finish(telemetrypkg.Outcome{
+		Success:         telemetrySuccess,
+		ErrorCategory:   classifyErrorCategory(status, proxyErr),
+		ProducedMessage: telemetrySuccess && capability != CapabilityEmbeddings,
+		Usage:           usageWriter.Usage(),
+	})
 	elapsed := time.Since(reqStart)
 	if proxyErr != nil {
 		log.Printf("[REQ] completed %s %s model=%q provider=%s status=%d elapsed=%s error=%v",
