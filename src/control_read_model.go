@@ -15,6 +15,7 @@ import (
 	routingpkg "github.com/duvu/ya-router/internal/routing"
 	runtimepkg "github.com/duvu/ya-router/internal/runtime"
 	secretpkg "github.com/duvu/ya-router/internal/secret"
+	telemetrypkg "github.com/duvu/ya-router/internal/telemetry"
 )
 
 type controlReadModel struct {
@@ -79,7 +80,9 @@ func (model *controlReadModel) Providers(_ context.Context) ([]controlpkg.Provid
 // State implements controlpkg.StateReader for the /control/v1/ws
 // snapshot/state.updated payload (issue #75). It reuses the existing
 // provider health registry, routing availability snapshot, and telemetry
-// recorder — no new health or cooldown state machine.
+// recorder — no new health or cooldown state machine; per-provider display
+// state is computed by telemetrypkg.DeriveProviderState from those existing
+// signals.
 func (model *controlReadModel) State(_ context.Context) (controlpkg.WSStatePayload, error) {
 	if model == nil || model.runtime == nil || model.providers == nil {
 		return controlpkg.WSStatePayload{}, fmt.Errorf("runtime is unavailable")
@@ -89,43 +92,12 @@ func (model *controlReadModel) State(_ context.Context) (controlpkg.WSStatePaylo
 		payload.ConfigRevision = manager.Snapshot().Revision
 	}
 
-	for _, status := range model.providers.List() {
-		if !status.Enabled {
-			payload.Providers = append(payload.Providers, controlpkg.ProviderStateView{
-				Provider: string(status.Descriptor.ID),
-				State:    string(providerpkg.StateDisabled),
-			})
-			continue
-		}
-		payload.Providers = append(payload.Providers, controlpkg.ProviderStateView{
-			Provider: string(status.Descriptor.ID),
-			State:    string(status.Health.State),
-		})
-	}
+	statuses := model.providers.List()
 
-	lease, err := model.runtime.Acquire()
-	if err != nil {
-		return payload, nil
-	}
-	defer lease.Release()
-	router := lease.Snapshot().Router()
-	if router == nil {
-		return payload, nil
-	}
-	snapshot := router.AvailabilitySnapshot()
-	for _, readiness := range router.VirtualModelReadinessFor(CapabilityChat, snapshot) {
-		view := controlpkg.RoutingStateView{VirtualModel: readiness.VirtualModel, SelectedTarget: readiness.SelectedTarget}
-		for _, target := range readiness.Targets {
-			view.Targets = append(view.Targets, controlpkg.RoutingTargetView{
-				Target:   target.Target,
-				Routable: target.Routable,
-				Reason:   string(target.Reason),
-			})
-		}
-		payload.Routing = append(payload.Routing, view)
-	}
-
-	for _, target := range currentTelemetryRecorder().Snapshot() {
+	counters := currentTelemetryRecorder().Snapshot()
+	inFlightByProvider := make(map[string]int64, len(counters))
+	for _, target := range counters {
+		inFlightByProvider[target.Provider] += target.InFlight
 		payload.Counters = append(payload.Counters, controlpkg.TargetCountersView{
 			Provider:          target.Provider,
 			Model:             target.Model,
@@ -142,6 +114,46 @@ func (model *controlReadModel) State(_ context.Context) (controlpkg.WSStatePaylo
 				TotalTokens:  target.TotalTokens,
 				Unavailable:  target.UnavailableUsageCount > 0,
 			},
+		})
+	}
+
+	cooldownByProvider := make(map[string]bool, len(statuses))
+	lease, leaseErr := model.runtime.Acquire()
+	if leaseErr == nil {
+		defer lease.Release()
+		if router := lease.Snapshot().Router(); router != nil {
+			snapshot := router.AvailabilitySnapshot()
+			for _, readiness := range router.VirtualModelReadinessFor(CapabilityChat, snapshot) {
+				view := controlpkg.RoutingStateView{VirtualModel: readiness.VirtualModel, SelectedTarget: readiness.SelectedTarget}
+				for _, target := range readiness.Targets {
+					view.Targets = append(view.Targets, controlpkg.RoutingTargetView{
+						Target:   target.Target,
+						Routable: target.Routable,
+						Reason:   string(target.Reason),
+					})
+					if target.Reason == "cooldown" {
+						if _, providerID, hasPrefix := routingpkg.StripModelPrefix(target.Target); hasPrefix {
+							cooldownByProvider[string(providerID)] = true
+						}
+					}
+				}
+				payload.Routing = append(payload.Routing, view)
+			}
+		}
+	}
+
+	for _, status := range statuses {
+		providerID := string(status.Descriptor.ID)
+		state := telemetrypkg.DeriveProviderState(
+			status.Enabled,
+			status.Health.Health.Authenticated,
+			status.Health.State == providerpkg.StateError,
+			cooldownByProvider[providerID],
+			inFlightByProvider[providerID],
+		)
+		payload.Providers = append(payload.Providers, controlpkg.ProviderStateView{
+			Provider: providerID,
+			State:    string(state),
 		})
 	}
 	return payload, nil

@@ -107,6 +107,41 @@ func TestControlReadModelState_AggregatesProviderRoutingAndTelemetry(t *testing.
 	}
 }
 
+// TestControlReadModelState_UsesTelemetryDisplayStateEnum proves State()
+// reports the bounded telemetry.ProviderDisplayState values (issue #72),
+// not the raw internal provider.State enum.
+func TestControlReadModelState_UsesTelemetryDisplayStateEnum(t *testing.T) {
+	config := defaultConfig() // codex, kilo disabled by default
+	runtimeManager, err := runtimepkg.NewManager(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerManager, err := newProviderManager(config, runtimeManager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = providerManager.Reconcile(context.Background(), nil)
+		_ = runtimeManager.Close(context.Background())
+	}()
+
+	model := newControlReadModel(runtimeManager, providerManager, nil)
+	payload, err := model.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := map[string]string{}
+	for _, p := range payload.Providers {
+		states[p.Provider] = p.State
+	}
+	if states["codex"] != string(telemetrypkg.StateDisabled) || states["kilo"] != string(telemetrypkg.StateDisabled) {
+		t.Fatalf("disabled provider states = %+v, want DISABLED", states)
+	}
+	if states["copilot"] != string(telemetrypkg.StateAuthRequired) {
+		t.Fatalf("unauthenticated enabled copilot state = %q, want AUTH_REQUIRED", states["copilot"])
+	}
+}
+
 // TestControlReadModelState_RedactsSensitiveContent proves the state
 // payload never carries prompts, completions, credentials, or raw upstream
 // error strings — only bounded identifiers and enum values.

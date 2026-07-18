@@ -17,6 +17,7 @@ import (
 
 	controlpkg "github.com/duvu/ya-router/internal/control"
 	runtimepkg "github.com/duvu/ya-router/internal/runtime"
+	telemetrypkg "github.com/duvu/ya-router/internal/telemetry"
 )
 
 // wsChatHandler adapts control.WSHandler's chat methods onto the daemon's
@@ -90,7 +91,7 @@ func (h *wsChatHandler) HandleChatStart(ctx context.Context, conn *controlpkg.WS
 	}
 	if proxyErr != nil || chatWriter.StatusCode() >= http.StatusBadRequest {
 		category := classifyErrorCategory(chatWriter.StatusCode(), proxyErr)
-		conn.Send(controlpkg.WSTypeChatError, requestID, mustMarshalChatError(string(category), "chat request failed"))
+		conn.Send(controlpkg.WSTypeChatError, requestID, mustMarshalChatError(string(category), chatErrorCategoryMessage(category)))
 		return
 	}
 	conn.Send(controlpkg.WSTypeChatDone, requestID, mustMarshalChatDone("stop"))
@@ -150,4 +151,30 @@ func mustMarshalChatError(category, message string) json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return encoded
+}
+
+// chatErrorCategoryMessage maps a bounded telemetry.ErrorCategory to a
+// bounded, human-readable description. It never surfaces a raw upstream
+// error string — only the stable category-derived text.
+func chatErrorCategoryMessage(category telemetrypkg.ErrorCategory) string {
+	switch category {
+	case telemetrypkg.ErrorCategoryModelUnavailable:
+		return "no active target is available for this model"
+	case telemetrypkg.ErrorCategoryAuthRequired:
+		return "the selected provider requires authentication"
+	case telemetrypkg.ErrorCategoryRateLimited:
+		return "the selected provider is rate-limited"
+	case telemetrypkg.ErrorCategoryProviderUnavailable:
+		return "the selected provider is temporarily unavailable"
+	case telemetrypkg.ErrorCategoryTimeout:
+		return "the request timed out"
+	case telemetrypkg.ErrorCategoryEntitlementDenied:
+		return "the selected provider denied this request"
+	case telemetrypkg.ErrorCategoryUnsupported:
+		return "this capability is not supported by the selected provider"
+	case telemetrypkg.ErrorCategoryInvalidRequest:
+		return "the chat request was invalid"
+	default:
+		return "chat request failed"
+	}
 }

@@ -198,13 +198,25 @@ preserving routing precedence.
 
 ## The `ya` control client
 
-The installable `ya` binary opens the keyboard-driven daemon dashboard when
+The installable `ya` binary opens the keyboard-driven daemon workspace when
 called without a subcommand. It speaks the local Unix socket by default (or
-HTTPS/mTLS via `--address`) and never owns daemon lifecycle. The dashboard
-shows daemon readiness, providers, `thiendu` routing/cooldowns, catalogs,
-operations, and lifecycle events; its palette can authenticate providers,
-write masked API keys, refresh catalogs, cancel auth operations, and apply
-revision-safe provider enable/disable changes.
+HTTPS/mTLS via `--address`) and never owns daemon lifecycle. Over the local
+Unix socket, `ya` also opens one `/control/v1/ws` connection for live chat and
+status: a local user/assistant transcript with a multiline composer for
+sending a `thiendu` chat request and streaming its reply, plus a compact
+status view (provider state, current/latest routed target and skip reasons,
+request/message/token counters). At 100 columns or wider chat and status
+render side by side; narrower terminals use Chat/Status tabs. Press `i` to
+focus the composer (where `q`/`j`/`k` type normally instead of navigating),
+`enter` to send, `alt+enter` for a literal newline, `esc` to release focus,
+`c` to cancel an in-flight chat, and `n` to start a new local conversation.
+Reconnect after a dropped connection refreshes status and marks any
+interrupted chat as such — it is never resubmitted automatically. Remote
+HTTPS/mTLS profiles keep the workspace's existing status view but not live
+chat, since the WS transport is local-socket only. The existing
+provider/auth/secret palette (`a` for the action palette; `e` enable/disable,
+`c` authenticate, `p` API key, `x` cancel auth, `m` refresh catalog, `r`
+reconnect) is unchanged.
 
 Scriptable commands work without a TTY and support `--json`: `meta`,
 `providers`, `accounts`, `models`, `config`, `routing`, `operations`,

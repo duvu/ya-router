@@ -408,6 +408,13 @@ func TestWSChatNoActiveTarget_ProducesTerminalErrorWithoutCallingProvider(t *tes
 	if terminal.Type != controlpkg.WSTypeChatError {
 		t.Fatalf("type = %q, want chat.error", terminal.Type)
 	}
+	var errPayload controlpkg.WSChatErrorPayload
+	if err := json.Unmarshal(terminal.Payload, &errPayload); err != nil {
+		t.Fatal(err)
+	}
+	if errPayload.Category != "model_unavailable" || errPayload.Message == "" {
+		t.Fatalf("error payload = %+v, want a bounded model_unavailable message", errPayload)
+	}
 	if calls != 0 {
 		t.Fatalf("provider calls = %d, want 0 (no active target must never dispatch)", calls)
 	}

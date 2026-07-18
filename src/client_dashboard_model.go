@@ -28,6 +28,11 @@ type dashboardSnapshot struct {
 	operations []controlpkg.OperationResource
 	events     controlpkg.EventPage
 	secrets    []secret.Metadata
+	// wsState is the live status pushed over /control/v1/ws (issue #75),
+	// used by the chat workspace (#79) instead of full periodic REST
+	// polling. It is the zero value until the first snapshot/state.updated
+	// message arrives.
+	wsState controlpkg.WSStatePayload
 }
 
 type dashboardLoadedMsg struct {

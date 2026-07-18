@@ -56,7 +56,15 @@ func runClientDashboard(common clientCommonFlags) int {
 		fmt.Fprintln(os.Stderr, "ya: dashboard could not create a control client")
 		return clientExitUsage
 	}
-	program := tea.NewProgram(newDashboardModel(common, backend), tea.WithAltScreen())
+	// The WS client (live chat/status, #74-#77) only supports the local
+	// Unix-socket transport; a remote HTTPS profile still gets the full
+	// dashboard with REST-only status (no chat), matching the epic's
+	// remote-WSS non-goal.
+	var wsClient *clientpkg.WSClient
+	if profile.Transport == clientpkg.TransportUnix {
+		wsClient, _ = clientpkg.NewWSClient(profile)
+	}
+	program := tea.NewProgram(newWorkspaceModel(common, backend, wsClient), tea.WithAltScreen())
 	if _, err := program.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "ya: dashboard could not start")
 		return clientExitRuntimeFailure
