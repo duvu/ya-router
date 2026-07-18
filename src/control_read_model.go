@@ -76,6 +76,77 @@ func (model *controlReadModel) Providers(_ context.Context) ([]controlpkg.Provid
 	return resources, nil
 }
 
+// State implements controlpkg.StateReader for the /control/v1/ws
+// snapshot/state.updated payload (issue #75). It reuses the existing
+// provider health registry, routing availability snapshot, and telemetry
+// recorder — no new health or cooldown state machine.
+func (model *controlReadModel) State(_ context.Context) (controlpkg.WSStatePayload, error) {
+	if model == nil || model.runtime == nil || model.providers == nil {
+		return controlpkg.WSStatePayload{}, fmt.Errorf("runtime is unavailable")
+	}
+	payload := controlpkg.WSStatePayload{}
+	if manager := currentConfigState(); manager != nil {
+		payload.ConfigRevision = manager.Snapshot().Revision
+	}
+
+	for _, status := range model.providers.List() {
+		if !status.Enabled {
+			payload.Providers = append(payload.Providers, controlpkg.ProviderStateView{
+				Provider: string(status.Descriptor.ID),
+				State:    string(providerpkg.StateDisabled),
+			})
+			continue
+		}
+		payload.Providers = append(payload.Providers, controlpkg.ProviderStateView{
+			Provider: string(status.Descriptor.ID),
+			State:    string(status.Health.State),
+		})
+	}
+
+	lease, err := model.runtime.Acquire()
+	if err != nil {
+		return payload, nil
+	}
+	defer lease.Release()
+	router := lease.Snapshot().Router()
+	if router == nil {
+		return payload, nil
+	}
+	snapshot := router.AvailabilitySnapshot()
+	for _, readiness := range router.VirtualModelReadinessFor(CapabilityChat, snapshot) {
+		view := controlpkg.RoutingStateView{VirtualModel: readiness.VirtualModel, SelectedTarget: readiness.SelectedTarget}
+		for _, target := range readiness.Targets {
+			view.Targets = append(view.Targets, controlpkg.RoutingTargetView{
+				Target:   target.Target,
+				Routable: target.Routable,
+				Reason:   string(target.Reason),
+			})
+		}
+		payload.Routing = append(payload.Routing, view)
+	}
+
+	for _, target := range currentTelemetryRecorder().Snapshot() {
+		payload.Counters = append(payload.Counters, controlpkg.TargetCountersView{
+			Provider:          target.Provider,
+			Model:             target.Model,
+			Requests:          target.Requests,
+			Successes:         target.Successes,
+			Errors:            target.Errors,
+			InFlight:          target.InFlight,
+			Messages:          target.Messages,
+			LastLatencyMillis: target.LastLatency.Milliseconds(),
+			LastErrorCategory: string(target.LastErrorCategory),
+			Usage: controlpkg.UsageView{
+				InputTokens:  target.InputTokens,
+				OutputTokens: target.OutputTokens,
+				TotalTokens:  target.TotalTokens,
+				Unavailable:  target.UnavailableUsageCount > 0,
+			},
+		})
+	}
+	return payload, nil
+}
+
 func (model *controlReadModel) RoutingStatus(_ context.Context, publicID string) (controlpkg.RoutingStatusResource, bool, error) {
 	if model == nil || model.runtime == nil {
 		return controlpkg.RoutingStatusResource{}, false, fmt.Errorf("runtime manager is unavailable")

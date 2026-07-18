@@ -68,8 +68,10 @@ func (NoopWSHandler) HandleChatCancel(*WSConn) {}
 // RegisterWSRoute adds GET /control/v1/ws. The route runs through the same
 // authentication/audit/request-ID middleware as every other control
 // resource; any authenticated viewer may connect (chat mutates no
-// configuration).
-func RegisterWSRoute(api *API, handler WSHandler, serviceVersion string, configRevision func() uint64) {
+// configuration). hub may be nil (e.g. in tests exercising only the
+// chat/protocol surface); when non-nil, every connection registers with it
+// for the lifetime of the connection so StateHub.BroadcastNow can reach it.
+func RegisterWSRoute(api *API, handler WSHandler, hub *StateHub, serviceVersion string, configRevision func() uint64) {
 	if handler == nil {
 		handler = NoopWSHandler{}
 	}
@@ -90,6 +92,10 @@ func RegisterWSRoute(api *API, handler WSHandler, serviceVersion string, configR
 			revision = configRevision()
 		}
 		conn := newWSConn(wsConn, identity)
+		if hub != nil {
+			hub.register(conn)
+			defer hub.unregister(conn)
+		}
 		conn.serve(request.Context(), handler, serviceVersion, revision)
 	}))
 }

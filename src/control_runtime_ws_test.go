@@ -91,4 +91,48 @@ func TestManagedControlRuntime_ServesWSOverConfiguredUnixSocket(t *testing.T) {
 	if envelope.Type != controlpkg.WSTypeHello {
 		t.Fatalf("first message type = %q, want hello", envelope.Type)
 	}
+
+	_, snapshotData, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read initial snapshot: %v", err)
+	}
+	var snapshotEnvelope controlpkg.WSEnvelope
+	if err := json.Unmarshal(snapshotData, &snapshotEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if snapshotEnvelope.Type != controlpkg.WSTypeSnapshot {
+		t.Fatalf("second message type = %q, want snapshot", snapshotEnvelope.Type)
+	}
+	var initialState controlpkg.WSStatePayload
+	if err := json.Unmarshal(snapshotEnvelope.Payload, &initialState); err != nil {
+		t.Fatal(err)
+	}
+	foundCopilot := false
+	for _, p := range initialState.Providers {
+		if p.Provider == "copilot" {
+			foundCopilot = true
+		}
+	}
+	if !foundCopilot {
+		t.Fatalf("initial snapshot missing copilot provider state: %+v", initialState.Providers)
+	}
+
+	// Drive the same background broadcast the daemon runs on a timer
+	// (stateHubPollInterval) to prove a live state.updated reaches this real
+	// client over the real Unix socket without any REST polling.
+	runtime.stateHub.BroadcastNow(context.Background())
+	_, updateData, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read state.updated: %v", err)
+	}
+	var updateEnvelope controlpkg.WSEnvelope
+	if err := json.Unmarshal(updateData, &updateEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if updateEnvelope.Type != controlpkg.WSTypeStateUpdated {
+		t.Fatalf("third message type = %q, want state.updated", updateEnvelope.Type)
+	}
+	if updateEnvelope.Sequence <= snapshotEnvelope.Sequence {
+		t.Fatalf("state.updated sequence %d did not advance past snapshot sequence %d", updateEnvelope.Sequence, snapshotEnvelope.Sequence)
+	}
 }

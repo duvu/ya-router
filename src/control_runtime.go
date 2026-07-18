@@ -38,12 +38,18 @@ const (
 	operationStatePathEnv      = "YA_ROUTER_OPERATIONS_PATH"
 )
 
+// stateHubPollInterval bounds how quickly a provider/routing/counter change
+// reaches connected WS clients without requiring full periodic REST polling.
+const stateHubPollInterval = 2 * time.Second
+
 type managedControlRuntime struct {
-	service       *controlpkg.Service
-	audit         *controlpkg.MemoryAuditSink
-	operations    *operationpkg.Manager
-	unixSocket    string
-	remoteAddress string
+	service          *controlpkg.Service
+	audit            *controlpkg.MemoryAuditSink
+	operations       *operationpkg.Manager
+	stateHub         *controlpkg.StateHub
+	stopStatePolling func()
+	unixSocket       string
+	remoteAddress    string
 }
 
 func newManagedControlRuntime(config *Config, runtimeManager *runtimepkg.Manager, providerManager *providerpkg.Manager) (*managedControlRuntime, error) {
@@ -130,13 +136,16 @@ func newManagedControlRuntimeWithSecretStore(config *Config, runtimeManager *run
 	controlpkg.RegisterOperationRoutes(api, operationManager, authSessionRunner{operations: operationManager, reloader: providerManager, secrets: secretStore})
 	controlpkg.RegisterSecretRoutes(api, secretStore)
 	controlpkg.RegisterMutationRoutes(api, mutationExecutor{reloader: providerManager})
-	controlpkg.RegisterWSRoute(api, controlpkg.NoopWSHandler{}, version, func() uint64 {
+	stateHub := controlpkg.NewStateHub(readModel)
+	wsHandler := controlpkg.StateAwareWSHandler{Reader: readModel}
+	controlpkg.RegisterWSRoute(api, wsHandler, stateHub, version, func() uint64 {
 		manager := currentConfigState()
 		if manager == nil {
 			return 0
 		}
 		return manager.Snapshot().Revision
 	})
+	stopStatePolling := stateHub.StartPolling(context.Background(), stateHubPollInterval)
 	localIdentity := controlpkg.Identity{Subject: "local:unix-socket", Role: controlpkg.RoleAdmin, Source: "unix_socket"}
 	localHandler := api.Handler(controlpkg.FixedAuthenticator(localIdentity))
 
@@ -157,11 +166,13 @@ func newManagedControlRuntimeWithSecretStore(config *Config, runtimeManager *run
 	}
 	closeOperations = false
 	return &managedControlRuntime{
-		service:       service,
-		audit:         audit,
-		operations:    operationManager,
-		unixSocket:    listenerConfig.UnixSocket,
-		remoteAddress: listenerConfig.RemoteAddress,
+		service:          service,
+		audit:            audit,
+		operations:       operationManager,
+		stateHub:         stateHub,
+		stopStatePolling: stopStatePolling,
+		unixSocket:       listenerConfig.UnixSocket,
+		remoteAddress:    listenerConfig.RemoteAddress,
 	}, nil
 }
 
@@ -315,6 +326,11 @@ func serveManagedServers(dataServer *http.Server, controlRuntime *managedControl
 	if controlRuntime == nil || controlRuntime.service == nil {
 		return fmt.Errorf("control runtime is required")
 	}
+	defer func() {
+		if controlRuntime.stopStatePolling != nil {
+			controlRuntime.stopStatePolling()
+		}
+	}()
 	if err := controlRuntime.service.Start(); err != nil {
 		if controlRuntime.operations != nil {
 			shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)

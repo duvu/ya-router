@@ -15,7 +15,7 @@ import (
 func startWSTestServer(t *testing.T, handler WSHandler) (dialURL string, api *API) {
 	t.Helper()
 	api = NewAPI(APIOptions{ServiceVersion: "test"})
-	RegisterWSRoute(api, handler, "test", func() uint64 { return 7 })
+	RegisterWSRoute(api, handler, nil, "test", func() uint64 { return 7 })
 	identity := Identity{Subject: "local:test", Role: RoleAdmin, Source: "test"}
 	server := httptest.NewServer(api.Handler(FixedAuthenticator(identity)))
 	t.Cleanup(server.Close)
@@ -354,7 +354,7 @@ func (h *captureConnHandler) HandleChatCancel(*WSConn) {}
 // route does not interfere with an ordinary REST route on the same API.
 func TestExistingRESTRoutesUnaffectedByWSRegistration(t *testing.T) {
 	api := NewAPI(APIOptions{ServiceVersion: "test"})
-	RegisterWSRoute(api, NoopWSHandler{}, "test", nil)
+	RegisterWSRoute(api, NoopWSHandler{}, nil, "test", nil)
 	identity := Identity{Subject: "local:test", Role: RoleAdmin, Source: "test"}
 	server := httptest.NewServer(api.Handler(FixedAuthenticator(identity)))
 	t.Cleanup(server.Close)

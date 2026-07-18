@@ -12,6 +12,7 @@ import (
 	providerpkg "github.com/duvu/ya-router/internal/provider"
 	runtimepkg "github.com/duvu/ya-router/internal/runtime"
 	secretpkg "github.com/duvu/ya-router/internal/secret"
+	telemetrypkg "github.com/duvu/ya-router/internal/telemetry"
 )
 
 func TestControlReadModelListsEveryCompiledProvider(t *testing.T) {
@@ -38,6 +39,110 @@ func TestControlReadModelListsEveryCompiledProvider(t *testing.T) {
 	}
 	if resources[1].Enabled || resources[2].Enabled {
 		t.Fatalf("disabled providers were reported enabled: %+v", resources)
+	}
+}
+
+// TestControlReadModelState_AggregatesProviderRoutingAndTelemetry proves
+// State() combines provider health, umbrella routing readiness, and
+// telemetry counters into one compact payload without adding a new health
+// or cooldown state machine (issue #75).
+func TestControlReadModelState_AggregatesProviderRoutingAndTelemetry(t *testing.T) {
+	oldRecorder := currentTelemetryRecorder()
+	recorder := telemetrypkg.NewRecorder()
+	setTelemetryRecorder(recorder)
+	t.Cleanup(func() { setTelemetryRecorder(oldRecorder) })
+	recorder.Begin("copilot", "gpt-5-mini").Finish(telemetrypkg.Outcome{Success: true, ProducedMessage: true, Usage: &telemetrypkg.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}})
+
+	config := defaultConfig()
+	config.Providers.Copilot.Auth.GitHubToken = "gh-token"
+	config.Providers.Copilot.Auth.CopilotToken = "cp-token"
+	runtimeManager, err := runtimepkg.NewManager(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerManager, err := newProviderManager(config, runtimeManager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = providerManager.Reconcile(context.Background(), nil)
+		_ = runtimeManager.Close(context.Background())
+	}()
+
+	model := newControlReadModel(runtimeManager, providerManager, nil)
+	payload, err := model.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	foundProvider := false
+	for _, p := range payload.Providers {
+		if p.Provider == "copilot" {
+			foundProvider = true
+		}
+	}
+	if !foundProvider {
+		t.Fatalf("copilot missing from provider state: %+v", payload.Providers)
+	}
+
+	foundThiendu := false
+	for _, r := range payload.Routing {
+		if r.VirtualModel == "thiendu" {
+			foundThiendu = true
+		}
+	}
+	if !foundThiendu {
+		t.Fatalf("thiendu missing from routing state: %+v", payload.Routing)
+	}
+
+	if len(payload.Counters) != 1 {
+		t.Fatalf("counters = %d, want 1", len(payload.Counters))
+	}
+	counter := payload.Counters[0]
+	if counter.Provider != "copilot" || counter.Model != "gpt-5-mini" || counter.Requests != 1 || counter.Successes != 1 {
+		t.Fatalf("counter = %+v", counter)
+	}
+	if counter.Usage.TotalTokens != 3 || counter.Usage.Unavailable {
+		t.Fatalf("usage = %+v", counter.Usage)
+	}
+}
+
+// TestControlReadModelState_RedactsSensitiveContent proves the state
+// payload never carries prompts, completions, credentials, or raw upstream
+// error strings — only bounded identifiers and enum values.
+func TestControlReadModelState_RedactsSensitiveContent(t *testing.T) {
+	oldRecorder := currentTelemetryRecorder()
+	recorder := telemetrypkg.NewRecorder()
+	setTelemetryRecorder(recorder)
+	t.Cleanup(func() { setTelemetryRecorder(oldRecorder) })
+	recorder.Begin("copilot", "gpt-5-mini").Finish(telemetrypkg.Outcome{Success: false, ErrorCategory: telemetrypkg.ErrorCategoryTransport})
+
+	config := defaultConfig()
+	config.Providers.Copilot.Auth.GitHubToken = "super-secret-github-token"
+	runtimeManager, err := runtimepkg.NewManager(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerManager, err := newProviderManager(config, runtimeManager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = providerManager.Reconcile(context.Background(), nil)
+		_ = runtimeManager.Close(context.Background())
+	}()
+
+	model := newControlReadModel(runtimeManager, providerManager, nil)
+	payload, err := model.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "super-secret-github-token") {
+		t.Fatalf("state payload leaked credential material: %s", encoded)
 	}
 }
 
