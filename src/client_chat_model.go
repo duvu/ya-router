@@ -102,10 +102,18 @@ func (m *chatModel) beginUserMessage() string {
 }
 
 // onRoute records the selected provider/model once chat.route arrives.
+// If a chat.route arrives while a streaming assistant entry already exists
+// (i.e. failover has moved to a new target), the existing in-progress entry
+// is updated in-place rather than adding a new empty assistant bubble.
 func (m *chatModel) onRoute(route controlpkg.WSChatRoutePayload) {
-	m.state = chatStreaming
 	m.selectedProvider = route.Provider
 	m.selectedModel = route.ResolvedModel
+	if m.state == chatStreaming && m.streamingIndex >= 0 && m.streamingIndex < len(m.transcript) {
+		// Failover: update the existing in-progress entry instead of opening
+		// a second assistant bubble.
+		return
+	}
+	m.state = chatStreaming
 	m.transcript = append(m.transcript, chatTranscriptEntry{Role: chatRoleAssistant, Text: ""})
 	m.streamingIndex = len(m.transcript) - 1
 }

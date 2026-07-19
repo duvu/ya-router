@@ -58,12 +58,27 @@ func (e *NoActiveTargetError) Error() string {
 // prefix. A target whose prefix is not recognized is skipped with a
 // provider_not_registered reason rather than causing a panic.
 func SelectPriorityTarget(virtualModelID string, vm configschema.VirtualModel, capability provider.Capability, snapshot *availability.Snapshot) (*SelectionDecision, error) {
+	return SelectPriorityTargetExcluding(virtualModelID, vm, capability, snapshot, nil)
+}
+
+// SelectPriorityTargetExcluding is the same as SelectPriorityTarget but skips
+// any target whose trimmed string is present in the exclude set. This is used
+// during sequential failover to prevent re-dispatching a target that has already
+// been tried within the same logical request.
+func SelectPriorityTargetExcluding(virtualModelID string, vm configschema.VirtualModel, capability provider.Capability, snapshot *availability.Snapshot, exclude map[string]struct{}) (*SelectionDecision, error) {
 	skipped := make([]SkippedTarget, 0, len(vm.Targets))
 	for index, target := range vm.Targets {
 		// Trim to match config validation, which trims before classifying a
 		// target's prefix. Without this a whitespace-padded target that passed
 		// validation would be silently unroutable here.
-		bare, providerID, hasPrefix := StripModelPrefix(strings.TrimSpace(target))
+		trimmed := strings.TrimSpace(target)
+		if exclude != nil {
+			if _, excluded := exclude[trimmed]; excluded {
+				skipped = append(skipped, SkippedTarget{Target: target, Index: index, Reason: availability.ReasonAlreadyAttempted})
+				continue
+			}
+		}
+		bare, providerID, hasPrefix := StripModelPrefix(trimmed)
 		if !hasPrefix {
 			skipped = append(skipped, SkippedTarget{Target: target, Index: index, Reason: availability.ReasonProviderNotRegistered})
 			continue

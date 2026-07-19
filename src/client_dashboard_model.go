@@ -78,6 +78,11 @@ func (model dashboardModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.status = "Daemon unavailable; press r to reconnect."
 			return model, nil
 		}
+		// Preserve live wsState from the WebSocket connection; the REST
+		// snapshot does not carry live provider/routing/usage state so
+		// overwriting wsState with the zero value would erase what the WS
+		// connection already pushed.
+		msg.snapshot.wsState = model.snapshot.wsState
 		model.snapshot = msg.snapshot
 		model.connected = true
 		if model.status == "Connecting to daemon..." || !strings.HasPrefix(model.status, "Action") {

@@ -51,6 +51,9 @@ const (
 	// ReasonCooldown indicates recent bounded feedback made a target temporarily
 	// unavailable for later automatic-routing requests.
 	ReasonCooldown Reason = "cooldown"
+	// ReasonAlreadyAttempted indicates the target was already tried earlier in
+	// this logical request and is excluded from subsequent failover selection.
+	ReasonAlreadyAttempted Reason = "already_attempted"
 )
 
 // CooldownReason classifies the bounded upstream outcome that started a

@@ -25,6 +25,7 @@ type Manager struct {
 	generation uint64
 	live       map[*Snapshot]struct{}
 	cooldowns  *routing.CooldownRegistry
+	preferred  *routing.PreferredTargetRegistry
 }
 
 func NewManager(config *configschema.Config, providers ...provider.Provider) (*Manager, error) {
@@ -34,8 +35,13 @@ func NewManager(config *configschema.Config, providers ...provider.Provider) (*M
 	if err := validateProviders(providers); err != nil {
 		return nil, err
 	}
-	manager := &Manager{generation: 1, live: make(map[*Snapshot]struct{}), cooldowns: routing.NewCooldownRegistry()}
-	initial := newSnapshot(manager.generation, config, providers, manager.cooldowns)
+	manager := &Manager{
+		generation: 1,
+		live:       make(map[*Snapshot]struct{}),
+		cooldowns:  routing.NewCooldownRegistry(),
+		preferred:  routing.NewPreferredTargetRegistry(),
+	}
+	initial := newSnapshotWithRegistries(manager.generation, config, providers, manager.cooldowns, manager.preferred)
 	manager.live[initial] = struct{}{}
 	manager.current.Store(initial)
 	manager.track(initial)
@@ -88,7 +94,7 @@ func (manager *Manager) publishLocked(config *configschema.Config, providers []p
 		return provider.Publication{}, err
 	}
 	manager.generation++
-	next := newSnapshot(manager.generation, config, providers, manager.cooldowns)
+	next := newSnapshotWithRegistries(manager.generation, config, providers, manager.cooldowns, manager.preferred)
 	priorSnapshots := make([]*Snapshot, 0, len(manager.live))
 	for snapshot := range manager.live {
 		priorSnapshots = append(priorSnapshots, snapshot)

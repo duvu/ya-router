@@ -48,23 +48,32 @@ type Router struct {
 	generation uint64
 	metrics    *Metrics
 	cooldowns  *CooldownRegistry
+	preferred  *PreferredTargetRegistry
 }
 
 // NewRouter builds an isolated model router over registry.
 func NewRouter(registry *provider.Registry, config configschema.Routing) *Router {
-	return NewRouterWithCooldowns(registry, config, nil)
+	return NewRouterWithRegistries(registry, config, nil, nil)
 }
 
 // NewRouterWithCooldowns builds a router over a shared cooldown registry. A
 // runtime manager shares this registry across immutable snapshot publications.
 func NewRouterWithCooldowns(registry *provider.Registry, config configschema.Routing, cooldowns *CooldownRegistry) *Router {
+	return NewRouterWithRegistries(registry, config, cooldowns, nil)
+}
+
+// NewRouterWithRegistries builds a router over shared cooldown and preferred-target registries.
+func NewRouterWithRegistries(registry *provider.Registry, config configschema.Routing, cooldowns *CooldownRegistry, preferred *PreferredTargetRegistry) *Router {
 	if config.ModelMap == nil {
 		config.ModelMap = make(map[string]configschema.ModelMapEntry)
 	}
 	if cooldowns == nil {
 		cooldowns = NewCooldownRegistry()
 	}
-	return &Router{registry: registry, routing: config, metrics: NewMetrics(), cooldowns: cooldowns}
+	if preferred == nil {
+		preferred = NewPreferredTargetRegistry()
+	}
+	return &Router{registry: registry, routing: config, metrics: NewMetrics(), cooldowns: cooldowns, preferred: preferred}
 }
 
 // SetGeneration records the runtime generation this router serves so umbrella
@@ -168,8 +177,20 @@ func (r *Router) resolveWithPrefix(ctx context.Context, fullModel, bareModel str
 // extra catalog fetch so exactly one provider is dispatched. If no target is
 // active, a typed NoActiveTargetError is returned and no provider is called.
 func (r *Router) resolveVirtualModel(ctx context.Context, virtualID string, vm configschema.VirtualModel, capability provider.Capability) (*Result, error) {
+	return r.resolveVirtualModelExcluding(ctx, virtualID, vm, capability, nil)
+}
+
+// resolveVirtualModelExcluding is the shared implementation that skips any
+// target in the exclude set. It is called for the first attempt without
+// exclusions and for each failover attempt with the previously tried targets.
+func (r *Router) resolveVirtualModelExcluding(ctx context.Context, virtualID string, vm configschema.VirtualModel, capability provider.Capability, exclude map[string]struct{}) (*Result, error) {
+	// Apply preferred-target ordering: move the preferred target to position 0.
+	orderedVM := vm
+	if preferredTarget, ok := r.preferred.Get(virtualID, capability); ok && preferredTarget != "" {
+		orderedVM = reorderVMTargets(vm, preferredTarget)
+	}
 	snapshot := r.buildAvailabilitySnapshot(ctx)
-	decision, err := SelectPriorityTarget(virtualID, vm, capability, snapshot)
+	decision, err := SelectPriorityTargetExcluding(virtualID, orderedVM, capability, snapshot, exclude)
 	if err != nil {
 		var noTarget *NoActiveTargetError
 		if errors.As(err, &noTarget) {
@@ -196,6 +217,51 @@ func (r *Router) resolveVirtualModel(ctx context.Context, virtualID string, vm c
 	log.Printf("[router] umbrella %q → target=%q provider=%s upstream=%q (index=%d generation=%d)",
 		virtualID, decision.SelectedTarget, registered.ID(), bare, decision.SelectedIndex, decision.Generation)
 	return &Result{Provider: registered, ResolvedModel: bare, Selection: decision}, nil
+}
+
+// reorderVMTargets returns a copy of vm with preferredTarget moved to index 0
+// and all other targets following in their original order (without duplication).
+func reorderVMTargets(vm configschema.VirtualModel, preferredTarget string) configschema.VirtualModel {
+	found := false
+	for _, t := range vm.Targets {
+		if strings.TrimSpace(t) == strings.TrimSpace(preferredTarget) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return vm
+	}
+	ordered := make([]string, 0, len(vm.Targets))
+	ordered = append(ordered, preferredTarget)
+	for _, t := range vm.Targets {
+		if strings.TrimSpace(t) != strings.TrimSpace(preferredTarget) {
+			ordered = append(ordered, t)
+		}
+	}
+	return configschema.VirtualModel{Strategy: vm.Strategy, Targets: ordered}
+}
+
+// ResolveNext resolves the next failover target for an umbrella request,
+// excluding all targets already attempted. It is called only from the
+// sequential failover loop in processProxyRequest and must not be called for
+// non-umbrella (explicit provider-prefixed) routes.
+func (r *Router) ResolveNext(ctx context.Context, virtualID string, capability provider.Capability, exclude map[string]struct{}) (*Result, error) {
+	vm, ok := r.routing.VirtualModels[virtualID]
+	if !ok {
+		return nil, &NoActiveTargetError{VirtualModel: virtualID}
+	}
+	return r.resolveVirtualModelExcluding(ctx, virtualID, vm, capability, exclude)
+}
+
+// RecordPreferred records target as the preferred starting candidate for the
+// next request to this virtual model/capability. Called after a successful
+// umbrella dispatch.
+func (r *Router) RecordPreferred(virtualID string, capability provider.Capability, target string) {
+	if r == nil || r.preferred == nil {
+		return
+	}
+	r.preferred.Set(virtualID, capability, target)
 }
 
 // buildAvailabilitySnapshot constructs an availability view from the frozen

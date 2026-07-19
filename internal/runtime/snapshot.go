@@ -42,6 +42,21 @@ func newSnapshot(generation uint64, config *configschema.Config, providers []pro
 	}
 }
 
+func newSnapshotWithRegistries(generation uint64, config *configschema.Config, providers []provider.Provider, cooldowns *routing.CooldownRegistry, preferred *routing.PreferredTargetRegistry) *Snapshot {
+	effectiveConfig := configschema.Clone(config)
+	registry := provider.NewRegistry(providers...)
+	registry.Freeze()
+	router := routing.NewRouterWithRegistries(registry, effectiveConfig.Routing, cooldowns, preferred)
+	router.SetGeneration(generation)
+	return &Snapshot{
+		generation: generation,
+		config:     effectiveConfig,
+		providers:  registry,
+		router:     router,
+		drained:    make(chan struct{}),
+	}
+}
+
 func (snapshot *Snapshot) Generation() uint64 { return snapshot.generation }
 
 // Config returns an isolated copy so callers cannot mutate the configuration

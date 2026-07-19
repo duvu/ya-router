@@ -65,12 +65,10 @@ func (h *wsChatHandler) HandleChatStart(ctx context.Context, conn *controlpkg.WS
 		return
 	}
 
-	routedOnce := false
+	// Emit chat.route for every provider/model selection, including failover
+	// attempts. Each chat.route must update the in-progress target rather than
+	// open a new assistant bubble; the TUI enforces that invariant.
 	observer := func(providerID ProviderID, resolvedModel string) {
-		if routedOnce {
-			return
-		}
-		routedOnce = true
 		conn.Send(controlpkg.WSTypeChatRoute, requestID, mustMarshalChatRoute(string(providerID), resolvedModel))
 	}
 

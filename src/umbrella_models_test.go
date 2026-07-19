@@ -214,7 +214,11 @@ func TestProxyThienduStreamingPreservesExternalModelIdentity(t *testing.T) {
 	}
 }
 
-func TestProxyUmbrellaCooldownOnlyAffectsLaterRequest(t *testing.T) {
+// TestProxyUmbrellaCooldownAffectsNextRequestSelection proves that after a
+// target enters cooldown via sequential failover, it is skipped on the NEXT
+// logical request's initial selection. The first request fails over from copilot
+// (429) to codex (200); the second request starts directly at codex.
+func TestProxyUmbrellaCooldownAffectsNextRequestSelection(t *testing.T) {
 	var copilotCalls, codexCalls int
 	registry := NewProviderRegistry()
 	registry.Register(&mockProvider{
@@ -243,15 +247,17 @@ func TestProxyUmbrellaCooldownOnlyAffectsLaterRequest(t *testing.T) {
 	}
 	handler := proxyHandler(registry, NewModelRouter(registry, cfg.Routing), cfg)
 
+	// First request: copilot returns 429, failover to codex which succeeds.
 	first := httptest.NewRecorder()
 	handler.ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"thiendu","messages":[]}`)))
-	if first.Code != http.StatusTooManyRequests || copilotCalls != 1 || codexCalls != 0 {
-		t.Fatalf("first request status=%d copilot=%d codex=%d", first.Code, copilotCalls, codexCalls)
+	if first.Code != http.StatusOK || copilotCalls != 1 || codexCalls != 1 {
+		t.Fatalf("first request status=%d copilot=%d codex=%d; want 200/1/1", first.Code, copilotCalls, codexCalls)
 	}
+	// Second request: copilot is on cooldown so it is skipped; codex is tried directly.
 	second := httptest.NewRecorder()
 	handler.ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"thiendu","messages":[]}`)))
-	if second.Code != http.StatusOK || copilotCalls != 1 || codexCalls != 1 {
-		t.Fatalf("second request status=%d copilot=%d codex=%d", second.Code, copilotCalls, codexCalls)
+	if second.Code != http.StatusOK || copilotCalls != 1 || codexCalls != 2 {
+		t.Fatalf("second request status=%d copilot=%d codex=%d; want 200/1/2", second.Code, copilotCalls, codexCalls)
 	}
 }
 

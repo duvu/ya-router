@@ -458,7 +458,115 @@ func proxyHandler(registry *ProviderRegistry, router *ModelRouter, cfg *Config) 
 	}
 }
 
+// attemptResponseWriter buffers an upstream attempt's status and any initial
+// body bytes so the failover loop can discard a failed attempt without
+// committing bytes to the real client.
+//
+// Commit protocol:
+//   - WriteHeader records the status code but does NOT forward it yet.
+//   - Write buffers data. The first write after a ≥2xx status auto-commits:
+//     headers and any buffered bytes flow to the real writer, then the new bytes
+//     follow. From that point all further writes/flushes pass through directly.
+//   - CommitToReal forces the commit (used by the failover loop on success).
+//   - If the attempt fails before any commit, the caller discards the
+//     attemptResponseWriter and creates a fresh one for the next attempt.
+type attemptResponseWriter struct {
+	real            http.ResponseWriter
+	statusCode      int
+	headersSent     bool
+	outputCommitted bool
+	buf             bytes.Buffer
+}
+
+func newAttemptResponseWriter(real http.ResponseWriter) *attemptResponseWriter {
+	return &attemptResponseWriter{real: real}
+}
+
+func (a *attemptResponseWriter) Header() http.Header { return a.real.Header() }
+
+func (a *attemptResponseWriter) WriteHeader(code int) {
+	if a.headersSent {
+		return
+	}
+	a.headersSent = true
+	a.statusCode = code
+}
+
+func (a *attemptResponseWriter) Write(data []byte) (int, error) {
+	if a.outputCommitted {
+		return a.real.Write(data)
+	}
+	// Auto-commit on the first write after a successful (non-error) status so
+	// streaming responses are not buffered in their entirety.
+	status := a.StatusCode()
+	if status >= http.StatusOK && status < http.StatusMultipleChoices {
+		_ = a.CommitToReal()
+		return a.real.Write(data)
+	}
+	return a.buf.Write(data)
+}
+
+func (a *attemptResponseWriter) Flush() {
+	if a.outputCommitted {
+		if f, ok := a.real.(http.Flusher); ok {
+			f.Flush()
+		}
+	}
+}
+
+func (a *attemptResponseWriter) StatusCode() int {
+	if a.statusCode == 0 {
+		return http.StatusOK
+	}
+	return a.statusCode
+}
+
+// OutputCommitted reports whether any response bytes have been forwarded to the
+// real writer (i.e. the response is no longer discardable).
+func (a *attemptResponseWriter) OutputCommitted() bool { return a.outputCommitted }
+
+// CommitToReal flushes buffered status/headers/body to the real writer and
+// switches to pass-through mode. After this call all further writes go directly
+// to the real writer without buffering. It is idempotent.
+func (a *attemptResponseWriter) CommitToReal() error {
+	if a.outputCommitted {
+		return nil
+	}
+	a.outputCommitted = true
+	a.real.WriteHeader(a.StatusCode())
+	if a.buf.Len() > 0 {
+		_, err := a.real.Write(a.buf.Bytes())
+		a.buf.Reset()
+		return err
+	}
+	return nil
+}
+
+// isEligibleFailoverStatus reports whether the HTTP status code from an
+// upstream attempt qualifies the logical request for failover to the next
+// target. Failover is only eligible before any response bytes reach the client.
+func isEligibleFailoverStatus(status int, err error) bool {
+	if err != nil {
+		return true
+	}
+	switch status {
+	case http.StatusTooManyRequests,
+		http.StatusUnauthorized,
+		http.StatusPaymentRequired,
+		http.StatusForbidden,
+		http.StatusRequestTimeout,
+		http.StatusGatewayTimeout:
+		return true
+	}
+	return status >= http.StatusInternalServerError
+}
+
 // processProxyRequest resolves a route and delegates to the selected provider.
+// For umbrella (virtual) model requests it performs sequential failover: after
+// an eligible pre-output failure it records a cooldown, resolves the next
+// available target, and retries. All attempts share the original body and
+// request context. The same response writer and telemetry handle are used
+// throughout; only the route and provider change between attempts.
 func processProxyRequest(
 	_ *ProviderRegistry,
 	router *ModelRouter,
@@ -496,10 +604,146 @@ func processProxyRequest(
 		return newProviderError("", ProviderErrorInvalidRequest, http.StatusBadRequest, false, "routing: %v", err)
 	}
 
-	if route.Selection != nil {
-		logUmbrellaSelection(route.Selection, route.Provider.ID())
+	// Non-umbrella routes: single dispatch, no failover.
+	if route.Selection == nil {
+		return dispatchSingleRoute(route, router, r, body, capability, requestedModel, w, ctx, reqStart)
 	}
 
+	// Umbrella route: sequential failover loop. The set of attempted targets
+	// grows with each attempt; the loop terminates when one attempt succeeds,
+	// the context is cancelled, output is committed, or no more targets remain.
+	attempted := make(map[string]struct{})
+	var lastProxyErr error
+	var lastStatus int
+	attemptNum := 0
+
+	// routeObserver is called once per attempt so the WS chat path can track
+	// the current provider/model as failover progresses.
+	observer := routeObserverFromContext(ctx)
+
+	for {
+		attemptNum++
+		target := strings.TrimSpace(route.Selection.SelectedTarget)
+		attempted[target] = struct{}{}
+
+		if observer != nil {
+			observer(route.Provider.ID(), route.ResolvedModel)
+		}
+
+		if route.Selection != nil {
+			logUmbrellaSelection(route.Selection, route.Provider.ID())
+		}
+
+		attemptBody := body
+		if route.ResolvedModel != requestedModel {
+			log.Printf("[REQ] attempt %d model rewritten: %q → %q", attemptNum, requestedModel, route.ResolvedModel)
+			attemptBody = patchBodyModel(body, route.ResolvedModel)
+		}
+
+		log.Printf("[REQ] attempt %d/%s %s %s model=%q → provider=%s upstream_model=%q",
+			attemptNum, route.Selection.VirtualModel, r.Method, r.URL.Path,
+			requestedModel, route.Provider.ID(), route.ResolvedModel)
+
+		telemetryHandle := currentTelemetryRecorder().Begin(string(route.Provider.ID()), route.ResolvedModel)
+
+		// Buffer this attempt behind an attempt writer so we can discard a
+		// failed attempt without committing bytes to the real client.
+		attemptWriter := newAttemptResponseWriter(w)
+		virtualWriter := newVirtualModelResponseWriter(attemptWriter, requestedModel)
+		usageWriter := newUsageSniffWriter(virtualWriter)
+
+		proxyErr := route.Provider.ProxyRequest(ctx, usageWriter, r, attemptBody, capability)
+		if commitErr := virtualWriter.Commit(); commitErr != nil && proxyErr == nil {
+			proxyErr = commitErr
+		}
+
+		// Determine outcome status.
+		status := responseStatus(virtualWriter)
+		if proxyErr != nil && status == http.StatusOK {
+			status = providerErrorStatus(proxyErr)
+		}
+
+		router.RecordOutcome(route.Selection, status, proxyErr, retryAfterDuration(attemptWriter.real.Header().Get("Retry-After")))
+
+		telemetrySuccess := proxyErr == nil && status < http.StatusBadRequest
+		telemetryHandle.Finish(telemetrypkg.Outcome{
+			Success:         telemetrySuccess,
+			ErrorCategory:   classifyErrorCategory(status, proxyErr),
+			ProducedMessage: telemetrySuccess && capability != CapabilityEmbeddings,
+			Usage:           usageWriter.Usage(),
+		})
+
+		// On success (or if output has already started flowing), commit and return.
+		if telemetrySuccess || attemptWriter.OutputCommitted() {
+			if telemetrySuccess {
+				router.RecordPreferred(route.Selection.VirtualModel, capability, target)
+			}
+			if !attemptWriter.OutputCommitted() {
+				if err := attemptWriter.CommitToReal(); err != nil {
+					return err
+				}
+			}
+			elapsed := time.Since(reqStart)
+			log.Printf("[REQ] completed %s %s model=%q provider=%s status=%d attempt=%d elapsed=%s",
+				r.Method, r.URL.Path, requestedModel, route.Provider.ID(), status, attemptNum, elapsed)
+			return proxyErr
+		}
+
+		// Check failover eligibility.
+		lastProxyErr = proxyErr
+		lastStatus = status
+
+		if !isEligibleFailoverStatus(status, proxyErr) {
+			// Non-retriable failure — commit the error response and stop.
+			_ = attemptWriter.CommitToReal()
+			elapsed := time.Since(reqStart)
+			log.Printf("[REQ] completed %s %s model=%q provider=%s status=%d attempt=%d elapsed=%s error=%v",
+				r.Method, r.URL.Path, requestedModel, route.Provider.ID(), status, attemptNum, elapsed, proxyErr)
+			return proxyErr
+		}
+
+		if ctx.Err() != nil {
+			// Client cancelled or deadline exceeded — stop.
+			log.Printf("[REQ] failover aborted after attempt %d: context %v", attemptNum, ctx.Err())
+			return proxyErr
+		}
+
+		log.Printf("[REQ] attempt %d/%s failed (status=%d), trying next target",
+			attemptNum, route.Selection.VirtualModel, status)
+
+		// Try to get the next routable target.
+		nextRoute, nextErr := router.ResolveNext(ctx, route.Selection.VirtualModel, capability, attempted)
+		if nextErr != nil {
+			// No more targets.
+			var noTarget *routingpkg.NoActiveTargetError
+			if errors.As(nextErr, &noTarget) {
+				logUmbrellaNoTarget(requestedModel, noTarget)
+			}
+			elapsed := time.Since(reqStart)
+			log.Printf("[REQ] all targets exhausted for %q after %d attempt(s) elapsed=%s",
+				requestedModel, attemptNum, elapsed)
+			return newProviderError("", ProviderErrorModelUnavailable, http.StatusServiceUnavailable, false,
+				"all active targets failed for model %q after %d attempt(s)", requestedModel, attemptNum)
+		}
+		route = nextRoute
+		_ = lastProxyErr
+		_ = lastStatus
+	}
+}
+
+// dispatchSingleRoute handles non-umbrella routes (explicit provider-prefix,
+// model-map, catalog). These routes dispatch exactly once with no failover.
+func dispatchSingleRoute(
+	route *RouteResult,
+	router *ModelRouter,
+	r *http.Request,
+	body []byte,
+	capability Capability,
+	requestedModel string,
+	w http.ResponseWriter,
+	ctx context.Context,
+	reqStart time.Time,
+) error {
 	if observer := routeObserverFromContext(ctx); observer != nil {
 		observer(route.Provider.ID(), route.ResolvedModel)
 	}
@@ -514,27 +758,14 @@ func processProxyRequest(
 
 	telemetryHandle := currentTelemetryRecorder().Begin(string(route.Provider.ID()), route.ResolvedModel)
 
-	responseWriter := w
-	var virtualWriter *virtualModelResponseWriter
-	if route.Selection != nil {
-		virtualWriter = newVirtualModelResponseWriter(w, requestedModel)
-		responseWriter = virtualWriter
-	}
-	usageWriter := newUsageSniffWriter(responseWriter)
+	usageWriter := newUsageSniffWriter(w)
 	proxyErr := route.Provider.ProxyRequest(ctx, usageWriter, r, body, capability)
-	if virtualWriter != nil {
-		if commitErr := virtualWriter.Commit(); commitErr != nil && proxyErr == nil {
-			proxyErr = commitErr
-		}
-	}
 
 	status := responseStatus(w)
 	if proxyErr != nil && status == http.StatusOK {
 		status = providerErrorStatus(proxyErr)
 	}
-	if route.Selection != nil {
-		router.RecordOutcome(route.Selection, status, proxyErr, retryAfterDuration(w.Header().Get("Retry-After")))
-	}
+
 	telemetrySuccess := proxyErr == nil && status < http.StatusBadRequest
 	telemetryHandle.Finish(telemetrypkg.Outcome{
 		Success:         telemetrySuccess,
