@@ -1,0 +1,301 @@
+name: Patch Spark-first documentation
+
+on:
+  push:
+    branches:
+      - agent/spark-first-routing
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/spark-first-routing
+      - name: Update routing documentation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def require_replace(text: str, old: str, new: str, label: str) -> str:
+              if old not in text:
+                  raise SystemExit(f"missing expected block: {label}")
+              return text.replace(old, new, 1)
+
+          def replace_section(text: str, start: str, end: str, replacement: str) -> str:
+              start_index = text.find(start)
+              if start_index < 0:
+                  raise SystemExit(f"missing section start: {start}")
+              end_index = text.find(end, start_index)
+              if end_index < 0:
+                  raise SystemExit(f"missing section end: {end}")
+              return text[:start_index] + replacement.rstrip() + "\n\n" + text[end_index:]
+
+          readme_path = Path("README.md")
+          readme = readme_path.read_text()
+          readme = require_replace(
+              readme,
+              "| Automatic routing | Generic `routing.virtual_models`, default `thiendu`, capability/health/auth/catalog/allowlist/cooldown-aware priority selection |",
+              "| Automatic routing | Generic `routing.virtual_models`; default `thiendu` uses `quota_priority`, bounded pre-output failover, and durable per-target quota cooldowns |",
+              "README automatic routing row",
+          )
+          readme = require_replace(
+              readme,
+              "Selection happens before dispatch and remains pinned for the complete request. A failed selected request is returned to the client and is **not replayed** to another provider. A later request may choose a different eligible target while the previous target is unhealthy or in cooldown.",
+              "Virtual-model attempts are sequential and bounded by the configured targets. An eligible failure may move to the next target only before response output is committed; once output begins, the request remains pinned. The default `quota_priority` strategy always returns to configured order after cooldown expiry. A quota-style failure cools only that provider/model/capability target for at least 24 hours, persisted in owner-only state. Short burst throttles and transient failures keep the existing short cooldown policy.",
+              "README routing semantics",
+          )
+          readme = require_replace(
+              readme,
+              "/var/lib/ya-router/operations.json\n/run/ya-router/control.sock",
+              "/var/lib/ya-router/operations.json\n/var/lib/ya-router/cooldowns.json\n/run/ya-router/control.sock",
+              "README systemd state list",
+          )
+          readme_path.write_text(readme)
+
+          config_path = Path("docs/CONFIGURATION.md")
+          config = config_path.read_text()
+          config = require_replace(
+              config,
+              "| `CODEX_HOME` | `~/.codex` | Read-only source for a legacy/single-account Codex credential import |\n| `KILO_API_KEY` | empty | Kilo Gateway API key; optional for free anonymous models |",
+              "| `CODEX_HOME` | `~/.codex` | Read-only source for a legacy/single-account Codex credential import |\n| `YA_ROUTER_COOLDOWNS_PATH` | beside the managed config | Owner-only durable per-target cooldown state |\n| `KILO_API_KEY` | empty | Kilo Gateway API key; optional for free anonymous models |",
+              "configuration environment table",
+          )
+          config = require_replace(
+              config,
+              '"upstream_model": "gpt-5.4"',
+              '"upstream_model": "gpt-5.4-mini"',
+              "configuration model map",
+          )
+          config = require_replace(
+              config,
+              "1. Exact `model_map` key.\n2. Bare `model_map` key after removing a recognized provider prefix.\n3. Explicit provider prefix.\n4. Provider catalog discovery.\n5. Configured default provider only when the request omitted the model.",
+              "1. Exact `model_map` key.\n2. Bare `model_map` key after removing a recognized provider prefix.\n3. Explicit provider prefix.\n4. Exact configured virtual-model ID such as `thiendu`.\n5. Provider catalog discovery.\n6. Configured default provider only when the request omitted the model.",
+              "configuration routing order",
+          )
+          config_virtual = '''### `virtual_models` (automatic virtual models)
+
+Virtual models expose one client-facing ID backed by an ordered list of canonical provider-prefixed targets. The proxy may try targets sequentially for one logical request, but only while no response output has been committed. Each target is attempted at most once, all attempts share the original context/deadline, and explicit provider-prefixed or `model_map` requests never enter this failover path.
+
+Fresh configurations use the following quota-consumption chain:
+
+```json
+{
+  "routing": {
+    "virtual_models": {
+      "thiendu": {
+        "strategy": "quota_priority",
+        "targets": [
+          "codex/gpt-5.3-codex-spark",
+          "codex/gpt-5.4-mini",
+          "github/gpt-5.4-mini",
+          "github/gpt-5-mini",
+          "kilo/kilo-auto/free"
+        ]
+      }
+    }
+  }
+}
+```
+
+Supported strategies:
+
+- `priority`: backward-compatible behavior that may start a later request from the last successful target while it remains routable.
+- `quota_priority`: always evaluates configured order. Targets in cooldown are skipped; when a higher-priority cooldown expires, the next request evaluates that target before lower-priority targets again.
+
+Validation rules (enforced at config load, not request time):
+
+- The virtual model ID must be non-empty and must not collide with a provider prefix (`github/`, `codex/`, `kilo/`) or shadow an explicit `model_map` key.
+- `strategy` must be `priority` or `quota_priority`.
+- At least one target is required; targets must be unique and each must use a known provider prefix.
+- A target cannot reference another virtual model (no nesting).
+
+### Quota and transient cooldowns
+
+Cooldown state is scoped by `(provider, upstream model, capability)`, so exhausting Spark does not disable another Codex model. A quota-style response records a cooldown of at least 24 hours. A trustworthy reset later than 24 hours is honored. A short `Retry-After` on a burst `429`, generic timeout, transport failure, or `5xx` keeps the bounded short cooldown policy instead of locking a target for a full day.
+
+The managed daemon persists this bounded, redacted state to `YA_ROUTER_COOLDOWNS_PATH` (normally `cooldowns.json` beside the managed config). The file is written atomically with mode `0600` and contains no prompt, completion, credential, raw upstream body, or account identifier. Invalid advisory state is ignored with a sanitized warning so it cannot prevent daemon startup.
+
+Umbrella IDs are resolved after explicit prefixes and before ordinary provider-catalog discovery. See [Umbrella Model Routing architecture](architecture/umbrella-model-routing.md) for the full contract.'''
+          config = replace_section(config, "### `virtual_models` (automatic virtual models)", "### `claude_aliases`", config_virtual)
+          config = require_replace(
+              config,
+              '"claude-ya-codex-gpt-5-4": "codex/gpt-5.4"',
+              '"claude-ya-codex-gpt-5-4-mini": "codex/gpt-5.4-mini"',
+              "configuration Claude alias",
+          )
+          config_path.write_text(config)
+
+          architecture_path = Path("docs/architecture/umbrella-model-routing.md")
+          architecture = architecture_path.read_text()
+          architecture = require_replace(architecture, "Last updated: 2026-07-15", "Last updated: 2026-07-24", "architecture date")
+
+          architecture = replace_section(architecture, "## 1. Decision summary", "## 2. Why this is a separate routing concept", '''## 1. Decision summary
+
+`ya-router` supports client-facing **umbrella models** (also called virtual models). `thiendu` is the default public model. Fresh configurations use a quota-consumption policy:
+
+```text
+thiendu (`quota_priority`)
+  1. codex/gpt-5.3-codex-spark
+  2. codex/gpt-5.4-mini
+  3. github/gpt-5.4-mini
+  4. github/gpt-5-mini
+  5. kilo/kilo-auto/free
+```
+
+For each request, the router reads one immutable runtime/availability snapshot and evaluates configured targets in order. A selected target may fail over to the next target only for an eligible failure before response output is committed. Attempts are sequential, each target is tried at most once, and all attempts share the original request body, context, and deadline. Once output starts, the request remains pinned.
+
+Quota-style failures create a target-specific cooldown of at least 24 hours. During that window, later automatic requests skip only the affected provider/model/capability target. After expiry, `quota_priority` restores configured order and evaluates the recovered higher-priority target first.''')
+
+          architecture = replace_section(architecture, "## 3. Terminology", "## 4. Goals", '''## 3. Terminology
+
+| Term | Meaning |
+|---|---|
+| Umbrella model | Client-facing virtual model configured under `routing.virtual_models` |
+| Target | Canonical provider-prefixed model ID referenced by an umbrella model |
+| Active/routable | Eligible for selection for one capability under the current availability snapshot |
+| Attempt | One dispatch to one selected target within a logical virtual-model request |
+| Request pinning | Once response output is committed, retaining that provider/model for the remainder of the request |
+| Quota cooldown | Durable provider/model/capability exclusion until its quota retry time |
+| Bounded cross-target failover | Sequentially trying the next configured target before any output is committed |
+| Explicit route | `model_map` or provider-prefixed request that remains pinned and never enters automatic failover |''')
+
+          architecture = replace_section(architecture, "## 4. Goals", "## 5. Non-goals for v1", '''## 4. Goals
+
+1. Give clients one stable model ID while operators control an ordered target list.
+2. Consume the highest-priority available quota before moving down the chain.
+3. Remember exhausted target quotas for at least 24 hours across reloads and restarts.
+4. Keep same-request failover bounded, sequential, and safe before output commit.
+5. Preserve explicit routing and provider isolation guarantees.
+6. Make decisions observable using bounded, redacted metadata.
+7. Avoid prompt inspection, speculative duplicate requests, and unbounded retry machinery.''')
+
+          architecture = replace_section(architecture, "## 5. Non-goals for v1", "## 6. Configuration contract", '''## 5. Non-goals for v1
+
+- Parallel hedging or speculative duplicate generations.
+- Continuing with another target after partial output was sent.
+- Weighted, random, round-robin, cost, latency, or quality-based selection.
+- Prompt inspection or LLM-based model choice.
+- Umbrella models referencing other umbrella models.
+- Persisting prompts, completions, raw provider errors, credentials, or account identifiers in routing state.
+- Silently rerouting explicit provider-prefixed or `model_map` requests.''')
+
+          architecture = replace_section(architecture, "## 6. Configuration contract", "## 7. Routing precedence", '''## 6. Configuration contract
+
+```json
+{
+  "routing": {
+    "virtual_models": {
+      "thiendu": {
+        "strategy": "quota_priority",
+        "targets": [
+          "codex/gpt-5.3-codex-spark",
+          "codex/gpt-5.4-mini",
+          "github/gpt-5.4-mini",
+          "github/gpt-5-mini",
+          "kilo/kilo-auto/free"
+        ]
+      }
+    }
+  }
+}
+```
+
+### 6.1 Strategy semantics
+
+- `priority` preserves the historical last-successful-target optimization for backward compatibility.
+- `quota_priority` always starts from configured order, skipping only currently unroutable or cooling targets. When a cooldown expires, configured priority is restored automatically.
+
+### 6.2 Validation restrictions
+
+- Every target must use a known provider prefix.
+- Targets must be unique within one umbrella model.
+- At least one target is required.
+- A target cannot reference another umbrella model.
+- An umbrella ID cannot shadow a provider-prefixed ID or an explicit `model_map` key.
+- The `router/` namespace remains reserved for router-owned client model IDs.''')
+
+          architecture = replace_section(architecture, "## 8. Definition of active", "## 9. Availability snapshots", '''## 8. Definition of active
+
+A target is active for a request capability only when all conditions are satisfied:
+
+1. The target prefix identifies a provider present in the request's immutable runtime snapshot.
+2. The provider supports the requested capability.
+3. The provider health snapshot is `ready`.
+4. The last-known-good model catalog includes the target's bare model ID.
+5. Existing provider allowlist, entitlement, and anonymous/free rules permit the target.
+6. The target is not disabled by configuration.
+7. No active cooldown exists for the same provider/model/capability.
+
+A present but stale catalog remains routable; staleness is diagnostic rather than an outage condition. A missing catalog still fails closed. Cooldown state is network-free and is copied into the same availability snapshot used by selection.''')
+
+          architecture = replace_section(architecture, "## 9. Availability snapshots", "## 10. Selection algorithm", '''## 9. Availability snapshots
+
+The request hot path performs no catalog or cooldown network I/O. It reads an immutable or atomically published availability view containing:
+
+- provider ID and runtime generation;
+- capabilities and redacted readiness;
+- last-known-good model IDs and catalog timestamps;
+- active target cooldown reason and expiry;
+- stable target rejection reason codes.
+
+Stable reasons include:
+
+```text
+provider_not_registered
+provider_not_ready
+capability_unsupported
+model_not_in_catalog
+model_disallowed
+target_disabled
+cooldown
+already_attempted
+```
+
+Cooldown reasons include bounded values such as `quota_exhausted`, `rate_limited`, `auth_required`, `entitlement_denied`, `timeout`, and `transient_failure`. Provider-supplied prose is never copied into routing state.''')
+
+          architecture = replace_section(architecture, "## 10. Selection algorithm", "## 11. Request pinning and no-failover invariant", '''## 10. Selection algorithm
+
+```text
+resolve(virtual model, capability, excluded targets)
+  order targets according to strategy
+  for target in order:
+    skip if already attempted in this request
+    skip if provider/model/capability is not currently routable
+    return target and bounded decision metadata
+  return no_active_target
+```
+
+`priority` may move its last successful target to the front. `quota_priority` never does; configured order is authoritative after cooldown filtering. The output is deterministic for the same configuration, availability snapshot, preference state, and exclusion set.''')
+
+          architecture = replace_section(architecture, "## 11. Request pinning and no-failover invariant", "## 12. Model catalog contract", '''## 11. Bounded failover and pinning invariant
+
+For virtual-model requests, the proxy may continue to the next target only when all of these conditions hold:
+
+- no response body has been committed;
+- the request context/deadline is still active;
+- another configured target is routable;
+- the failure is eligible, including quota/rate limit, auth or entitlement denial, pre-output timeout/transport failure, or `5xx`.
+
+Invalid client requests, unsupported capability, cancellation, and errors after output commit do not fail over. One target is attempted at most once, maximum attempts equal the configured target count, and all attempts are sequential. Successful streaming remains incremental and is never buffered in full.
+
+A quota-style outcome records a cooldown for the exact provider/model/capability target. The default duration is 24 hours; a later trustworthy reset is honored. Short burst `Retry-After` values and transient errors retain the bounded short cooldown policy. The durable state is atomic, owner-only, redacted, and survives daemon restart.''')
+
+          architecture_path.write_text(architecture)
+          PY
+      - name: Commit documentation
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add README.md docs/CONFIGURATION.md docs/architecture/umbrella-model-routing.md
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'docs: explain Spark-first quota routing'
+          git push origin HEAD:agent/spark-first-routing
