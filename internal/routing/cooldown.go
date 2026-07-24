@@ -23,7 +23,7 @@ const (
 	maxCooldown   = 5 * time.Minute
 	quotaCooldown = 24 * time.Hour
 
-	cooldownStateVersion = 1
+	cooldownStateVersion  = 1
 	maxPersistedCooldowns = 4096
 )
 
