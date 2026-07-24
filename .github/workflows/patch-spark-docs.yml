@@ -1,4 +1,4 @@
-name: Patch Spark-first README
+name: Patch Spark-first configuration docs
 
 on:
   push:
@@ -16,39 +16,94 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: agent/spark-first-routing
-      - name: Update README
+      - name: Update configuration guide
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path("README.md")
+          path = Path("docs/CONFIGURATION.md")
           text = path.read_text()
-          replacements = [
-              (
-                  "| Automatic routing | Generic `routing.virtual_models`, default `thiendu`, capability/health/auth/catalog/allowlist/cooldown-aware priority selection |",
-                  "| Automatic routing | Generic `routing.virtual_models`; default `thiendu` uses `quota_priority`, bounded pre-output failover, and durable per-target quota cooldowns |",
-              ),
-              (
-                  "Selection happens before dispatch and remains pinned for the complete request. A failed selected request is returned to the client and is **not replayed** to another provider. A later request may choose a different eligible target while the previous target is unhealthy or in cooldown.",
-                  "Virtual-model attempts are sequential and bounded by the configured targets. An eligible failure may move to the next target only before response output is committed; once output begins, the request remains pinned. The default `quota_priority` strategy always returns to configured order after cooldown expiry. A quota-style failure cools only that provider/model/capability target for at least 24 hours, persisted in owner-only state. Short burst throttles and transient failures keep the existing short cooldown policy.",
-              ),
-              (
-                  "/var/lib/ya-router/operations.json\n/run/ya-router/control.sock",
-                  "/var/lib/ya-router/operations.json\n/var/lib/ya-router/cooldowns.json\n/run/ya-router/control.sock",
-              ),
-          ]
-          for old, new in replacements:
+
+          def replace_once(old: str, new: str, label: str) -> None:
+              global text
               if old not in text:
-                  raise SystemExit(f"missing README block: {old[:60]}")
+                  raise SystemExit(f"missing configuration block: {label}")
               text = text.replace(old, new, 1)
+
+          replace_once(
+              "| `CODEX_HOME` | `~/.codex` | Read-only source for a legacy/single-account Codex credential import |\n| `KILO_API_KEY` | empty | Kilo Gateway API key; optional for free anonymous models |",
+              "| `CODEX_HOME` | `~/.codex` | Read-only source for a legacy/single-account Codex credential import |\n| `YA_ROUTER_COOLDOWNS_PATH` | beside the managed config | Owner-only durable per-target cooldown state |\n| `KILO_API_KEY` | empty | Kilo Gateway API key; optional for free anonymous models |",
+              "environment table",
+          )
+          replace_once('"upstream_model": "gpt-5.4"', '"upstream_model": "gpt-5.4-mini"', "model map")
+          replace_once(
+              "1. Exact `model_map` key.\n2. Bare `model_map` key after removing a recognized provider prefix.\n3. Explicit provider prefix.\n4. Provider catalog discovery.\n5. Configured default provider only when the request omitted the model.",
+              "1. Exact `model_map` key.\n2. Bare `model_map` key after removing a recognized provider prefix.\n3. Explicit provider prefix.\n4. Exact configured virtual-model ID such as `thiendu`.\n5. Provider catalog discovery.\n6. Configured default provider only when the request omitted the model.",
+              "routing order",
+          )
+
+          start = text.index("### `virtual_models` (automatic virtual models)")
+          end = text.index("### `claude_aliases`", start)
+          section = '''### `virtual_models` (automatic virtual models)
+
+Virtual models expose one client-facing ID backed by an ordered list of canonical provider-prefixed targets. The proxy may try targets sequentially for one logical request, but only while no response output has been committed. Each target is attempted at most once, all attempts share the original context and deadline, and explicit provider-prefixed or `model_map` requests never enter this failover path.
+
+Fresh configurations use the following quota-consumption chain:
+
+```json
+{
+  "routing": {
+    "virtual_models": {
+      "thiendu": {
+        "strategy": "quota_priority",
+        "targets": [
+          "codex/gpt-5.3-codex-spark",
+          "codex/gpt-5.4-mini",
+          "github/gpt-5.4-mini",
+          "github/gpt-5-mini",
+          "kilo/kilo-auto/free"
+        ]
+      }
+    }
+  }
+}
+```
+
+Supported strategies:
+
+- `priority`: backward-compatible behavior that may start a later request from the last successful target while it remains routable.
+- `quota_priority`: always evaluates configured order. Targets in cooldown are skipped; when a higher-priority cooldown expires, the next request evaluates that target before lower-priority targets again.
+
+Validation rules (enforced at config load, not request time):
+
+- The virtual model ID must be non-empty and must not collide with a provider prefix (`github/`, `codex/`, `kilo/`) or shadow an explicit `model_map` key.
+- `strategy` must be `priority` or `quota_priority`.
+- At least one target is required; targets must be unique and each must use a known provider prefix.
+- A target cannot reference another virtual model.
+
+### Quota and transient cooldowns
+
+Cooldown state is scoped by `(provider, upstream model, capability)`, so exhausting Spark does not disable another Codex model. A quota-style response records a cooldown of at least 24 hours. A trustworthy reset later than 24 hours is honored. A short `Retry-After` on a burst `429`, generic timeout, transport failure, or `5xx` keeps the bounded short cooldown policy instead of locking a target for a full day.
+
+The managed daemon persists this bounded, redacted state to `YA_ROUTER_COOLDOWNS_PATH` (normally `cooldowns.json` beside the managed config). The file is written atomically with mode `0600` and contains no prompt, completion, credential, raw upstream body, or account identifier. Invalid advisory state is ignored with a sanitized warning so it cannot prevent daemon startup.
+
+Umbrella IDs are resolved after explicit prefixes and before ordinary provider-catalog discovery. See [Umbrella Model Routing architecture](architecture/umbrella-model-routing.md) for the full contract.
+
+'''
+          text = text[:start] + section + text[end:]
+          replace_once(
+              '"claude-ya-codex-gpt-5-4": "codex/gpt-5.4"',
+              '"claude-ya-codex-gpt-5-4-mini": "codex/gpt-5.4-mini"',
+              "Claude alias",
+          )
           path.write_text(text)
           PY
-      - name: Commit README
+      - name: Commit configuration guide
         shell: bash
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add README.md
-          git commit -m 'docs: explain Spark-first quota routing'
+          git add docs/CONFIGURATION.md
+          git commit -m 'docs: document quota-priority routing'
           git push origin HEAD:agent/spark-first-routing
