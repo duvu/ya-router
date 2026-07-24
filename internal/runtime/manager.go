@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -13,6 +16,8 @@ import (
 )
 
 var ErrManagerClosed = errors.New("runtime manager is closed")
+
+const cooldownStatePathEnv = "YA_ROUTER_COOLDOWNS_PATH"
 
 // Manager atomically publishes immutable snapshots. Acquiring a retired
 // snapshot fails and retries against the current pointer, closing the load /
@@ -35,10 +40,14 @@ func NewManager(config *configschema.Config, providers ...provider.Provider) (*M
 	if err := validateProviders(providers); err != nil {
 		return nil, err
 	}
+	cooldowns, err := openConfiguredCooldownRegistry()
+	if err != nil {
+		return nil, err
+	}
 	manager := &Manager{
 		generation: 1,
 		live:       make(map[*Snapshot]struct{}),
-		cooldowns:  routing.NewCooldownRegistry(),
+		cooldowns:  cooldowns,
 		preferred:  routing.NewPreferredTargetRegistry(),
 	}
 	initial := newSnapshotWithRegistries(manager.generation, config, providers, manager.cooldowns, manager.preferred)
@@ -46,6 +55,31 @@ func NewManager(config *configschema.Config, providers ...provider.Provider) (*M
 	manager.current.Store(initial)
 	manager.track(initial)
 	return manager, nil
+}
+
+func openConfiguredCooldownRegistry() (*routing.CooldownRegistry, error) {
+	path := configuredCooldownStatePath()
+	registry, err := routing.OpenCooldownRegistry(path)
+	if err != nil {
+		return nil, fmt.Errorf("open cooldown registry: %w", err)
+	}
+	return registry, nil
+}
+
+// configuredCooldownStatePath keeps tests and compatibility binaries in-memory
+// unless a managed-state path is explicitly available. Production systemd
+// installs set YA_ROUTER_COOLDOWNS_PATH directly.
+func configuredCooldownStatePath() string {
+	if path := strings.TrimSpace(os.Getenv(cooldownStatePathEnv)); path != "" {
+		return path
+	}
+	if configPath := strings.TrimSpace(os.Getenv("YA_ROUTER_CONFIG_PATH")); configPath != "" {
+		return filepath.Join(filepath.Dir(configPath), "cooldowns.json")
+	}
+	if configDir := strings.TrimSpace(os.Getenv("YA_ROUTER_CONFIG_DIR")); configDir != "" {
+		return filepath.Join(configDir, "cooldowns.json")
+	}
+	return ""
 }
 
 func (manager *Manager) Acquire() (*Lease, error) {
