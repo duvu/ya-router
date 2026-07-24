@@ -55,16 +55,22 @@ func TestModelsEndpointExposesUmbrellaModel(t *testing.T) {
 	}
 }
 
-func TestDefaultConfigExposesThreeProviderThienduRoute(t *testing.T) {
+func TestDefaultConfigExposesQuotaPriorityThienduRoute(t *testing.T) {
 	cfg := defaultConfig()
 	thiendu, ok := cfg.Routing.VirtualModels["thiendu"]
 	if !ok {
 		t.Fatal("default configuration does not define thiendu")
 	}
-	if thiendu.Strategy != "priority" {
+	if thiendu.Strategy != "quota_priority" {
 		t.Fatalf("thiendu strategy = %q", thiendu.Strategy)
 	}
-	want := []string{"github/gpt-5-mini", "codex/gpt-5.4-mini", "kilo/kilo-auto/free"}
+	want := []string{
+		"codex/gpt-5.3-codex-spark",
+		"codex/gpt-5.4-mini",
+		"github/gpt-5.4-mini",
+		"github/gpt-5-mini",
+		"kilo/kilo-auto/free",
+	}
 	if strings.Join(thiendu.Targets, ",") != strings.Join(want, ",") {
 		t.Fatalf("thiendu targets = %v, want %v", thiendu.Targets, want)
 	}
