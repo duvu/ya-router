@@ -15,13 +15,13 @@
       "text-embedding-3-large": {
         "provider": "codex"
       },
-      "github/gpt-4o": {
+      "github/gpt-5.4-mini": {
         "provider": "copilot",
-        "upstream_model": "gpt-4o"
+        "upstream_model": "gpt-5.4-mini"
       },
-      "codex/gpt-5.4": {
+      "codex/gpt-5.4-mini": {
         "provider": "codex",
-        "upstream_model": "gpt-5.4"
+        "upstream_model": "gpt-5.4-mini"
       },
       "kilo/kilo-auto/free": {
         "provider": "kilo",
@@ -29,14 +29,16 @@
       }
     },
     "claude_aliases": {
-      "claude-ya-codex-gpt-5-4": "codex/gpt-5.4"
+      "claude-ya-codex-gpt-5-4-mini": "codex/gpt-5.4-mini"
     },
     "virtual_models": {
       "thiendu": {
-        "strategy": "priority",
+        "strategy": "quota_priority",
         "targets": [
-          "github/gpt-5-mini",
+          "codex/gpt-5.3-codex-spark",
           "codex/gpt-5.4-mini",
+          "github/gpt-5.4-mini",
+          "github/gpt-5-mini",
           "kilo/kilo-auto/free"
         ]
       },

@@ -17,7 +17,7 @@ The current Go runtime includes:
 |---|---|
 | OpenAI-compatible data plane | `/v1/models`, `/v1/chat/completions`, `/v1/responses`, and `/v1/embeddings` |
 | Providers | GitHub Copilot, Codex, and Kilo |
-| Automatic routing | Generic `routing.virtual_models`, default `thiendu`, capability/health/auth/catalog/allowlist/cooldown-aware priority selection |
+| Automatic routing | Generic `routing.virtual_models`; default `thiendu` uses `quota_priority`, bounded pre-output failover, and durable per-target quota cooldowns |
 | Explicit routing | `github/*`, `codex/*`, `kilo/*`, and `routing.model_map` |
 | Managed service | `ya-routerd`, immutable runtime snapshots, provider hot reload/drain, revisioned configuration |
 | Control plane | Private Unix-socket Control API by default; optional HTTPS client transport |
@@ -85,7 +85,7 @@ Resolution order is:
 4. unprefixed provider-catalog discovery;
 5. configured default provider only when the request omitted a model.
 
-Selection happens before dispatch and remains pinned for the complete request. A failed selected request is returned to the client and is **not replayed** to another provider. A later request may choose a different eligible target while the previous target is unhealthy or in cooldown.
+Virtual-model attempts are sequential and bounded by the configured targets. An eligible failure may move to the next target only before response output is committed; once output begins, the request remains pinned. The default `quota_priority` strategy always returns to configured order after cooldown expiry. A quota-style failure cools only that provider/model/capability target for at least 24 hours, persisted in owner-only state. Short burst throttles and transient failures keep the existing short cooldown policy.
 
 ## Security defaults
 
@@ -230,6 +230,7 @@ This is the recommended single-host managed deployment. It installs:
 /var/lib/ya-router/config.json
 /var/lib/ya-router/secrets.json
 /var/lib/ya-router/operations.json
+/var/lib/ya-router/cooldowns.json
 /run/ya-router/control.sock
 ```
 

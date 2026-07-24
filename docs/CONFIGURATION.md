@@ -2,15 +2,23 @@
 
 ## Configuration source
 
-The production Go runtime reads:
+The compatibility runtime reads:
 
 ```text
 ~/.local/share/github-copilot-svcs/config.json
 ```
 
-The historical directory name is retained to avoid silently losing existing routing settings and credentials. The file is written atomically with mode `0600`.
+Managed deployments normally set `YA_ROUTER_CONFIG_PATH` or
+`YA_ROUTER_CONFIG_DIR`; the systemd package uses:
 
-Start from `config.example.json` and run:
+```text
+/var/lib/ya-router/config.json
+```
+
+Configuration and routing state are written atomically with owner-only
+permissions.
+
+Start from `config.example.json` and inspect the effective state with:
 
 ```bash
 ./ya-router config
@@ -19,8 +27,7 @@ Start from `config.example.json` and run:
 
 ## Application log files
 
-The shared application logger always writes to stderr and also writes to the
-configured file. The default configuration retains bounded local history:
+The shared logger writes to stderr and to the configured local file:
 
 ```json
 "logging": {
@@ -30,42 +37,30 @@ configured file. The default configuration retains bounded local history:
 }
 ```
 
-The parent directory is created at startup. `max_file_size_mib` rotates the
-active log when it reaches the threshold; `retained_files` includes the active
-file and is fixed at `2` to preserve the bounded two-file policy. The defaults
-therefore retain at most two 5 MiB files. If the file cannot be initialized,
-ya-router reports the error to stderr and continues with console logging.
+The parent directory is created at startup. The default retains two files of at
+most 5 MiB each. If file logging cannot be initialized, ya-router reports the
+sanitized error to stderr and continues with console logging.
 
-## Server security environment
-
-Server exposure is intentionally controlled outside the JSON credential file.
+## Server and state environment
 
 | Environment variable | Default | Purpose |
 |---|---|---|
-| `YA_ROUTER_LISTEN_ADDRESS` | `127.0.0.1` | Address to bind |
-| `YA_ROUTER_API_KEY` | empty | Inbound proxy credential; mandatory for non-loopback binding |
+| `YA_ROUTER_LISTEN_ADDRESS` | `127.0.0.1` | Data-plane bind address |
+| `YA_ROUTER_API_KEY` | empty | Inbound credential; required for non-loopback binding |
 | `YA_ROUTER_CORS_ALLOWED_ORIGINS` | empty | Comma-separated browser-origin allowlist |
-| `YA_ROUTER_CODEX_OAUTH_CLIENT_ID` | Codex-compatible default | OAuth client override for managed deployments |
-| `OPENAI_API_KEY` | empty | OpenAI Platform API key |
-| `CODEX_HOME` | `~/.codex` | Read-only source for a legacy/single-account Codex credential import |
-| `KILO_API_KEY` | empty | Kilo Gateway API key; optional for free anonymous models |
+| `YA_ROUTER_CONFIG_PATH` | compatibility path | Explicit configuration file |
+| `YA_ROUTER_CONFIG_DIR` | compatibility directory | Directory containing `config.json` |
+| `YA_ROUTER_SECRETS_PATH` | beside managed config | Durable secret-reference state |
+| `YA_ROUTER_OPERATIONS_PATH` | beside managed config | Durable control-operation state |
+| `YA_ROUTER_COOLDOWNS_PATH` | beside managed config | Durable redacted per-target cooldown state |
+| `YA_ROUTER_CODEX_OAUTH_CLIENT_ID` | Codex-compatible default | OAuth client override |
+| `CODEX_HOME` | `~/.codex` | Read-only legacy Codex credential import |
+| `OPENAI_API_KEY` | empty | OpenAI Platform API-key mode |
+| `KILO_API_KEY` | empty | Authenticated Kilo Gateway access |
 | `KILO_ORG_ID` | empty | Kilo organization context |
-| `KILO_GATEWAY_BASE_URL` | `https://api.kilo.ai/api/gateway` | Full Kilo Gateway base URL override |
+| `KILO_GATEWAY_BASE_URL` | `https://api.kilo.ai/api/gateway` | Kilo Gateway override |
 
-Examples:
-
-```bash
-# Local-only; no inbound proxy key required.
-./ya-router run
-
-# Network deployment; a proxy key is mandatory.
-export YA_ROUTER_LISTEN_ADDRESS=0.0.0.0
-export YA_ROUTER_API_KEY="$(openssl rand -hex 32)"
-export YA_ROUTER_CORS_ALLOWED_ORIGINS='https://app.example.com'
-./ya-router run
-```
-
-The service refuses to start on a non-loopback address when `YA_ROUTER_API_KEY` is missing.
+A non-loopback listener without `YA_ROUTER_API_KEY` is rejected at startup.
 
 ## Top-level schema
 
@@ -74,50 +69,26 @@ The service refuses to start on a non-loopback address when `YA_ROUTER_API_KEY` 
   "port": 7071,
   "config_version": 1,
   "enable_pprof": false,
-  "logging": {
-    "file_path": "logs/ya-router.log",
-    "max_file_size_mib": 5,
-    "retained_files": 2
-  },
+  "logging": {},
   "routing": {},
   "providers": {},
   "timeouts": {}
 }
 ```
 
-### `port`
-
-Listening port. Default: `7071`.
-
-### `enable_pprof`
-
-Enables `/debug/pprof/`. The endpoints are still covered by the inbound access policy. Keep this disabled outside controlled diagnostics.
+`enable_pprof` exposes `/debug/pprof/` under the same inbound access policy.
+Keep it disabled outside controlled diagnostics.
 
 ## Routing
 
-```json
-{
-  "routing": {
-    "default_model": "thiendu",
-    "default_provider": "copilot",
-    "show_unavailable_models": false,
-    "model_map": {
-      "research-model": {
-        "provider": "codex",
-        "upstream_model": "gpt-5.4"
-      }
-    }
-  }
-}
-```
-
 ### Resolution order
 
-1. Exact `model_map` key.
+1. Exact `routing.model_map` key.
 2. Bare `model_map` key after removing a recognized provider prefix.
 3. Explicit provider prefix.
-4. Provider catalog discovery.
-5. Configured default provider only when the request omitted the model.
+4. Exact configured virtual-model ID such as `thiendu`.
+5. Ordinary provider-catalog discovery.
+6. Configured default provider only when the request omitted `model`.
 
 Explicit prefixes are authoritative:
 
@@ -127,42 +98,28 @@ Explicit prefixes are authoritative:
 | `codex/` | OpenAI Codex |
 | `kilo/` | Kilo AI Gateway |
 
-The prefix is removed before forwarding upstream. A model present in multiple providers requires a prefix or `model_map` rule. Unknown explicit bare model names fail. A request that omits `model` resolves through `routing.default_model`, which is `thiendu` for fresh managed configs — the same umbrella-routing path as an explicit `"model": "thiendu"` request. The default provider is used only as a last resort if the resolved model has no other match.
+An explicit route is pinned. It never silently moves to another provider or
+model.
 
-### `show_unavailable_models`
+### Default Spark-first chain
 
-When false, `/v1/models` hides providers that are not authenticated. Set true only for diagnostics.
-
-### `expose_internal_models`
-
-Controls whether `GET /v1/models` lists every provider-prefixed model and `model_map` entry, or only virtual models (`thiendu`) and required compatibility aliases.
+Fresh configurations expose `thiendu` using `quota_priority`:
 
 ```json
 {
   "routing": {
-    "expose_internal_models": false
-  }
-}
-```
-
-- Defaults to `false` for fresh managed configs: normal discovery shows only `thiendu` and compatibility aliases, steering clients toward automatic routing.
-- A config saved before this setting existed loads with it implicitly `true`, preserving its previous discovery behavior; set it to `false` explicitly to opt into hidden discovery.
-- This setting only affects what `/v1/models` advertises. Explicit provider-prefixed (`github/…`, `codex/…`, `kilo/…`) and `model_map` requests still resolve normally either way — nothing is rejected.
-- `ya models` and routing diagnostics (`/health/umbrella`, Control API routing resources) always show the full internal catalog and routing state regardless of this setting.
-
-### `virtual_models` (automatic virtual models)
-
-Virtual models expose one client-facing ID that resolves to exactly one currently routable provider-prefixed target, selected deterministically before dispatch. `thiendu` is the default simple public ID and is configured with GitHub Copilot, Codex, and Kilo candidates; it is not a hard-coded routing special case. This is selection-before-dispatch, not cross-provider failover: once a target is chosen and the upstream request begins, no other target receives that request.
-
-```json
-{
-  "routing": {
+    "default_model": "thiendu",
+    "default_provider": "copilot",
+    "show_unavailable_models": false,
+    "expose_internal_models": false,
     "virtual_models": {
       "thiendu": {
-        "strategy": "priority",
+        "strategy": "quota_priority",
         "targets": [
-          "github/gpt-5-mini",
+          "codex/gpt-5.3-codex-spark",
           "codex/gpt-5.4-mini",
+          "github/gpt-5.4-mini",
+          "github/gpt-5-mini",
           "kilo/kilo-auto/free"
         ]
       }
@@ -171,37 +128,112 @@ Virtual models expose one client-facing ID that resolves to exactly one currentl
 }
 ```
 
-Validation rules (enforced at config load, not request time):
+Targets are canonical provider-prefixed catalog IDs. A target is selectable only
+when its provider is enabled, authenticated/ready, capability-compatible,
+allowed, present in the last-known-good catalog, and outside target cooldown.
 
-- The virtual model ID must be non-empty and must not collide with a provider prefix (`github/`, `codex/`, `kilo/`) or shadow an explicit `model_map` key.
-- `strategy` must be `priority` (the only strategy in v1); target order is the priority order.
-- At least one target is required; targets must be unique and each must use a known provider prefix.
-- A target cannot reference another virtual model (no nesting).
+### Virtual-model strategies
 
-Umbrella IDs are added to the routing resolution order below, after explicit prefixes and before catalog discovery. See [Umbrella Model Routing architecture](architecture/umbrella-model-routing.md) for the full contract.
+`priority`
+: Backward-compatible behavior. The last successful target may be moved to the
+  front for a later request while it remains routable.
 
-### `claude_aliases`
+`quota_priority`
+: Configured order is authoritative for every new logical request. Active
+  cooldowns are skipped. When a higher-priority cooldown expires, the next
+  request evaluates that target before lower-priority targets again.
 
-`claude_aliases` is a separate Claude Code discovery projection. Each key must
-begin with `claude` or `anthropic`; each value is a canonical provider-prefixed
-model that already appears in the Responses-capable catalog. It does not change
-the OpenAI model ID, routing precedence, allowlists, or provider credentials.
+Validation requires a supported strategy, at least one unique target, known
+provider prefixes, and no virtual-model nesting or `model_map` shadowing.
+
+### Bounded sequential failover
+
+Virtual-model attempts are sequential and bounded by the configured target
+count. The same logical request may continue to the next target only when:
+
+- no response output has been committed;
+- the parent context/deadline is still active;
+- another target is routable;
+- the failure is eligible, such as quota/rate limit, auth or entitlement denial,
+  pre-output timeout/transport failure, or `5xx`.
+
+Each target is attempted at most once. All attempts share the original request
+body, context, and deadline. Invalid client payloads, unsupported capabilities,
+cancellation, explicit routes, and failures after output begins do not fail
+over. Successful streaming remains incremental and is never buffered in full.
+
+### Quota and transient cooldowns
+
+Cooldown state is scoped by:
+
+```text
+(provider, upstream model, capability)
+```
+
+Exhausting Spark therefore does not disable `codex/gpt-5.4-mini` or another
+capability.
+
+- A quota-style response creates a cooldown of at least 24 hours.
+- A trustworthy reset later than 24 hours is honored.
+- A short trustworthy `Retry-After` on a burst `429` remains a short cooldown.
+- Generic timeout, transport failure, and `5xx` retain bounded short cooldowns.
+- After expiry, `quota_priority` restores configured order automatically.
+
+The managed daemon persists cooldowns to `YA_ROUTER_COOLDOWNS_PATH`, normally:
+
+```text
+/var/lib/ya-router/cooldowns.json
+```
+
+The file is atomic and mode `0600`. It contains only bounded fields such as
+provider, model, capability, stable reason, failure count, and UTC expiry. It
+never contains prompts, completions, credentials, raw upstream bodies, or
+account identifiers. Invalid advisory state is ignored with a sanitized warning
+so it cannot prevent daemon startup.
+
+### Model mappings
+
+Use `model_map` for explicit aliases that must remain pinned:
 
 ```json
 {
   "routing": {
-    "claude_aliases": {
-      "claude-ya-codex-gpt-5-4": "codex/gpt-5.4"
+    "model_map": {
+      "research-model": {
+        "provider": "codex",
+        "upstream_model": "gpt-5.4-mini"
+      }
     }
   }
 }
 ```
 
-The configured alias is added to `GET /v1/models` only while its target is
-discoverable and supports native Responses. Claude Code sends the alias to
-`POST /v1/messages`; ya-router resolves the configured target exactly once.
-See [Anthropic and Claude Code compatibility](ANTHROPIC_COMPATIBILITY.md) for
-the protocol contract.
+### Model discovery
+
+`show_unavailable_models` controls whether unauthenticated providers appear in
+normal discovery.
+
+`expose_internal_models` controls whether `GET /v1/models` exposes all
+provider-prefixed models and mappings or only public virtual models and required
+compatibility aliases. It does not disable explicit routing.
+
+### Claude Code aliases
+
+`claude_aliases` projects a Claude-compatible discovery name onto a canonical
+Responses-capable target:
+
+```json
+{
+  "routing": {
+    "claude_aliases": {
+      "claude-ya-codex-gpt-5-4-mini": "codex/gpt-5.4-mini"
+    }
+  }
+}
+```
+
+The alias is advertised only while the target is discoverable and
+Responses-capable.
 
 ## GitHub Copilot provider
 
@@ -219,20 +251,19 @@ the protocol contract.
 }
 ```
 
-Authenticate:
+Authenticate with:
 
 ```bash
 ./ya-router auth copilot
 ./ya-router auth copilot --account work
 ```
 
-Copilot chat only receives requests selected by `model_map`, a `github/` prefix, or provider catalog discovery. It cannot intercept `codex/*` requests, explicit Codex mappings, or unknown bare model names.
+Provider-internal account rotation remains separate from virtual-model target
+cooldown.
 
 ## Codex provider
 
-Codex has two distinct authentication and transport modes.
-
-### ChatGPT mode
+### ChatGPT/Codex mode
 
 ```json
 {
@@ -249,64 +280,42 @@ Codex has two distinct authentication and transport modes.
 }
 ```
 
-Authenticate with device OAuth:
+Authenticate with:
 
 ```bash
 ./ya-router auth codex
 ./ya-router auth codex --account work
 ```
 
-Properties:
+ChatGPT mode supports chat and native Responses, not embeddings. A `401` gets
+one refresh and one request retry. `$CODEX_HOME/auth.json` is a read-only
+legacy/single-account fallback and never overrides a populated managed account
+pool.
 
-- backend: ChatGPT Codex Responses;
-- credentials: ya-router config account entry;
-- supported capabilities: chat and native Responses;
-- unsupported capability: embeddings;
-- `401` handling: one refresh and one request retry;
-- official `$CODEX_HOME/auth.json`: read-only fallback import for legacy/single-account use only.
-
-The global official Codex store never overrides a populated account-pool entry.
-
-### API-key mode
-
-Use the process environment:
+### OpenAI Platform API-key mode
 
 ```bash
 export OPENAI_API_KEY=sk-...
 ```
 
-or import from stdin:
+or:
 
 ```bash
 printf '%s\n' "$OPENAI_API_KEY" | ./ya-router auth codex --api-key-stdin
 ```
 
-Properties:
-
-- backend: `https://api.openai.com/v1`;
-- supported capabilities: chat, native Responses, and embeddings;
-- no OAuth refresh;
-- ChatGPT account metadata is not sent.
-
-The runtime uses `OPENAI_API_KEY`; `api_key_env` is not part of config version 1.
-
-### Manual bearer-token fallback
-
-```bash
-printf '%s\n' "$CHATGPT_ACCESS_TOKEN" | ./ya-router auth codex --token-stdin
-```
-
-This path is intended for recovery only. Without a refresh token, reauthentication is required when the access token expires.
+API-key mode supports chat, Responses, and embeddings and does not use ChatGPT
+account metadata.
 
 ## Kilo Gateway provider
 
-Kilo is disabled by default. Enable anonymous access to free models with:
+Kilo is disabled until explicitly enabled or authenticated:
 
 ```bash
 ./ya-router auth kilo
 ```
 
-Or configure it directly:
+Example configuration:
 
 ```json
 {
@@ -322,29 +331,24 @@ Or configure it directly:
 }
 ```
 
-The provider discovers `GET /models`, forwards Chat Completions to `/chat/completions`, and passes native Responses requests to `/responses`. It intentionally does not advertise embeddings because embeddings are not part of Kilo's documented public Gateway contract.
-
-### Auto Free
-
-Use the client-facing model ID:
+The canonical final fallback is:
 
 ```text
 kilo/kilo-auto/free
 ```
 
-ya-router removes only its leading `kilo/` namespace and sends `kilo-auto/free` upstream. Without an API key, the catalog and proxy are restricted to IDs marked free by Kilo, IDs ending in `:free`, `openrouter/free`, and `kilo-auto/free`. Paid IDs fail before an upstream request is made.
+Without a Kilo API key, routing is restricted to recognized free IDs. The
+inbound ya-router credential is never forwarded upstream.
 
-Anonymous access can be disabled with `"allow_anonymous": false`. For authenticated models, prefer `KILO_API_KEY`; importing through stdin is also supported:
-
-```bash
-printf '%s\n' "$KILO_API_KEY" | ./ya-router auth kilo --api-key-stdin
-```
-
-The inbound ya-router API credential is never forwarded. Kilo requests receive only the server-owned Kilo credential, optional organization ID, and a small allowlist of Kilo task/mode headers.
-
-Auto Free may route requests to providers that log prompts and outputs or use them to improve services. Do not submit confidential, personal, or regulated data through Auto Free.
+Auto Free may route through third parties that log prompts/outputs or use them
+to improve services. Do not submit confidential, personal, or regulated data
+through this fallback.
 
 ## Multi-account pools
+
+Each provider account owns its authentication state. Provider-internal account
+rotation is bounded by the account count. Target quota cooldown is applied only
+after the provider returns the final redacted outcome to the router.
 
 ```json
 {
@@ -352,18 +356,8 @@ Auto Free may route requests to providers that log prompts and outputs or use th
     "codex": {
       "enabled": true,
       "accounts": [
-        {
-          "label": "personal",
-          "auth": {
-            "mode": "chatgpt"
-          }
-        },
-        {
-          "label": "platform",
-          "auth": {
-            "mode": "api_key"
-          }
-        }
+        {"label": "personal", "auth": {"mode": "chatgpt"}},
+        {"label": "platform", "auth": {"mode": "api_key"}}
       ],
       "account_cooldown_seconds": 300
     }
@@ -371,38 +365,9 @@ Auto Free may route requests to providers that log prompts and outputs or use th
 }
 ```
 
-Each account owns its own auth state. On an account rate-limit response, the request can advance to the next eligible account. The attempt count is bounded by the number of accounts.
-
-`LastLimitedAt` is persisted for compatibility. The current scheduler uses the configured cooldown duration; richer upstream-reset scheduling remains a future config-version change.
-
-## Structured outputs
-
-For `/v1/chat/completions`, the router maps:
-
-```text
-response_format.json_schema
-    -> text.format.json_schema
-```
-
-It also preserves `tool_choice`, `parallel_tool_calls`, tools, reasoning, and supported metadata. Parameters that cannot be represented by the selected Responses transport return a request error rather than being silently removed.
-
-For callers already using Responses semantics, prefer:
-
-```text
-POST /v1/responses
-```
-
-The native endpoint preserves Responses output and SSE events without converting them into Chat Completions chunks.
-
-## Retry behavior
-
-- Network, `408`, and `5xx` retry is bounded.
-- Unsafe POST requests require an `Idempotency-Key` before retry after uncertain delivery.
-- `429` is handled by account failover rather than blind transport retry.
-- OAuth refresh retries only transient network failures, `429`, and `5xx`.
-- Permanent OAuth `4xx` failures require reauthentication.
-
 ## Timeouts
+
+Timeout values are seconds:
 
 ```json
 {
@@ -421,31 +386,14 @@ The native endpoint preserves Responses output and SSE events without converting
 }
 ```
 
-All values are seconds. Long-lived streaming requests must fit within both `http_client` and `proxy_context`.
+All failover attempts share the original request deadline; failover never
+extends it per target.
 
-## Health and operations
+## Security invariants
 
-```bash
-curl http://127.0.0.1:7071/health/live
-curl http://127.0.0.1:7071/health/ready
-curl http://127.0.0.1:7071/health/providers
-```
-
-`/health/providers` returns only provider ID, name, authentication state, refreshability, and capabilities. It does not return tokens or account IDs.
-
-### Inspecting umbrella-routing decisions
-
-```bash
-curl http://127.0.0.1:7071/health/umbrella
-```
-
-`/health/umbrella` reports, for each configured umbrella model, its strategy, the currently selected target (if any), and each target's readiness as a stable reason code (`routable`, `provider_not_ready`, `capability_unsupported`, `model_disallowed`, `model_not_in_catalog`, `cooldown`, `target_disabled`, `provider_not_registered`). Each target also carries a separate `catalog_stale` flag and `catalog_fetched_at` timestamp: a catalog older than the refresh TTL is flagged stale for diagnostics but does not by itself make the target unroutable, so a slow or failed background refresh cannot outage an otherwise healthy target (see issue #93). It also exposes bounded routing counters (`umbrella_selections_total`, `umbrella_no_active_target_total`, `umbrella_skipped_targets_total`, `umbrella_cooldown_entries_total`, `umbrella_cooldown_exits_total`) whose labels are limited to configured virtual-model/target IDs and reason codes.
-
-Selection is computed from the network-free availability snapshot; the endpoint sends no upstream model request. Every request that resolves through an umbrella model also emits a structured `[umbrella] decision …` log line recording the selected target, target index, runtime generation, and skipped-target reason codes. These logs and metrics describe **selection before dispatch only** — ya-router never retries a request against another target after dispatch, and no log implies cross-provider failover. Prompts, completions, tokens, secrets, raw account IDs, and upstream error bodies never appear in umbrella logs or metrics.
-
-## Migration notes
-
-- Legacy top-level provider auth is promoted to account label `primary` when required.
-- Existing config path and config version remain supported.
-- ChatGPT tokens previously copied into the official Codex store are no longer written there by ya-router.
-- Existing secret-bearing `--api-key` and `--token` command-line flags have been replaced by stdin flags to prevent process-list and shell-history leakage.
+- Non-loopback binding requires an inbound API key.
+- Secrets are accepted through environment variables, stdin, or masked input.
+- The Control API never returns raw secret values.
+- Prompts, completions, credentials, raw upstream error bodies, and account IDs
+  are excluded from routing logs and cooldown state.
+- Kilo Auto Free is not appropriate for confidential or regulated data.

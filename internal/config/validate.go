@@ -41,8 +41,11 @@ func (r Routing) ValidateVirtualModels(knownPrefixes []string) error {
 		if _, shadows := r.ModelMap[id]; shadows {
 			return fmt.Errorf("routing.virtual_models[%q]: ID shadows an explicit routing.model_map entry", id)
 		}
-		if vm.Strategy != VirtualModelStrategyPriority {
-			return fmt.Errorf("routing.virtual_models[%q]: strategy %q is not supported; the only supported strategy is %q", id, vm.Strategy, VirtualModelStrategyPriority)
+		switch vm.Strategy {
+		case VirtualModelStrategyPriority, VirtualModelStrategyQuotaPriority:
+			// supported
+		default:
+			return fmt.Errorf("routing.virtual_models[%q]: strategy %q is not supported; supported strategies are %q and %q", id, vm.Strategy, VirtualModelStrategyPriority, VirtualModelStrategyQuotaPriority)
 		}
 		if len(vm.Targets) == 0 {
 			return fmt.Errorf("routing.virtual_models[%q]: at least one target is required", id)
