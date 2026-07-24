@@ -184,10 +184,15 @@ func (r *Router) resolveVirtualModel(ctx context.Context, virtualID string, vm c
 // target in the exclude set. It is called for the first attempt without
 // exclusions and for each failover attempt with the previously tried targets.
 func (r *Router) resolveVirtualModelExcluding(ctx context.Context, virtualID string, vm configschema.VirtualModel, capability provider.Capability, exclude map[string]struct{}) (*Result, error) {
-	// Apply preferred-target ordering: move the preferred target to position 0.
 	orderedVM := vm
-	if preferredTarget, ok := r.preferred.Get(virtualID, capability); ok && preferredTarget != "" {
-		orderedVM = reorderVMTargets(vm, preferredTarget)
+	// The legacy priority strategy preserves the last-successful-target
+	// optimization introduced by #97. quota_priority deliberately ignores that
+	// memory so an expired higher-priority quota cooldown restores configured
+	// order on the next request.
+	if vm.Strategy == configschema.VirtualModelStrategyPriority {
+		if preferredTarget, ok := r.preferred.Get(virtualID, capability); ok && preferredTarget != "" {
+			orderedVM = reorderVMTargets(vm, preferredTarget)
+		}
 	}
 	snapshot := r.buildAvailabilitySnapshot(ctx)
 	decision, err := SelectPriorityTargetExcluding(virtualID, orderedVM, capability, snapshot, exclude)
@@ -254,11 +259,15 @@ func (r *Router) ResolveNext(ctx context.Context, virtualID string, capability p
 	return r.resolveVirtualModelExcluding(ctx, virtualID, vm, capability, exclude)
 }
 
-// RecordPreferred records target as the preferred starting candidate for the
-// next request to this virtual model/capability. Called after a successful
-// umbrella dispatch.
+// RecordPreferred records target as the preferred starting candidate only for
+// the legacy priority strategy. quota_priority always returns to configured
+// order after cooldown expiry.
 func (r *Router) RecordPreferred(virtualID string, capability provider.Capability, target string) {
 	if r == nil || r.preferred == nil {
+		return
+	}
+	vm, ok := r.routing.VirtualModels[virtualID]
+	if !ok || vm.Strategy != configschema.VirtualModelStrategyPriority {
 		return
 	}
 	r.preferred.Set(virtualID, capability, target)
