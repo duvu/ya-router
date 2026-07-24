@@ -20,8 +20,7 @@ type Routing struct {
 	ClaudeAliases map[string]string `json:"claude_aliases,omitempty"`
 	// VirtualModels defines umbrella/virtual model IDs (for example
 	// "router/auto") that resolve to exactly one active provider-prefixed
-	// target selected deterministically before dispatch. This is
-	// selection-before-dispatch, not cross-provider failover.
+	// target selected deterministically before dispatch.
 	VirtualModels map[string]VirtualModel `json:"virtual_models,omitempty"`
 	// ExposeInternalModels controls whether GET /v1/models lists every
 	// provider-prefixed model and model_map entry, or only virtual models and
@@ -37,12 +36,19 @@ type ModelMapEntry struct {
 	UpstreamModel string `json:"upstream_model,omitempty"`
 }
 
-// VirtualModelStrategyPriority selects the first routable target in configured
-// order. It is the only strategy supported in v1.
-const VirtualModelStrategyPriority = "priority"
+const (
+	// VirtualModelStrategyPriority selects the first routable target after
+	// optionally moving the last successful target to the front. It is retained
+	// for backward compatibility with existing configurations.
+	VirtualModelStrategyPriority = "priority"
+	// VirtualModelStrategyQuotaPriority always scans targets in configured order.
+	// Active target cooldowns are skipped, and an expired higher-priority target
+	// is automatically considered before lower-priority targets again.
+	VirtualModelStrategyQuotaPriority = "quota_priority"
+)
 
-// VirtualModel is one umbrella model. In v1 it carries a single strategy and an
-// ordered list of canonical provider-prefixed target model IDs.
+// VirtualModel is one umbrella model with a strategy and an ordered list of
+// canonical provider-prefixed target model IDs.
 type VirtualModel struct {
 	Strategy string   `json:"strategy"`
 	Targets  []string `json:"targets"`
