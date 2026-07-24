@@ -1,4 +1,4 @@
-name: Diagnose Spark-first branch
+name: Patch Spark-first branch
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  diagnose:
+  patch:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
@@ -20,18 +20,64 @@ jobs:
         with:
           go-version: '1.22.x'
           cache: false
-      - name: Capture vet output
+      - name: Update stale default-chain test
         shell: bash
         run: |
-          go vet ./... > vet-output.txt 2>&1 || true
-      - name: Commit diagnostics
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/umbrella_models_test.go")
+          text = path.read_text()
+          old = '''func TestDefaultConfigExposesThreeProviderThienduRoute(t *testing.T) {
+          	cfg := defaultConfig()
+          	thiendu, ok := cfg.Routing.VirtualModels["thiendu"]
+          	if !ok {
+          		t.Fatal("default configuration does not define thiendu")
+          	}
+          	if thiendu.Strategy != "priority" {
+          		t.Fatalf("thiendu strategy = %q", thiendu.Strategy)
+          	}
+          	want := []string{"github/gpt-5-mini", "codex/gpt-5.4-mini", "kilo/kilo-auto/free"}
+          	if strings.Join(thiendu.Targets, ",") != strings.Join(want, ",") {
+          		t.Fatalf("thiendu targets = %v, want %v", thiendu.Targets, want)
+          	}
+          }
+          '''
+          new = '''func TestDefaultConfigExposesQuotaPriorityThienduRoute(t *testing.T) {
+          	cfg := defaultConfig()
+          	thiendu, ok := cfg.Routing.VirtualModels["thiendu"]
+          	if !ok {
+          		t.Fatal("default configuration does not define thiendu")
+          	}
+          	if thiendu.Strategy != "quota_priority" {
+          		t.Fatalf("thiendu strategy = %q", thiendu.Strategy)
+          	}
+          	want := []string{
+          		"codex/gpt-5.3-codex-spark",
+          		"codex/gpt-5.4-mini",
+          		"github/gpt-5.4-mini",
+          		"github/gpt-5-mini",
+          		"kilo/kilo-auto/free",
+          	}
+          	if strings.Join(thiendu.Targets, ",") != strings.Join(want, ",") {
+          		t.Fatalf("thiendu targets = %v, want %v", thiendu.Targets, want)
+          	}
+          }
+          '''
+          if old not in text:
+              raise SystemExit("expected test block not found")
+          path.write_text(text.replace(old, new))
+          PY
+          rm -f vet-output.txt
+          gofmt -w src/umbrella_models_test.go
+      - name: Commit patch
         shell: bash
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add vet-output.txt
+          git add src/umbrella_models_test.go vet-output.txt
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m 'chore: capture vet diagnostics'
+          git commit -m 'test: update Spark-first default expectations'
           git push origin HEAD:agent/spark-first-routing
