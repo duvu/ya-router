@@ -13,6 +13,7 @@ Environment=YA_ROUTER_CONFIG_DIR=/var/lib/ya-router
 Environment=YA_ROUTER_CONFIG_PATH=/var/lib/ya-router/config.json
 Environment=YA_ROUTER_SECRETS_PATH=/var/lib/ya-router/secrets.json
 Environment=YA_ROUTER_OPERATIONS_PATH=/var/lib/ya-router/operations.json
+Environment=YA_ROUTER_COOLDOWNS_PATH=/var/lib/ya-router/cooldowns.json
 Environment=YA_ROUTER_CONTROL_SOCKET=/run/ya-router/control.sock
 Environment=YA_ROUTER_LISTEN_ADDRESS=127.0.0.1
 ExecStart=/usr/local/bin/ya-routerd run --config-migrate=none
