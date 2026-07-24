@@ -144,10 +144,12 @@ func setDefaultLogging(cfg *Config) {
 func defaultVirtualModels() map[string]VirtualModelConfig {
 	return map[string]VirtualModelConfig{
 		"thiendu": {
-			Strategy: "priority",
+			Strategy: "quota_priority",
 			Targets: []string{
-				"github/gpt-5-mini",
+				"codex/gpt-5.3-codex-spark",
 				"codex/gpt-5.4-mini",
+				"github/gpt-5.4-mini",
+				"github/gpt-5-mini",
 				"kilo/kilo-auto/free",
 			},
 		},
